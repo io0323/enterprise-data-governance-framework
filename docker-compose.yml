@@ -17,5 +17,9 @@ services:
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}
+    healthcheck:  # readiness: DB 疎通・スキーマ最新・ポリシー有効 (§19)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      retries: 6
 volumes:
   edgf-pg: {}

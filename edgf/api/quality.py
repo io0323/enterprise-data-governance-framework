@@ -1,13 +1,14 @@
 """§5 Data Quality API."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
 from edgf.deps import get_actor, get_asset_or_404
 from edgf.models import QualityRule, QualityRun
+from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import QualityRuleIn, QualityRuleOut, QualityRunIn, QualityRunOut
 from edgf.services import audit, issues
 from edgf.services.quality import evaluate, latest_run, validate_rule
@@ -30,9 +31,11 @@ def add_rule(asset_id: str, body: QualityRuleIn, db: Session = Depends(get_sessi
 
 
 @router.get("/assets/{asset_id}/rules", response_model=list[QualityRuleOut])
-def list_rules(asset_id: str, db: Session = Depends(get_session)):
+def list_rules(asset_id: str, request: Request, response: Response, page: Page = Depends(page_params()),
+               db: Session = Depends(get_session)):
     get_asset_or_404(db, asset_id)
-    return db.scalars(select(QualityRule).where(QualityRule.asset_id == asset_id)).all()
+    stmt = select(QualityRule).where(QualityRule.asset_id == asset_id).order_by(QualityRule.name, QualityRule.id)
+    return paginate(db, stmt, page, request, response)
 
 
 @router.delete("/rules/{rule_id}", status_code=204)
@@ -71,10 +74,11 @@ def run_quality(asset_id: str, body: QualityRunIn, db: Session = Depends(get_ses
 
 
 @router.get("/assets/{asset_id}/runs", response_model=list[QualityRunOut])
-def list_runs(asset_id: str, limit: int = 20, db: Session = Depends(get_session)):
+def list_runs(asset_id: str, request: Request, response: Response, page: Page = Depends(page_params(20)),
+              db: Session = Depends(get_session)):
     get_asset_or_404(db, asset_id)
-    return db.scalars(select(QualityRun).where(QualityRun.asset_id == asset_id)
-                      .order_by(QualityRun.executed_at.desc()).limit(limit)).all()
+    stmt = select(QualityRun).where(QualityRun.asset_id == asset_id).order_by(QualityRun.executed_at.desc(), QualityRun.id)
+    return paginate(db, stmt, page, request, response)
 
 
 @router.get("/assets/{asset_id}/score")

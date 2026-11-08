@@ -1,13 +1,14 @@
 """§6.2 Business Glossary API."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
 from edgf.deps import get_actor, get_asset_or_404
 from edgf.models import GlossaryTerm
+from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import TermIn, TermOut
 from edgf.services import audit
 
@@ -38,11 +39,12 @@ def create_term(body: TermIn, db: Session = Depends(get_session), actor: str = D
 
 
 @router.get("/terms", response_model=list[TermOut])
-def list_terms(q: str | None = None, db: Session = Depends(get_session)):
+def list_terms(request: Request, response: Response, q: str | None = None,
+               page: Page = Depends(page_params()), db: Session = Depends(get_session)):
     stmt = select(GlossaryTerm).order_by(GlossaryTerm.name)
     if q:
         stmt = stmt.where(GlossaryTerm.name.ilike(f"%{q}%") | GlossaryTerm.definition.ilike(f"%{q}%"))
-    return [_out(t) for t in db.scalars(stmt)]
+    return [_out(t) for t in paginate(db, stmt, page, request, response)]
 
 
 @router.get("/terms/{term_id}", response_model=TermOut)
