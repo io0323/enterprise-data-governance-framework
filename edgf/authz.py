@@ -118,6 +118,10 @@ PERMISSIONS: Mapping[str, Rule] = {
     # 物理削除の実行と報告 (§4.2 ライフサイクル実行 R)。承認ではないため Custodian を含む
     "privacy.erasure.task_ack": rule(relations=("custodian",), description="消去タスクの受領"),
     "privacy.erasure.task_complete": rule(relations=("custodian",), description="消去タスクの完了報告"),
+    # Master Data Management (§8)
+    "mdm.read": rule(authenticated=True, description="MDM のメタデータの参照 (ABAC で絞り込む。値は返さない)"),
+    "mdm.rule.write": rule(roles=(ADMIN, COMMITTEE), approval=True, description="エンティティ定義の再読込 (公開)"),
+    "mdm.rule.approve": rule(relations=("owner",), approval=True, description="Golden Record 生成規則の承認 (§8.2)"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

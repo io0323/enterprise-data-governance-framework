@@ -256,6 +256,17 @@ class ErasureTask(Base):
     note: Mapped[str] = mapped_column(Text, default="")
 
 
+class MdmRuleApproval(Base):
+    """§8.2 Golden Record 生成規則の Owner 承認。ルール本文のハッシュに対して記録する。"""
+    __tablename__ = "mdm_rule_approvals"
+    __table_args__ = (UniqueConstraint("entity_type", "rule_hash", name="uq_mdm_rule_approval"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(50))
+    rule_hash: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str] = mapped_column(String(200))
+    approved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

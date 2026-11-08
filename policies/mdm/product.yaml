@@ -1,0 +1,24 @@
+# MDM エンティティ定義: 製品マスタ (§8)
+version: 1
+entity_type: product
+asset: mdm.product
+attributes:
+  - {name: sku, type: string}
+  - {name: product_name, type: string}
+  - {name: category, type: string}
+  - {name: unit_price, type: number}
+sources:
+  pim: 100
+  erp: 50
+match:
+  exact_keys:
+    - [sku]
+  similarity:
+    weights: {product_name: 0.8, category: 0.2}
+    auto_merge: 0.95
+    review: 0.8
+survivorship:
+  sku: {rule: source_priority}
+  product_name: {rule: source_priority}
+  category: {rule: most_frequent}
+  unit_price: {rule: most_recent}
