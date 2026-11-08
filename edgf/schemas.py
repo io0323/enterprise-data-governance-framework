@@ -4,10 +4,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from edgf.enums import (Certification, DataClass, EscalationLevel, IssueStatus, LifecycleState,
-                        QualityDimension, Sensitivity, Severity)
+from edgf.enums import (Certification, DataClass, EscalationLevel, IssueStatus, LegalBasis, LifecycleState,
+                        PiiCategory, QualityDimension, Sensitivity, Severity)
+
+IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 
 
 class ORM(BaseModel):
@@ -31,6 +33,18 @@ class ColumnSpec(BaseModel):
     type: str = "string"
     description: str = ""
     pii: bool = False
+    # §12 PII Inventory (いずれも任意。既存の pii フラグと互換)
+    pii_category: PiiCategory | None = None
+    identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN,
+                                        description="データ主体の識別子の種別 (例: customer_id, email)。消去の対象特定に使う")
+    processing_purposes: list[str] = Field(default_factory=list, description="処理目的 (Purpose カタログの ID)")
+    legal_basis: LegalBasis | None = None
+
+    @model_validator(mode="after")
+    def _infer_pii(self) -> ColumnSpec:
+        if self.pii_category is not None or self.identifier_type is not None:
+            self.pii = True  # カテゴリや識別子種別を持つカラムは PII
+        return self
 
 
 class AssetBase(BaseModel):

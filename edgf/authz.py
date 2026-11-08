@@ -96,6 +96,9 @@ PERMISSIONS: Mapping[str, Rule] = {
     "exception.request": rule(roles=(ADMIN,), domain_roles=(OWNER, STEWARD), relations=("owner", "steward"),
                               description="ポリシー例外の申請"),
     "exception.decide": rule(roles=(COMMITTEE, ADMIN), approval=True, description="ポリシー例外の承認/却下"),
+    # Privacy (§12)
+    "privacy.inventory.read": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER, STEWARD),
+                                   description="PII インベントリの参照"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -205,6 +208,20 @@ def require_read(db: Session, principal: Principal, asset: DataAsset) -> None:
         else:
             reason = f"clearance ({principal.clearance}) が資産の機密度 ({asset.sensitivity}) に達していません"
         deny(db, principal, "asset.read", entity_type="asset", entity_id=asset.id, reason=reason)
+
+
+def require_scope(db: Session, principal: Principal, action: str) -> ColumnElement[bool]:
+    """ドメイン横断の一覧で使う SQL 条件。全社ロールは全件、ドメイン内ロールは所属ドメインのみ。権限が無ければ 403。"""
+    r = PERMISSIONS[action]
+    if r.authenticated or principal.roles & r.roles:
+        return true()
+    if principal.roles & r.domain_roles:
+        if "*" in principal.domains:
+            return true()
+        if principal.domains:
+            return DataAsset.domain.in_(sorted(principal.domains))
+    deny(db, principal, action, entity_type="privacy", entity_id="*",
+         reason=f"この操作 ({action}: {r.description}) を行う権限がありません", required=r)
 
 
 def permission_matrix() -> dict[str, dict[str, Any]]:

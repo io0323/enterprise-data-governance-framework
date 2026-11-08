@@ -75,6 +75,26 @@ class IssueStatus(str, Enum):
     CLOSED = "closed"
 
 
+class PiiCategory(str, Enum):
+    """§12 PII のカテゴリ"""
+    IDENTIFIER = "identifier"
+    CONTACT = "contact"
+    FINANCIAL = "financial"
+    HEALTH = "health"
+    LOCATION = "location"
+    OTHER = "other"
+
+
+class LegalBasis(str, Enum):
+    """§12 処理の法的根拠 (GDPR 第6条をベースライン)"""
+    CONSENT = "consent"
+    CONTRACT = "contract"
+    LEGAL_OBLIGATION = "legal_obligation"
+    VITAL_INTEREST = "vital_interest"
+    PUBLIC_TASK = "public_task"
+    LEGITIMATE_INTEREST = "legitimate_interest"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

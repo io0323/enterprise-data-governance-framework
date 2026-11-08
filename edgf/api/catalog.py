@@ -18,7 +18,7 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import audit
+from edgf.services import audit, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
@@ -70,8 +70,7 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), princi
         raise HTTPException(409, f"already registered: {body.qualified_name}")
     _validate_domain(db, body.domain)
     data = body.model_dump(by_alias=False, mode="json")
-    if body.contains_pii is False and any(c.pii for c in body.schema_):
-        data["contains_pii"] = True  # カラムPIIフラグから自動推定 (§12 PII Inventory)
+    data["contains_pii"] = privacy.effective_contains_pii(data["contains_pii"], data["schema_"])  # §12 PII Inventory
     asset = DataAsset(**data)
     db.add(asset)
     db.flush()
@@ -152,6 +151,11 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
             authz.require(db, principal, "asset.update", domain=changes["domain"], entity_id=asset.id)
     for k, v in changes.items():
         setattr(asset, k, v)
+    if set(changes) & {"schema_", "contains_pii"}:  # PII カラムがあれば contains_pii を外せない (§12)
+        effective = privacy.effective_contains_pii(asset.contains_pii, asset.schema_)
+        if effective != asset.contains_pii:
+            asset.contains_pii = effective
+            changes["contains_pii"] = effective
     # 認証済み資産の構造・分類変更は再認証を要求する
     if asset.certification == Certification.CERTIFIED.value and set(changes) & {"schema_", "data_class", "sensitivity"}:
         asset.certification = Certification.DRAFT.value
