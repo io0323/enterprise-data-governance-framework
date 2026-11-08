@@ -14,7 +14,7 @@ from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
 from edgf.enums import LIFECYCLE_TRANSITIONS, Certification, LifecycleState
 from edgf.errors import ProblemError
-from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, utcnow
+from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_utc, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
@@ -146,7 +146,8 @@ def get_asset(asset_id: str, db: Session = Depends(get_session), principal: Prin
 def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     asset = load_asset(db, principal, asset_id, "asset.update")
     changes = body.model_dump(exclude_unset=True, by_alias=False, mode="json")
-    for key in ("privacy_technique", "privacy_params"):  # NOT NULL の項目。null は「変更なし」として扱う
+    # NOT NULL / JSON の項目。null を保存すると SQL の NULL ではなく JSON の null になるので「変更なし」として扱う
+    for key in ("privacy_technique", "privacy_params", "schema_", "tags", "controls"):
         if changes.get(key, "") is None:
             del changes[key]
     was_anonymized = privacy.is_anonymized(asset.privacy_technique, asset.privacy_params)
@@ -257,7 +258,7 @@ def grant_access(asset_id: str, body: AccessGrantIn, db: Session = Depends(get_s
                  principal: Principal = Depends(get_principal)):
     """Owner が利用者に資産の閲覧を承認する (restricted 資産の閲覧に必須)。"""
     asset = load_asset(db, principal, asset_id, "asset.access_grant")
-    expires = body.expires_at.replace(tzinfo=None)
+    expires = to_naive_utc(body.expires_at)
     now = utcnow()
     if expires <= now or expires > now + timedelta(days=MAX_GRANT_DAYS):
         raise HTTPException(422, f"expires_at は現在から{MAX_GRANT_DAYS}日以内の未来である必要があります (恒久承認は不可)")

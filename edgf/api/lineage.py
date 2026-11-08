@@ -10,7 +10,7 @@ from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal
-from edgf.models import DataAsset
+from edgf.models import DataAsset, fit_identifier
 from edgf.schemas import LineageEdgeIn, OpenLineageEvent
 from edgf.services import audit, lineage
 
@@ -34,7 +34,7 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
 
     データセット識別子は OpenLineage の dataset name を qualified_name として扱う。
     """
-    job = f"{event.job.namespace}/{event.job.name}" if event.job.namespace else event.job.name
+    job = fit_identifier(f"{event.job.namespace}/{event.job.name}" if event.job.namespace else event.job.name, 300)
     authz.require(db, principal, "lineage.write", entity_type="job", entity_id=job)
     if event.eventType != "COMPLETE":
         return {"accepted": True, "edges": 0, "note": f"{event.eventType} はエッジ確定対象外"}

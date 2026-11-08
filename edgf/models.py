@@ -4,6 +4,7 @@ Control Plane はデータ本体を保持せず、メタデータ・統制状態
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import date, datetime, timezone
 
@@ -16,6 +17,18 @@ from edgf.db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def to_naive_utc(value: datetime) -> datetime:
+    """DB には naive な UTC で保存する。オフセット付きの日時は UTC に変換する (値を捨てるとずれる)。"""
+    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+
+def fit_identifier(value: str, max_length: int) -> str:
+    """列の長さに収める。連結で生成した識別子が衝突しないよう、切り詰めた部分のハッシュを残す。"""
+    if len(value) <= max_length:
+        return value
+    return f"{value[:max_length - 65]}#{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
 def new_id() -> str:

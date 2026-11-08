@@ -2,7 +2,12 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 #   ./scripts/demo.sh
 # EDGF_ENV=production と組み合わせると API は起動を拒否する (edgf/auth.py)。
+#
+# DB だけを起動してテストする場合 (127.0.0.1 にのみ公開):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait db
 services:
+  db:
+    ports: ["127.0.0.1:${EDGF_DB_PORT:-55432}:5432"]
   api:
     environment:
       EDGF_ENV: development

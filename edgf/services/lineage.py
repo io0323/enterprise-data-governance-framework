@@ -36,7 +36,7 @@ def traverse(db: Session, start: str, direction: str, max_depth: int = 10) -> li
         node, depth = queue.popleft()
         if depth >= max_depth:
             continue
-        for edge in db.scalars(select(LineageEdge).where(cur_col == node)):
+        for edge in db.scalars(select(LineageEdge).where(cur_col == node).order_by(LineageEdge.id)):
             nxt = edge.target if direction == "downstream" else edge.source
             out.append({"from": edge.source, "to": edge.target, "job": edge.job,
                         "transformation": edge.transformation, "depth": depth + 1})

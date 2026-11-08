@@ -57,7 +57,8 @@ def delete_rule(rule_id: str, db: Session = Depends(get_session), principal: Pri
 def run_quality(asset_id: str, body: QualityRunIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """品質検査を実行し、閾値割れルールは Issue を自動起票する (Continuous Data Quality)。"""
     asset = load_asset(db, principal, asset_id, "quality.run")
-    rules = db.scalars(select(QualityRule).where(QualityRule.asset_id == asset.id)).all()
+    rules = db.scalars(select(QualityRule).where(QualityRule.asset_id == asset.id)
+                       .order_by(QualityRule.name, QualityRule.id)).all()
     if not rules:
         raise HTTPException(409, "品質ルールが未定義です")
     try:

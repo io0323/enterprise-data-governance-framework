@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import os
 
-os.environ["EDGF_DATABASE_URL"] = "sqlite://"
+# 既定はインメモリの SQLite。EDGF_TEST_DATABASE_URL で PostgreSQL などに向けられる (テストは全テーブルを削除する)
+os.environ["EDGF_DATABASE_URL"] = os.environ.get("EDGF_TEST_DATABASE_URL", "sqlite://")
 # 既存テストは dev モード (X-Actor ヘッダ) で実行する。JWT 経路は tests/test_auth.py で検証する
 os.environ["EDGF_AUTH_MODE"] = "dev"
 os.environ.setdefault("EDGF_ENV", "test")

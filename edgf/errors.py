@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from edgf.observability import REQUEST_ID_HEADER, current_request_id
@@ -119,6 +119,21 @@ async def _integrity(request: Request, exc: IntegrityError) -> JSONResponse:
                             type_="integrity-conflict")
 
 
+async def _data_error(request: Request, exc: DataError) -> JSONResponse:
+    # 列の長さの超過や NUL 文字など。SQLite では起きず PostgreSQL でだけ起きる入力の問題 (値は応答にもログにも出さない)
+    log.warning("invalid value rejected by database", extra={"fields": {"error": type(exc.orig).__name__}})
+    return problem_response(request, 422, "データベースに保存できない値が含まれています (長さの超過や制御文字など)",
+                            type_="invalid-value")
+
+
+async def _operational(request: Request, exc: OperationalError) -> JSONResponse:
+    # デッドロックや接続断など、時間をおけば回復する DB の障害。SQL などの内部情報は返さない
+    sqlstate = getattr(exc.orig, "sqlstate", None)
+    log.warning("database operation failed", extra={"fields": {"error": type(exc.orig).__name__, "sqlstate": sqlstate}})
+    return problem_response(request, 503, "データベースが処理できませんでした。時間をおいて再試行してください",
+                            type_="database-unavailable", headers={"Retry-After": "1"})
+
+
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     log.exception("unhandled exception", extra={"fields": {"path": request.url.path}})
     return problem_response(request, 500, "内部エラーが発生しました。request_id を添えて管理者に連絡してください",
@@ -129,4 +144,6 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_exception)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, _validation)  # type: ignore[arg-type]
     app.add_exception_handler(IntegrityError, _integrity)  # type: ignore[arg-type]
+    app.add_exception_handler(DataError, _data_error)  # type: ignore[arg-type]
+    app.add_exception_handler(OperationalError, _operational)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, _unhandled)

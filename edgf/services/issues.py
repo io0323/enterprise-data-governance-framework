@@ -11,6 +11,7 @@ from edgf.enums import ESCALATION_ORDER, EscalationLevel, IssueStatus
 from edgf.models import DataAsset, Issue, utcnow
 from edgf.services import audit
 
+MAX_TITLE_LENGTH = 300
 OPEN_STATES = (IssueStatus.OPEN.value, IssueStatus.IN_PROGRESS.value)
 
 
@@ -33,6 +34,7 @@ def open_issue(db: Session, actor: str, *, asset: DataAsset | None, kind: str, t
                                             Issue.source_ref == source_ref, Issue.status.in_(OPEN_STATES)))
         if dup:
             return None
+    title = title if len(title) <= MAX_TITLE_LENGTH else f"{title[:MAX_TITLE_LENGTH - 1]}…"  # 連結で列の長さを超えないように
     issue = Issue(asset_id=asset.id if asset else None, kind=kind, title=title, description=description,
                   severity=severity, source_ref=source_ref,
                   assignee=assignee_for(asset, level) or assignee_for(asset, EscalationLevel.STEWARD),

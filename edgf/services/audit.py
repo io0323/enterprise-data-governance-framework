@@ -3,17 +3,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
+import time
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from edgf.errors import ProblemError
-from edgf.models import AuditEvent, utcnow
+from edgf.models import AuditEvent, fit_identifier, utcnow
 from edgf.observability import request_id_var
 
 GENESIS = "0" * 64
+MAX_ENTITY_ID_LENGTH = 300
+# チェーンの先頭の取り合いで再試行する回数。書き込みは 1 件ずつしか進まないので、同時実行数より十分大きくする
+MAX_WRITE_ATTEMPTS = 100
 
 # 監査ログはハッシュチェーンのため消去できない。PII と生の識別子が入らないようにする (§12, §13)
 FORBIDDEN_PAYLOAD_KEYS = frozenset({
@@ -66,21 +72,66 @@ def _digest(prev_hash: str, ts: str, actor: str, action: str, entity_type: str, 
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+class AuditChainContention(ProblemError):
+    """再試行しても監査チェーンに書き込めなかった。リクエストごと失敗させる (証跡なしでは確定しない)。"""
+
+    def __init__(self) -> None:
+        super().__init__(503, "監査ログへの書き込みが混み合っています。時間をおいて再試行してください",
+                         type_="audit-chain-contention", headers={"Retry-After": "1"})
+
+
+def _latest_hash(db: Session) -> str:
+    return db.scalar(select(AuditEvent.hash).order_by(AuditEvent.seq.desc()).limit(1)) or GENESIS
+
+
+def _is_chain_conflict(exc: IntegrityError | OperationalError) -> bool:
+    """セーブポイントからの再試行で回復できる失敗か。
+
+    監査チェーン以外の一意制約違反は呼び出し元に返す。デッドロックも再試行しない: セーブポイントまで戻っても
+    それ以前に取った行ロックは解放されないので、相手が進めずライブロックになる。リクエストごと失敗させて
+    ロックを解放する (edgf.errors で 503)。
+    """
+    message = str(getattr(exc, "orig", exc))
+    if isinstance(exc, IntegrityError):
+        return "audit_events" in message
+    return "database is locked" in message  # SQLite の書き込みロック
+
+
+def _backoff(attempt: int) -> None:
+    time.sleep(random.uniform(0, min(0.002 * attempt, 0.05)))
+
+
 def record(db: Session, actor: str, action: str, entity_type: str, entity_id: str, payload: dict | None = None) -> AuditEvent:
-    last = db.scalar(select(AuditEvent).order_by(AuditEvent.seq.desc()).limit(1))
-    prev = last.hash if last else GENESIS
-    ts = utcnow()
+    """監査イベントをハッシュチェーンに追記する。
+
+    並行する書き込みは同じ prev_hash を読むことがあるが、UNIQUE 制約で 1 件だけが成功するので分岐しない。
+    失敗した側はセーブポイントまで戻して先頭を読み直す (リクエストの他の変更は失われない)。
+    勝った側のトランザクションが確定するまで UNIQUE 検査で待つので、書き込みはチェーン上で直列化される。
+    先頭を読み直せる必要があるので、分離レベルは READ COMMITTED が前提。
+    """
     payload = json.loads(json.dumps(payload or {}, default=str))
     guard_payload(payload)
+    entity_id = fit_identifier(entity_id, MAX_ENTITY_ID_LENGTH)
     rid = request_id_var.get()
-    ev = AuditEvent(
-        ts=ts, actor=actor, action=action, entity_type=entity_type, entity_id=entity_id, payload=payload,
-        request_id=rid, prev_hash=prev,
-        hash=_digest(prev, ts.isoformat(), actor, action, entity_type, entity_id, payload, rid),
-    )
-    db.add(ev)
-    db.flush()
-    return ev
+    db.flush()  # 他の変更のエラーをチェーンの衝突と混同しないよう、先に確定させる
+    for attempt in range(1, MAX_WRITE_ATTEMPTS + 1):
+        prev = _latest_hash(db)
+        ts = utcnow()
+        ev = AuditEvent(
+            ts=ts, actor=actor, action=action, entity_type=entity_type, entity_id=entity_id, payload=payload,
+            request_id=rid, prev_hash=prev,
+            hash=_digest(prev, ts.isoformat(), actor, action, entity_type, entity_id, payload, rid),
+        )
+        try:
+            with db.begin_nested():
+                db.add(ev)
+                db.flush()
+            return ev
+        except (IntegrityError, OperationalError) as e:
+            if not _is_chain_conflict(e):
+                raise
+            _backoff(attempt)
+    raise AuditChainContention()
 
 
 def verify_chain(db: Session) -> dict:

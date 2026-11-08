@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
@@ -11,6 +11,8 @@ from edgf.enums import (Certification, ConsentStatus, DataClass, ErasureStatus, 
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
+# 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
+Person = Annotated[str | None, Field(default=None, max_length=200)]
 
 
 class ORM(BaseModel):
@@ -21,7 +23,7 @@ class ORM(BaseModel):
 class DomainIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = ""
-    owner: str | None = None
+    owner: Person = None
 
 
 class DomainOut(ORM, DomainIn):
@@ -51,14 +53,14 @@ class ColumnSpec(BaseModel):
 
 
 class AssetBase(BaseModel):
-    name: str
+    name: str = Field(max_length=200)
     description: str = ""
-    domain: str | None = None
+    domain: str | None = Field(default=None, max_length=100)
     data_class: DataClass
     sensitivity: Sensitivity
-    owner: str | None = None
-    steward: str | None = None
-    custodian: str | None = None
+    owner: Person = None
+    steward: Person = None
+    custodian: Person = None
     is_cde: bool = False
     contains_pii: bool = False
     retention_days: int | None = Field(default=None, ge=1)
@@ -78,14 +80,14 @@ class AssetCreate(AssetBase):
 
 class AssetUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=200)
     description: str | None = None
-    domain: str | None = None
+    domain: str | None = Field(default=None, max_length=100)
     data_class: DataClass | None = None
     sensitivity: Sensitivity | None = None
-    owner: str | None = None
-    steward: str | None = None
-    custodian: str | None = None
+    owner: Person = None
+    steward: Person = None
+    custodian: Person = None
     is_cde: bool | None = None
     contains_pii: bool | None = None
     retention_days: int | None = Field(default=None, ge=1)
@@ -125,9 +127,9 @@ class LegalHoldChange(BaseModel):
 
 
 class OwnershipChange(BaseModel):
-    owner: str | None = None
-    steward: str | None = None
-    custodian: str | None = None
+    owner: Person = None
+    steward: Person = None
+    custodian: Person = None
 
 
 class AccessGrantIn(BaseModel):
@@ -150,9 +152,9 @@ class AccessGrantOut(ORM):
 
 # ---------- Glossary ----------
 class TermIn(BaseModel):
-    name: str
+    name: str = Field(max_length=200)
     definition: str
-    steward: str | None = None
+    steward: Person = None
     synonyms: list[str] = Field(default_factory=list)
 
 
@@ -163,11 +165,11 @@ class TermOut(ORM, TermIn):
 
 # ---------- Quality ----------
 class QualityRuleIn(BaseModel):
-    name: str
+    name: str = Field(max_length=200)
     dimension: QualityDimension
     rule_type: str = Field(description="not_null|unique|regex|range|allowed_values|freshness|referential|comparison|reference_match。"
                                        "allowed_values / referential は params.reference_set (<id>[@version]) で Reference Data を参照できる")
-    column: str | None = None
+    column: str | None = Field(default=None, max_length=200)
     params: dict[str, Any] = Field(default_factory=dict)
     threshold: float = Field(default=1.0, ge=0, le=1)
     severity: Severity = Severity.MEDIUM
@@ -196,16 +198,16 @@ class QualityRunOut(ORM):
 # ---------- Issue ----------
 class IssueIn(BaseModel):
     asset_id: str | None = None
-    kind: str = "other"
-    title: str
+    kind: str = Field(default="other", max_length=20)
+    title: str = Field(max_length=300)
     description: str = ""
     severity: Severity = Severity.MEDIUM
-    assignee: str | None = None
+    assignee: Person = None
 
 
 class IssueUpdate(BaseModel):
     status: IssueStatus | None = None
-    assignee: str | None = None
+    assignee: Person = None
     comment: str = ""
 
 
@@ -227,15 +229,15 @@ class IssueOut(ORM):
 
 # ---------- Lineage ----------
 class LineageEdgeIn(BaseModel):
-    source: str
-    target: str
-    job: str = "manual"
+    source: str = Field(max_length=300)
+    target: str = Field(max_length=300)
+    job: str = Field(default="manual", max_length=300)
     transformation: str = ""
 
 
 class OLDataset(BaseModel):
     namespace: str = ""
-    name: str
+    name: str = Field(max_length=300)
 
 
 class OLJob(BaseModel):
@@ -244,7 +246,7 @@ class OLJob(BaseModel):
 
 
 class OLRun(BaseModel):
-    runId: str
+    runId: str = Field(max_length=100)
 
 
 class OpenLineageEvent(BaseModel):
