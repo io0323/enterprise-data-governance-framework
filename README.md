@@ -33,6 +33,13 @@ EDGF_AUTH_MODE=dev uvicorn edgf.main:app --reload --no-access-log   # http://loc
 ./scripts/demo.sh                     # サンプルデータの投入 (dev モード前提)
 pytest -q --cov=edgf
 
+# テストとマイグレーションの往復を PostgreSQL で実行 (テストは全テーブルを削除するので専用の DB を使う)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait db   # 127.0.0.1:55432 に公開
+docker compose exec -T db psql -U edgf -d edgf -c "CREATE DATABASE edgf_test"
+export PG_TEST=postgresql+psycopg://edgf:edgf-local-only@127.0.0.1:55432/edgf_test
+EDGF_DATABASE_URL=$PG_TEST python scripts/verify_migrations.py
+EDGF_TEST_DATABASE_URL=$PG_TEST pytest -q
+
 # PostgreSQL (docker compose)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # 開発: dev モード
 docker compose up --build             # 既定: jwt モード (EDGF_OIDC_* が必要。未設定なら起動しない)
@@ -358,7 +365,7 @@ API は `/api/v1/reference-data` です。
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
   `{"type": "urn:edgf:problem:<slug>", "title", "status", "detail", "instance", "request_id", ...}`。
-  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `mdm-asset-missing`, `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
+  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `invalid-value`, `database-unavailable`, `audit-chain-contention`, `mdm-asset-missing`, `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
 - **ページネーション**: 一覧 API はすべて `limit`(1〜1000、既定 100。品質実行履歴のみ既定 20)と `offset` を受け付けます。後方互換のため本文は配列のままで、総件数は `X-Total-Count`、前後ページは `Link`(`rel="next"`/`"prev"`)ヘッダで返します。
 - **request_id**: `X-Request-ID` を受け取れば引き継ぎ(英数字と `._:-`、128 文字以内)、なければ採番してレスポンスヘッダとすべてのログ行に付けます。監査イベントにも記録し、ハッシュの対象に含めます(`GET /audit/events?request_id=...` で突き合わせできます)。
 - **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
@@ -367,7 +374,7 @@ API は `/api/v1/reference-data` です。
 
 - **Control Plane / Data Plane の分離**: 品質検査ではData Planeからレコードを受け取って評価し、レコード自体は保存しません。物理削除もData Planeが行い、Control Planeは削除指示と証跡だけを記録します。
 - **Policy as Code**: `policies/global.yaml` は Committee が管理します。`policies/domains/*.yaml` はポリシーを追加することだけができ、同じIDで上書きしようとするとロード時にエラーになります(連邦型ガバナンスで緩和を禁止するため)。評価器は dict を返す単純な作りなので、OPA などに置き換えられます。
-- **証跡**: SHA-256のハッシュチェーンにし、`prev_hash` にUNIQUE制約を付けて、同時書き込みでチェーンが分岐しないようにしています。
+- **証跡**: SHA-256のハッシュチェーンにし、`prev_hash` にUNIQUE制約を付けて、同時書き込みでチェーンが分岐しないようにしています。衝突した書き込みはセーブポイントまで戻して先頭を読み直し、同じリクエストの他の変更を失わずに再試行します。書き込みはチェーン上で直列化されるので、監査対象の更新の同時実行数は DB のトランザクション時間で律速されます。分離レベルは READ COMMITTED が前提です。
 - **ポータビリティ**: SQLAlchemy 2.0 を使い、SQLite と PostgreSQL のどちらでも動きます。メタデータの交換には OpenLineage 互換の形式を使います。マイグレーションは方言に依存しない DDL だけで書き、制約名は命名規約で固定しています。
 - **Observability(§19)**: ログは標準ライブラリだけで JSON 化しています(ログ基盤製品に依存しないため)。トレーシングは OpenTelemetry(ベンダー中立の OSS 標準)を任意で有効化でき、未導入でも動作します。
 
@@ -395,6 +402,13 @@ API は `/api/v1/reference-data` です。
 - 監査ガードはキーとパターンによる検査です。形式に特徴の無い識別子(顧客 ID など)は検出できないので、生の識別子を payload に渡さない実装とテスト(全テーブルの走査)で担保しています
 - `POST /consents/check` は高頻度の呼び出しを想定し、監査ログに記録しません。Purpose の `retention_days` はカタログ上の情報で、保持期限の自動執行とは連動していません(Phase 12 で対応)
 - ベクトル資産への消去の伝播は Phase 10 で対応します
+- **PostgreSQL 16 で検証済みです**(CI で SQLite と PostgreSQL の両方について pytest とマイグレーションの往復を毎回実行します)。残っている差異は次のとおりです
+  - `ilike` の非 ASCII: PostgreSQL は `É` と `é` を同一視しますが、SQLite は ASCII だけです。検索結果が DB で変わるのはこの場合だけです
+  - 照合順序: 一覧の並びは DB の照合順序に従います。ページングは一意キーで安定していますが、`postgres:16-alpine` 以外(glibc の `en_US.UTF-8` など)では大文字小文字や記号の順序が変わることがあります
+  - NUL 文字: PostgreSQL は 422 (`invalid-value`) で拒否しますが、SQLite は受け付けます
+  - インメモリの SQLite は 1 接続を共有するので、並行書き込みのテストは PostgreSQL でだけ実行します
+- デッドロック(リクエスト内で行ロックと監査チェーンの先頭を逆順で取り合う場合)は再試行せず、片方を 503(`database-unavailable`)で失敗させます。クライアントの再試行で回復します
+- 同時実行で重複を防ぐ一意制約が無い検査があります。`POST /privacy/erasure-requests` の「同じ主体の未完了の要求」は、同時に受け付けると 2 件できる場合があります(業務上は重複して処理しても結果は同じです)
 - **MDM Hub の参照実装はありません**。候補の絞り込み、値の保存と履歴、再構成の実行、利用システムへの配信(§8 Synchronization、逆流更新の変更申請を含む)は Data Plane の責務で、本リポジトリには含みません
 - Golden Record どうしのマージ(ソースを経由しない統合)は未実装です。裁定と自動マージはソース単位です
 - 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください

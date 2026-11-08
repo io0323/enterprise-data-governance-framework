@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,postgres]"
+      - name: マイグレーションの往復
+        env:
+          EDGF_DATABASE_URL: sqlite:///./ci-migrations.db
+        run: python scripts/verify_migrations.py
+      - name: pytest
+        run: pytest -q --cov=edgf/services --cov-fail-under=85
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: edgf_ci
+          POSTGRES_USER: edgf
+          POSTGRES_PASSWORD: edgf-ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U edgf"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: edgf-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,postgres]"
+      - name: マイグレーションの往復
+        env:
+          EDGF_DATABASE_URL: postgresql+psycopg://edgf:edgf-ci-only@localhost:5432/edgf_ci
+        run: python scripts/verify_migrations.py
+      - name: pytest
+        env:
+          EDGF_TEST_DATABASE_URL: postgresql+psycopg://edgf:edgf-ci-only@localhost:5432/edgf_ci
+          EDGF_REQUIRE_DIALECT: postgresql  # 接続先を間違えて SQLite で素通りしないようにする
+          PGTZ: Asia/Tokyo                  # セッションのタイムゾーンに依存しないことも確認する
+        run: pytest -q --cov=edgf/services --cov-fail-under=85

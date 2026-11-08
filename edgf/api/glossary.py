@@ -20,7 +20,7 @@ router = APIRouter(prefix="/glossary", tags=["glossary"])
 def _out(db: Session, principal: Principal, t: GlossaryTerm) -> TermOut:
     # 閲覧できない資産 (ABAC) は紐付け先から除外する
     return TermOut(id=t.id, name=t.name, definition=t.definition, steward=t.steward, synonyms=t.synonyms or [],
-                   asset_ids=[a.id for a in t.assets if authz.can_read(db, principal, a)])
+                   asset_ids=sorted(a.id for a in t.assets if authz.can_read(db, principal, a)))
 
 
 def _get(db: Session, term_id: str) -> GlossaryTerm:

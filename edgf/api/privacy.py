@@ -1,8 +1,6 @@
 """§12 Data Privacy API."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,7 +10,7 @@ from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_asset_or_404, get_principal
 from edgf.enums import ConsentStatus, LegalBasis, LifecycleState, PiiCategory
-from edgf.models import Consent, DataAsset, Domain, ErasureRequest, ErasureTask, PrivacyPurpose, utcnow
+from edgf.models import Consent, DataAsset, Domain, ErasureRequest, ErasureTask, PrivacyPurpose, to_naive_utc, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (ConsentCheckIn, ConsentIn, ConsentOut, ConsentRecorded, ErasureRejectIn, ErasureRequestDetail,
                           ErasureRequestIn, ErasureRequestOut, ErasureTaskCompleteIn, ErasureTaskOut, ErasureWorkItem,
@@ -62,10 +60,6 @@ def _subject_ref(body: SubjectIdentifier) -> str:
         return to_subject_ref(body.identifier_type, body.identifier.get_secret_value())
     except ValueError as e:
         raise HTTPException(422, "identifier が空です") from e
-
-
-def _naive_utc(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
 
 
 # ---------------- Purpose カタログ (§12) ----------------
@@ -120,7 +114,7 @@ def record_consent(body: ConsentIn, db: Session = Depends(get_session), principa
     """同意の取得・撤回を記録する (追記のみ)。監査ログには subject_ref も残さず、行の seq で参照する。"""
     purpose = _get_purpose(db, body.purpose_id)
     authz.require(db, principal, "privacy.consent.write", domain=purpose.domain, entity_type="purpose", entity_id=purpose.id)
-    expires = _naive_utc(body.expires_at) if body.expires_at else None
+    expires = to_naive_utc(body.expires_at) if body.expires_at else None
     if expires is not None and (body.status != ConsentStatus.GRANTED or expires <= utcnow()):
         raise HTTPException(422, "expires_at は status=granted のときに未来の日時で指定してください")
     row = consent.record(db, subject_ref=_subject_ref(body), purpose_id=purpose.id, status=body.status.value,

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import MetaData, create_engine
+from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -32,7 +32,12 @@ def make_engine(url: str) -> Engine:
         kwargs: dict = {"connect_args": {"check_same_thread": False}}
         if url in ("sqlite://", "sqlite:///:memory:"):
             kwargs["poolclass"] = StaticPool
-        return create_engine(url, **kwargs)
+        engine = create_engine(url, **kwargs)
+        # pysqlite は DML まで BEGIN を発行しないので、先頭の SAVEPOINT の RELEASE が確定になってしまう。
+        # トランザクションを明示して、監査の再試行で使うセーブポイントを PostgreSQL と同じ意味にする
+        event.listen(engine, "connect", lambda conn, _: setattr(conn, "isolation_level", None))
+        event.listen(engine, "begin", lambda conn: conn.exec_driver_sql("BEGIN"))
+        return engine
     return create_engine(url, pool_pre_ping=True)
 
 

@@ -4,7 +4,7 @@ Golden Record の値は Data Plane (MDM Hub) の責務で、Control Plane には
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
@@ -16,7 +16,7 @@ from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
 from sqlalchemy import select
 
-from edgf.models import DataAsset, GoldenRecord, GoldenVersion, MdmReview, MdmRuleApproval
+from edgf.models import DataAsset, GoldenRecord, GoldenVersion, MdmReview, MdmRuleApproval, to_naive_utc
 from edgf.pagination import paginate
 from edgf.schemas import (MdmComposeIn, MdmMatchIn, MdmMatchOut, MdmReviewDecision, MdmReviewOut, MdmSourceRecord,
                           MdmSplitIn, MdmVerifyIn, MdmXrefLookupIn)
@@ -287,8 +287,7 @@ def get_golden_record(entity_type: str, golden_id: str, as_of: datetime | None =
     load_asset(db, principal, _master_asset(db, entity).id, "mdm.read")
     golden = _golden(db, entity, golden_id)
     if as_of is not None:
-        at = as_of.astimezone(timezone.utc).replace(tzinfo=None) if as_of.tzinfo else as_of
-        version = mdm.version_at(db, golden.id, at)
+        version = mdm.version_at(db, golden.id, to_naive_utc(as_of))
         if version is None:
             raise HTTPException(404, "指定した時点の版はありません")
     else:

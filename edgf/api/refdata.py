@@ -1,7 +1,7 @@
 """§8 Reference Data API: 全社標準コードの版管理."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
-from edgf.models import DataAsset, RefDataSet, RefDataVersion
+from edgf.models import DataAsset, RefDataSet, RefDataVersion, to_naive_utc
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import RefCodeIn, RefDataSetIn, RefDataSetOut, RefDataVersionIn
 from edgf.services import audit, refdata
@@ -118,7 +118,7 @@ def latest_version(set_id: str, db: Session = Depends(get_session), principal: P
 def version_as_of(set_id: str, at: datetime = Query(description="この時点で公開されていた版と、その時点で有効なコード値を返す"),
                   db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     _readable_set(db, principal, set_id)
-    when = at.astimezone(timezone.utc).replace(tzinfo=None) if at.tzinfo else at
+    when = to_naive_utc(at)
     version = refdata.published_as_of(db, set_id, when)
     if version is None:
         raise HTTPException(404, "指定した時点の公開版はありません")

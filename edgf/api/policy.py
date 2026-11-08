@@ -11,7 +11,7 @@ from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
-from edgf.models import DataAsset, PolicyException, utcnow
+from edgf.models import DataAsset, PolicyException, to_naive_utc, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import ExceptionDecision, ExceptionIn, ExceptionOut
 from edgf.services import audit, issues
@@ -72,7 +72,7 @@ def request_exception(body: ExceptionIn, db: Session = Depends(get_session), pri
     load_asset(db, principal, body.asset_id, "exception.request")
     if body.policy_id not in {p.id for p in get_policies()}:
         raise HTTPException(422, f"unknown policy: {body.policy_id}")
-    expires = body.expires_at.replace(tzinfo=None)
+    expires = to_naive_utc(body.expires_at)
     now = utcnow()
     if expires <= now:
         raise HTTPException(422, "expires_at must be in the future")

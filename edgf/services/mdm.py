@@ -15,7 +15,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from edgf.config import settings
 from edgf.enums import ESCALATION_ORDER
-from edgf.models import DataAsset, GoldenRecord, GoldenVersion, Issue, MdmReview, MdmSubjectLink, MdmXref, utcnow
+from edgf.models import DataAsset, GoldenRecord, GoldenVersion, Issue, MdmReview, MdmSubjectLink, MdmXref, to_naive_utc, utcnow
 from edgf.services import issues
 from edgf.services.mdm_rules import Entity
 from edgf.services.subject_ref import to_subject_ref
@@ -88,9 +88,7 @@ def prepare_record(entity: Entity, source_system: str, key: str, attributes: Map
         ref = make_source_ref(source_system, key)
     except ValueError as e:
         raise MdmInputError("key が空です") from e
-    if updated_at is not None and updated_at.tzinfo is not None:
-        updated_at = updated_at.astimezone(timezone.utc).replace(tzinfo=None)
-    return SourceRecord(source_system, key, attributes, updated_at, ref)
+    return SourceRecord(source_system, key, attributes, to_naive_utc(updated_at) if updated_at else None, ref)
 
 
 def exact_key_match(entity: Entity, a: Mapping[str, Any], b: Mapping[str, Any]) -> tuple[str, ...] | None:

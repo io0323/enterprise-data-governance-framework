@@ -47,7 +47,9 @@ ROLE_DEFAULT_CLEARANCE: Mapping[str, str] = {
 ASYMMETRIC_ALGORITHMS = frozenset({"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
                                    "ES256", "ES384", "ES512", "EdDSA"})
 
-_DEV_ACTOR = re.compile(r"^[A-Za-z0-9._@:+\-]{1,200}$")
+# 監査の actor 列は 200 文字。dev モードは "dev:" を付けて記録するので 196 文字まで
+MAX_SUBJECT_LENGTH = 200
+_DEV_ACTOR = re.compile(r"^[A-Za-z0-9._@:+\-]{1,196}$")
 
 
 class AuthConfigError(RuntimeError):
@@ -150,7 +152,7 @@ class DevAuthenticator:
         if not actor:
             raise AuthError("dev モードでは X-Actor ヘッダが必要です", error="invalid_request")
         if not _DEV_ACTOR.match(actor):
-            raise AuthError("X-Actor の形式が不正です (英数字と ._@:+- の 200 文字以内)", error="invalid_request")
+            raise AuthError("X-Actor の形式が不正です (英数字と ._@:+- の 196 文字以内)", error="invalid_request")
         roles = normalize_roles(request.headers.get("X-Roles"))
         return Principal(
             subject=actor, roles=roles,
@@ -221,6 +223,8 @@ class JwtAuthenticator:
         subject = get_claim(claims, c.claim_subject)
         if not isinstance(subject, str) or not subject.strip():
             raise AuthError(f"subject claim '{c.claim_subject}' がありません")
+        if len(subject.strip()) > MAX_SUBJECT_LENGTH:
+            raise AuthError(f"subject claim は {MAX_SUBJECT_LENGTH} 文字以内にしてください")
         roles = normalize_roles(get_claim(claims, c.claim_roles), self._role_map)
         return Principal(
             subject=subject.strip(), roles=roles,
