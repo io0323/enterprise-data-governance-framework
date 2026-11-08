@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
-                        PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity)
+                        PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -673,3 +673,49 @@ class ModelVersionOut(ORM):
     suspended_reason: str | None
     retired_at: datetime | None
     dataset_version_ids: list[str] = Field(default_factory=list)
+
+
+class TrainingApprovalIn(AiInput):
+    license_status: Literal["verified", "unverified", "incompatible"] = Field(description="ライセンス確認の結果")
+    license_ref: str = Field(default="", max_length=2000, description="確認結果の外部参照")
+    bias_evaluation_ref: str = Field(default="", max_length=2000, description="バイアス評価の外部参照")
+
+
+class TrainingDecisionIn(AiInput):
+    approve: bool
+    comment: str = Field(default="", max_length=1000, description="却下のときは必須。個人情報を含めないこと")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> TrainingDecisionIn:
+        if not self.approve and not self.comment.strip():
+            raise ValueError("却下には comment が必要です")
+        return self
+
+
+class TrainingDecisionOut(ORM):
+    slot: str
+    required_subject: str | None
+    asset_ids: list[str]
+    decision: str
+    decided_by: str | None
+    decided_at: datetime | None
+    comment: str
+
+
+class TrainingApprovalOut(ORM):
+    id: str
+    dataset_version_id: str
+    status: TrainingApprovalStatus
+    requested_by: str
+    requested_at: datetime
+    decided_at: datetime | None
+    license_status: str
+    license_ref: str
+    bias_evaluation_ref: str
+    consent_summary: dict[str, Any]
+    quality_summary: list[dict[str, Any]]
+    decisions: list[TrainingDecisionOut]
+
+
+class ModelSuspendIn(AiInput):
+    reason: str = Field(min_length=1, max_length=1000, description="停止の理由。個人情報を含めないこと")

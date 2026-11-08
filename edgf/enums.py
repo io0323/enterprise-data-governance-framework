@@ -159,6 +159,14 @@ class ModelVersionStatus(str, Enum):
     RETIRED = "retired"
 
 
+class TrainingApprovalStatus(str, Enum):
+    """§14 Training Data / §13 Approval: 学習利用の承認"""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

@@ -50,3 +50,34 @@ def model_version(client, model_id, dataset_version_ids, version="m1", **kw) -> 
     r = client.post(f"{API}/ai/assets/{model_id}/model-versions", headers=CUSTODIAN, json=body)
     assert r.status_code == 201, r.text
     return r.json()
+
+
+def run_quality(client, asset_id, score_ok=True) -> None:
+    """構成元の品質検査の実績を作る (値は評価後に破棄される)。"""
+    qa = U("qa", "admin,owner,custodian", "*")
+    r = client.post(f"{API}/quality/assets/{asset_id}/rules", headers=qa, json={
+        "name": "not-null", "dimension": "completeness", "rule_type": "not_null", "column": "id"})
+    assert r.status_code == 201, r.text
+    r = client.post(f"{API}/quality/assets/{asset_id}/runs", headers=qa,
+                    json={"records": [{"id": 1 if score_ok else None}]})
+    assert r.status_code == 201, r.text
+
+
+def request_approval(client, dataset_version_id, **kw):
+    body = {"license_status": "verified", "license_ref": "lic://1", "bias_evaluation_ref": "eval://1", **kw}
+    return client.post(f"{API}/ai/dataset-versions/{dataset_version_id}/training-approvals", headers=OWNER, json=body)
+
+
+def approve_dataset(client, dataset_version_id, source_owners=("src-owner",), committee=False) -> dict:
+    """全 Owner (と必要なら Committee) の承認を経て Dataset Version を approved にする。"""
+    r = request_approval(client, dataset_version_id)
+    assert r.status_code == 201, r.text
+    approval = r.json()
+    for owner in source_owners:
+        r = client.post(f"{API}/ai/training-approvals/{approval['id']}/decision", headers=U(owner), json={"approve": True})
+        assert r.status_code == 200, r.text
+    if committee:
+        r = client.post(f"{API}/ai/training-approvals/{approval['id']}/decision", headers=COMMITTEE, json={"approve": True})
+        assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved", r.text
+    return r.json()

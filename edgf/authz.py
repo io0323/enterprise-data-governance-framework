@@ -139,6 +139,11 @@ PERMISSIONS: Mapping[str, Rule] = {
     "ai.dataset_version.register": rule(relations=ASSET_RELATIONS, description="Dataset Version の登録"),
     "ai.model_version.register": rule(relations=ASSET_RELATIONS,
                                       description="Model Version の登録、デプロイと利用先の記録"),
+    "ai.training.request": rule(relations=("owner", "steward"), description="学習利用の承認の申請と取り下げ"),
+    "ai.training.approve": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                                description="学習利用の承認 (構成元の資産の Owner と Committee)"),
+    "ai.model.approve": rule(relations=("owner",), approval=True, description="Model Version の承認と再開"),
+    "ai.model.suspend": rule(roles=(COMMITTEE,), relations=("owner",), description="Model Version の停止と廃止"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

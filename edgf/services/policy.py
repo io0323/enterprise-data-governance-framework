@@ -18,7 +18,8 @@ from edgf.models import DataAsset, PolicyException, QualityRule, utcnow, term_as
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
-               "anonymization_k", "pseudonymization_controls", "pii_columns_documented", "mdm_entity_defined"}
+               "anonymization_k", "pseudonymization_controls", "pii_columns_documented", "mdm_entity_defined",
+               "ai_training_approved"}
 
 
 class PolicyLoadError(Exception):
@@ -91,6 +92,9 @@ def _run_check(db: Session, asset: DataAsset, check: dict) -> tuple[bool | None,
     if t == "mdm_entity_defined":
         from edgf.services.mdm_rules import check_entity_defined
         return check_entity_defined(db, asset)
+    if t == "ai_training_approved":
+        from edgf.services.ai_training import check_training_approved
+        return check_training_approved(db, asset)
     if t in ("anonymization_k", "pseudonymization_controls", "pii_columns_documented"):
         from edgf.services import privacy
         return {"anonymization_k": privacy.check_anonymization_k,

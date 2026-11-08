@@ -492,6 +492,41 @@ class ModelVersion(Base):
     datasets: Mapped[list[DatasetVersion]] = relationship(secondary=model_version_dataset)
 
 
+class TrainingApproval(Base):
+    """§14 Training Data: Dataset Version ごとの学習利用の承認。controls の自己申告ではなく、この記録で AI-001 を判定する。"""
+    __tablename__ = "training_approvals"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dataset_version_id: Mapped[str] = mapped_column(ForeignKey("dataset_versions.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    requested_by: Mapped[str] = mapped_column(String(200))
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    license_status: Mapped[str] = mapped_column(String(20))
+    license_ref: Mapped[str] = mapped_column(String(2000), default="")
+    bias_evaluation_ref: Mapped[str] = mapped_column(String(2000), default="")
+    # Control Plane が計算して添付する (申請者の申告ではない)。値は含まず、カラム名とスコアだけ
+    consent_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    quality_summary: Mapped[list] = mapped_column(JSON, default=list)
+    decisions: Mapped[list[TrainingApprovalDecision]] = relationship(
+        back_populates="approval", cascade="all, delete-orphan", order_by="TrainingApprovalDecision.slot")
+
+
+class TrainingApprovalDecision(Base):
+    """承認の枠。Owner ごとに 1 つ (owner:<subject>)、必要なら Committee に 1 つ (committee)。全枠が揃うと承認になる。"""
+    __tablename__ = "training_approval_decisions"
+    __table_args__ = (UniqueConstraint("approval_id", "slot", name="uq_training_approval_slot"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("training_approvals.id", ondelete="CASCADE"), index=True)
+    slot: Mapped[str] = mapped_column(String(210))
+    required_subject: Mapped[str | None] = mapped_column(String(200))  # Committee の枠は NULL
+    asset_ids: Mapped[list] = mapped_column(JSON, default=list)  # この Owner が担当する構成元
+    decision: Mapped[str] = mapped_column(String(20), default="pending")  # pending / approved / rejected
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    comment: Mapped[str] = mapped_column(Text, default="")
+    approval: Mapped[TrainingApproval] = relationship(back_populates="decisions")
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"
