@@ -49,11 +49,19 @@ Python 3.10+ / FastAPI / SQLAlchemy 2.0 / Pydantic v2 / PostgreSQL(SQLite でも
 受け入れ基準: `alembic upgrade head` で空の DB が構築できる。全 API のエラーが Problem Details 形式で返る。
 
 ## Phase 7: 認証・認可(§4 / §11)
-- X-Actor ヘッダを廃止し、OIDC の JWT 検証に置き換える(JWKS URL は設定で指定、テストはローカル鍵で署名)。
+- 認証方式を EDGF_AUTH_MODE で切り替える。既定値は jwt(OIDC の JWT 検証。JWKS URL は設定で指定、テストはローカル鍵で署名)。
+- 移行期間用に dev モードを設ける。dev モードのときだけ X-Actor ヘッダを受け付ける。安全策として次をすべて実装する:
+  ・EDGF_ENV=production と dev モードが同時に指定されたら起動を拒否する(fail fast)
+  ・dev モードで起動したら WARNING ログを出し、/health の応答に auth_mode を含める
+  ・dev モード中は監査ログの actor を "dev:<名前>" として記録し、JWT 由来の操作と区別する
+  ・jwt モードでヘッダが無い、またはトークンが不正な場合は 401 を返す。X-Actor ヘッダは無視する
+- Dockerfile と docker-compose.yml の既定は jwt にする。dev モードは docker-compose.dev.yml(override)でだけ有効にする。scripts/demo.sh は dev モードを前提にし、JWT を使う版の手順も README に書く。
+- テスト: 既存テストは dev モードで動かし続ける。JWT 経路、401/403、本番で dev モードを拒否する動作は新しいテストで検証する。
+- dev モードの廃止条件: Phase 13(UI)でローカル IdP(例: Keycloak のコンテナ)を使った開発手順が整った時点で、廃止するかどうかを再判断する。
 - RBAC のロール: admin / committee / owner / steward / custodian / consumer。
 - ABAC: 資産の sensitivity と利用者の clearance でアクセスを判定する。restricted は Owner の承認が必要。
 - 認可ロジックは edgf/authz.py に集約し、Policy as Code と同じく宣言的に定義する。
-受け入れ基準: 資産ごとの Owner / Steward 判定が JWT の subject と一致する。権限外の操作は 403 になり、その記録が監査ログに残る。
+受け入れ基準: 資産ごとの Owner / Steward 判定が JWT の subject と一致する。権限外の操作は 403 になり、その記録が監査ログに残る。 EDGF_ENV=production かつ EDGF_AUTH_MODE=dev では起動しない。
 
 ## Phase 8: Data Privacy(§12 / §10)
 - PII Inventory API(カラム単位の PII、処理目的、法的根拠)。
