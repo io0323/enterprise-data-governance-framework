@@ -101,3 +101,22 @@ def subscribe(client, subscriber, port_id, purpose_id="analytics", code=201, **k
     r = client.post(f"{MESH}/subscriptions", headers=U(subscriber), json={"output_port_id": port_id, "purpose_id": purpose_id, **kw})
     assert r.status_code == code, r.text
     return r.json()
+
+
+PARTY_SCHEMA = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+                "properties": {"party_id": {"type": "integer"}, "total": {"type": ["number", "null"]}},
+                "required": ["party_id"]}
+
+
+def cdm_asset(client, qn="cdm.party") -> dict:
+    r = client.post(f"{API}/assets", headers=ADMIN, json={"qualified_name": qn, "name": qn, "data_class": "metadata",
+                                                          "sensitivity": "public", "owner": "cdm-owner"})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def import_cdm(client, asset_id, entity="party", version="1", schema=None, code=201, headers=COMMITTEE):
+    r = client.post(f"{MESH}/cdm/imports", headers=headers, json={
+        "entity": entity, "asset_id": asset_id, "version": version, "json_schema": PARTY_SCHEMA if schema is None else schema})
+    assert r.status_code == code, r.text
+    return r.json()

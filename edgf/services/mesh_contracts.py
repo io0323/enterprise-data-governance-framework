@@ -15,7 +15,7 @@ from edgf.enums import ContractStatus, EscalationLevel
 from edgf.errors import ProblemError
 from edgf.models import (ContractVersion, DataAsset, DataContract, DataProduct, OutputPort, PrivacyPurpose, QualityRule,
                          fit_identifier, to_naive_utc, utcnow)
-from edgf.services import audit, issues, mesh_compat, mesh_subscriptions
+from edgf.services import audit, issues, mesh_cdm, mesh_compat, mesh_subscriptions
 from edgf.services.mesh import MeshStateError, MeshValidationError
 from edgf.services.mesh_compat import Bump
 from edgf.services.quality import latest_run
@@ -138,7 +138,17 @@ def check(db: Session, contract: DataContract, asset: DataAsset, proposal: Mappi
                   "breaking_changes": [c for c in changes if c["breaking"]], "required_bump": need.name.lower(),
                   "suggested_version": mesh_compat.next_version(old, need), "allowed": allowed}
     result["quality"] = quality_status(db, asset, merged.get("quality_sla"))
+    result["conformance"] = conformance(db, merged)
     return result
+
+
+def conformance(db: Session, content: Mapping[str, Any]) -> dict[str, Any] | None:
+    """conforms_to があれば準拠を検証する。宣言が無ければ None。"""
+    target = content.get("conforms_to")
+    if not target:
+        return None
+    violations = mesh_cdm.validate(db, target, content.get("schema_") or [], content.get("cdm_mappings") or {})
+    return {"conforms_to": target, "ok": not violations, "violations": violations}
 
 
 def _check_publishable(db: Session, row: ContractVersion, baseline: ContractVersion | None, asset: DataAsset) -> tuple[list[dict[str, Any]], Bump | None]:
@@ -147,6 +157,10 @@ def _check_publishable(db: Session, row: ContractVersion, baseline: ContractVers
     level = SENSITIVITY_LEVELS.index
     if level(row.sensitivity) < level(authz.effective_sensitivity(asset)):
         raise MeshValidationError(f"Contract の機密度 {row.sensitivity} が資産の機密度 {authz.effective_sensitivity(asset)} を下回っています")
+    result = conformance(db, view(row))
+    if result and not result["ok"]:
+        raise ProblemError(409, f"{result['conforms_to']} に準拠していません (§15 Standardization)",
+                           type_="contract-not-conforming", violations=result["violations"])
     if baseline is None:
         return [], None
     old, new = (baseline.major, baseline.minor, baseline.patch), (row.major, row.minor, row.patch)
@@ -283,3 +297,33 @@ def check_drift(db: Session, actor: str, asset: DataAsset) -> list[dict[str, Any
 
 def drift_ref(contract_id: str) -> str:
     return fit_identifier(f"mesh-drift:{contract_id}", 100)
+
+
+def revalidate_for_cdm(db: Session, actor: str, entity: str, version: str) -> list[dict[str, Any]]:
+    """CDM の新しい版で、その実体に準拠している Contract の最新の公開版を再検証する。不合格なら Owner に Issue を起票する。
+
+    Contract は宣言した版に準拠したままなので、状態は変えない (移行の判断は Owner が行う)。
+    """
+    target = f"{entity}@{version}"
+    results = []
+    for contract in db.scalars(select(DataContract).order_by(DataContract.created_at, DataContract.id)):
+        row = latest_published(db, contract)
+        if row is None or not row.conforms_to or row.conforms_to.split("@")[0] != entity:
+            continue
+        violations = mesh_cdm.validate(db, target, row.schema_, row.cdm_mappings or {})
+        item = {"contract_id": contract.id, "version": row.version, "conforms_to": row.conforms_to,
+                "ok": not violations, "violations": violations, "issue_id": None}
+        if violations:
+            product = db.get(DataProduct, contract.product_id)
+            port = db.get(OutputPort, contract.output_port_id)
+            issue = issues.open_issue(
+                db, actor, asset=db.get(DataAsset, port.asset_id), kind="contract", severity="high",
+                source_ref=fit_identifier(f"mesh-cdm:{contract.id}:{target}", 100), level=EscalationLevel.OWNER,
+                title=f"[CDM] {product.name}: Contract {row.version} は {target} に準拠していません",
+                description="; ".join(violations)[:2000])
+            if issue:
+                issue.assignee = product.owner
+                item["issue_id"] = issue.id
+        results.append(item)
+    db.flush()
+    return results

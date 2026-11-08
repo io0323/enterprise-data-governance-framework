@@ -1065,3 +1065,33 @@ class ExpediteRetireIn(MeshInput):
         if not self.reason.strip():
             raise ValueError("期間の短縮には reason が必要です")
         return self
+
+
+class CdmImportIn(MeshInput):
+    entity: str = Field(pattern=r"^[A-Za-z0-9._-]{1,120}$", description="エンティティ名")
+    asset_id: str = Field(max_length=36, description="data_class=metadata の Catalog 資産")
+    version: str = Field(pattern=r"^[A-Za-z0-9._-]{1,50}$", description="外部で定義された版")
+    json_schema: dict[str, Any] = Field(description="JSON Schema の一部 (object / properties / required / type / format)")
+    source_uri: ExternalUri | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> CdmImportIn:
+        check_external_uri(self.source_uri)
+        return self
+
+
+class CdmEntityOut(ORM):
+    name: str
+    asset_id: str
+    created_by: str
+    created_at: datetime
+
+
+class CdmVersionOut(ORM):
+    entity: str
+    version: str
+    json_schema: dict[str, Any]
+    content_hash: str
+    source_uri: str | None
+    imported_by: str
+    imported_at: datetime

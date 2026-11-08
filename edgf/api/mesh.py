@@ -14,12 +14,12 @@ from edgf.db import get_session
 from edgf.api.lineage import redacted_impact
 from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
-from edgf.models import ContractVersion, DataAsset, DataContract, DataProduct, MeshSubscription, OutputPort
+from edgf.models import CdmEntity, CdmVersion, ContractVersion, DataAsset, DataContract, DataProduct, MeshSubscription, OutputPort
 from edgf.pagination import Page, page_params, paginate
-from edgf.schemas import (ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
+from edgf.schemas import (CdmEntityOut, CdmImportIn, CdmVersionOut, ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
                           OutputPortIn, OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate,
                           SubscriptionDecisionIn, SubscriptionIn, SubscriptionMigrateIn, SubscriptionOut)
-from edgf.services import audit, mesh, mesh_contracts, mesh_subscriptions
+from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_subscriptions
 from edgf.services.mesh import MeshStateError, MeshValidationError
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
@@ -407,4 +407,56 @@ def cancel_subscription(subscription_id: str, db: Session = Depends(get_session)
     mesh_contracts.lock(db, db.get(DataContract, row.contract_id))
     _guard(mesh_subscriptions.cancel, db, row)
     audit.record(db, principal.audit_actor, "mesh.subscription.cancel", "subscription", row.id, {"status": row.status})
+    return row
+
+
+# ---------------- CDM の取り込み (外部の標準の写し。作成・編集・設計の機能は持たない) ----------------
+@router.post("/cdm/imports", status_code=201)
+def import_cdm(body: CdmImportIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """版を取り込む (Committee の承認)。取り込んだ版は変更できない。準拠している Contract の再検証の結果を返す。"""
+    authz.require(db, principal, "cdm.import", entity_type="cdm", entity_id=f"{body.entity}@{body.version}")
+    row, warnings = _guard(mesh_cdm.import_version, db, entity=body.entity, asset_id=body.asset_id, version=body.version,
+                           json_schema=body.json_schema, source_uri=body.source_uri, actor=principal.subject)
+    results = mesh_contracts.revalidate_for_cdm(db, principal.audit_actor, row.entity, row.version)
+    audit.record(db, principal.audit_actor, "cdm.import", "cdm", f"{row.entity}@{row.version}", {
+        "content_hash": row.content_hash, "source_uri": row.source_uri, "warnings": warnings,
+        "failed_contracts": [r["contract_id"] for r in results if not r["ok"]]})
+    return {"version": CdmVersionOut.model_validate(row), "warnings": warnings, "revalidation": results}
+
+
+@router.get("/cdm/entities", response_model=list[CdmEntityOut])
+def list_cdm_entities(request: Request, response: Response, page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                      principal: Principal = Depends(get_principal)):
+    stmt = select(CdmEntity).join(DataAsset, CdmEntity.asset_id == DataAsset.id).where(authz.readable_clause(principal)) \
+        .order_by(CdmEntity.name)
+    return paginate(db, stmt, page, request, response)
+
+
+def _get_cdm_entity(db: Session, principal: Principal, name: str) -> CdmEntity:
+    entity = db.get(CdmEntity, name)
+    if entity is None:
+        raise HTTPException(404, f"cdm entity not found: {name}")
+    load_asset(db, principal, entity.asset_id)
+    return entity
+
+
+@router.get("/cdm/entities/{name}", response_model=CdmEntityOut)
+def get_cdm_entity(name: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    return _get_cdm_entity(db, principal, name)
+
+
+@router.get("/cdm/entities/{name}/versions", response_model=list[CdmVersionOut])
+def list_cdm_versions(name: str, request: Request, response: Response, page: Page = Depends(page_params()),
+                      db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    _get_cdm_entity(db, principal, name)
+    stmt = select(CdmVersion).where(CdmVersion.entity == name).order_by(CdmVersion.imported_at, CdmVersion.id)
+    return paginate(db, stmt, page, request, response)
+
+
+@router.get("/cdm/entities/{name}/versions/{version}", response_model=CdmVersionOut)
+def get_cdm_version(name: str, version: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    _get_cdm_entity(db, principal, name)
+    row = db.scalar(select(CdmVersion).where(CdmVersion.entity == name, CdmVersion.version == version))
+    if row is None:
+        raise HTTPException(404, f"cdm version not found: {name}@{version}")
     return row

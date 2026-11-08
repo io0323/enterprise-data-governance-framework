@@ -696,6 +696,29 @@ class MeshSubscription(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class CdmEntity(Base):
+    """外部で定義された CDM のエンティティ。Catalog の metadata 資産と対応付ける (CDM は Governance の被統制対象)。"""
+    __tablename__ = "cdm_entities"
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), unique=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CdmVersion(Base):
+    """CDM 定義の写し (JSON Schema の一部)。取り込んだ版は変更できない。作成・編集・設計の機能は持たない。"""
+    __tablename__ = "cdm_versions"
+    __table_args__ = (UniqueConstraint("entity", "version", name="uq_cdm_version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity: Mapped[str] = mapped_column(ForeignKey("cdm_entities.name"), index=True)
+    version: Mapped[str] = mapped_column(String(50))
+    json_schema: Mapped[dict] = mapped_column(JSON)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    source_uri: Mapped[str | None] = mapped_column(String(2000))
+    imported_by: Mapped[str] = mapped_column(String(200))
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

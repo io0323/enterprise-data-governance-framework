@@ -164,6 +164,8 @@ PERMISSIONS: Mapping[str, Rule] = {
     "mesh.subscription.request": rule(authenticated=True, description="利用登録の申請と自分の登録の変更 (閲覧権限は与えない)"),
     "mesh.subscription.approve": rule(relations=("owner",), approval=True, description="利用登録の承認 (対象 Product の Owner)"),
     "mesh.subscription.read": rule(roles=(ADMIN, COMMITTEE), description="全利用者の利用登録の参照"),
+    "cdm.import": rule(roles=(ADMIN, COMMITTEE), approval=True,
+                       description="外部の CDM 定義の版の取り込み (作成・編集の機能は持たない)"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

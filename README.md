@@ -154,6 +154,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `asset.register` | 資産の登録 | ロール: admin<br>ドメイン内ロール: owner, steward |  |
 | `asset.update` | 資産メタデータの更新・ライフサイクル遷移 (削除以外) | ロール: admin<br>ドメイン内ロール: owner, steward<br>対象の owner / steward |  |
 | `audit.read` | 監査ログの参照 | ロール: admin, committee |  |
+| `cdm.import` | 外部の CDM 定義の版の取り込み (作成・編集の機能は持たない) | ロール: admin, committee | ✓ |
 | `domain.create` | ドメインの新設 | ロール: admin, committee |  |
 | `exception.decide` | ポリシー例外の承認/却下 | ロール: admin, committee | ✓ |
 | `exception.request` | ポリシー例外の申請 | ロール: admin<br>ドメイン内ロール: owner, steward<br>対象の owner / steward |  |
