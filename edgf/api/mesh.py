@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -14,11 +14,12 @@ from edgf.db import get_session
 from edgf.api.lineage import redacted_impact
 from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
-from edgf.models import ContractVersion, DataAsset, DataContract, DataProduct, OutputPort
+from edgf.models import ContractVersion, DataAsset, DataContract, DataProduct, MeshSubscription, OutputPort
 from edgf.pagination import Page, page_params, paginate
-from edgf.schemas import (ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, OutputPortIn,
-                          OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate)
-from edgf.services import audit, mesh, mesh_contracts
+from edgf.schemas import (ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
+                          OutputPortIn, OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate,
+                          SubscriptionDecisionIn, SubscriptionIn, SubscriptionMigrateIn, SubscriptionOut)
+from edgf.services import audit, mesh, mesh_contracts, mesh_subscriptions
 from edgf.services.mesh import MeshStateError, MeshValidationError
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
@@ -280,4 +281,130 @@ def check_contract(contract_id: str, body: ContractCheckIn, db: Session = Depend
     load_asset(db, principal, asset.id, "mesh.contract.check")
     proposal = body.model_dump(by_alias=False, exclude_unset=True, exclude={"version"}, mode="json")
     result = mesh_contracts.check(db, contract, asset, proposal, body.version)
-    return {**result, "impact": redacted_impact(db, principal, asset.qualified_name), "subscribers": []}
+    return {**result, "impact": redacted_impact(db, principal, asset.qualified_name),
+            "subscribers": mesh_subscriptions.subscribers_of(db, contract.id)}
+
+
+@router.post("/contracts/{contract_id}/majors/{major}/retire", response_model=list[ContractVersionOut])
+def retire_major(contract_id: str, major: int, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """期間が満了し、かつ有効な利用登録が残っていない旧版だけを retired にできる (Product の Owner)。"""
+    contract = _get_contract(db, contract_id)
+    product, _, _ = _context(db, contract)
+    _require_owner(db, principal, "mesh.contract.publish", product, "data_contract", contract.id)
+    mesh_contracts.lock(db, contract)
+    versions = _guard(mesh_contracts.retire_major, db, contract, major, principal.subject)
+    audit.record(db, principal.audit_actor, "mesh.contract.retire", "data_contract", contract.id,
+                 {"major": major, "versions": [v.version for v in versions]})
+    return versions
+
+
+@router.post("/contracts/{contract_id}/majors/{major}/expedite-retire")
+def expedite_retire(contract_id: str, major: int, body: ExpediteRetireIn, db: Session = Depends(get_session),
+                    principal: Principal = Depends(get_principal)):
+    """Committee が併存期間を短縮する (理由必須)。retire は別途 Product の Owner が行い、利用登録の条件は残る。"""
+    contract = _get_contract(db, contract_id)
+    authz.require(db, principal, "mesh.contract.expedite_retire", entity_type="data_contract", entity_id=contract.id)
+    mesh_contracts.lock(db, contract)
+    sunset = _guard(mesh_contracts.expedite_retire, db, contract, major, reason=body.reason, sunset_at=body.sunset_at,
+                    actor=principal.subject)
+    audit.record(db, principal.audit_actor, "mesh.contract.expedite_retire", "data_contract", contract.id,
+                 {"major": major, "reason": body.reason, "sunset_at": sunset})
+    return {"contract_id": contract.id, "major": major, "sunset_at": sunset}
+
+
+# ---------------- 利用登録 (§15 / §4 Data Consumer)。閲覧権限は与えない ----------------
+def _get_subscription(db: Session, subscription_id: str) -> tuple[MeshSubscription, DataProduct]:
+    row = db.get(MeshSubscription, subscription_id)
+    if row is None:
+        raise HTTPException(404, f"subscription not found: {subscription_id}")
+    return row, db.get(DataProduct, row.product_id)
+
+
+def _deny_subscription(db: Session, principal: Principal, row: MeshSubscription, reason: str) -> None:
+    authz.deny(db, principal, "mesh.subscription.request", entity_type="subscription", entity_id=row.id, reason=reason)
+
+
+def _require_party(db: Session, principal: Principal, row: MeshSubscription, product: DataProduct) -> None:
+    if principal.subject not in (row.subscriber, product.owner):
+        _deny_subscription(db, principal, row, "利用者本人または Product の Owner だけが変更できます")
+
+
+@router.post("/subscriptions", response_model=SubscriptionOut, status_code=201)
+def request_subscription(body: SubscriptionIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """自分の利用登録を申請する。confidential 以上は Product の Owner の承認が必要。"""
+    authz.require(db, principal, "mesh.subscription.request", entity_type="output_port", entity_id=body.output_port_id)
+    port = _get_port(db, body.output_port_id)
+    contract = db.scalar(select(DataContract).where(DataContract.output_port_id == port.id))
+    if contract is None:
+        raise HTTPException(409, "この Output Port には Contract がありません")
+    mesh_contracts.lock(db, contract)
+    row = _guard(mesh_subscriptions.request, db, contract=contract, port=port, product=db.get(DataProduct, port.product_id),
+                 asset=db.get(DataAsset, port.asset_id), subscriber=principal.subject, purpose_id=body.purpose_id, major=body.major)
+    audit.record(db, principal.audit_actor, "mesh.subscription.request", "subscription", row.id, {
+        "output_port_id": port.id, "major": row.major, "purpose_id": row.purpose_id, "status": row.status})
+    return row
+
+
+@router.get("/subscriptions", response_model=list[SubscriptionOut])
+def list_subscriptions(request: Request, response: Response, status: str | None = None, output_port_id: str | None = None,
+                       page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                       principal: Principal = Depends(get_principal)):
+    """Committee / admin は全件。それ以外は自分の登録と、自分が Owner の Product への登録だけ。"""
+    stmt = select(MeshSubscription).order_by(MeshSubscription.created_at, MeshSubscription.id)
+    if not authz.is_allowed(principal, "mesh.subscription.read"):
+        owned = select(DataProduct.id).where(DataProduct.owner == principal.subject)
+        stmt = stmt.where(or_(MeshSubscription.subscriber == principal.subject, MeshSubscription.product_id.in_(owned)))
+    for column, value in ((MeshSubscription.status, status), (MeshSubscription.output_port_id, output_port_id)):
+        if value is not None:
+            stmt = stmt.where(column == value)
+    return paginate(db, stmt, page, request, response)
+
+
+@router.get("/subscriptions/{subscription_id}", response_model=SubscriptionOut)
+def get_subscription(subscription_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    row, product = _get_subscription(db, subscription_id)
+    if principal.subject not in (row.subscriber, product.owner) and not authz.is_allowed(principal, "mesh.subscription.read"):
+        authz.require(db, principal, "mesh.subscription.read", entity_type="subscription", entity_id=row.id)
+    return row
+
+
+@router.post("/subscriptions/{subscription_id}/decision", response_model=SubscriptionOut)
+def decide_subscription(subscription_id: str, body: SubscriptionDecisionIn, db: Session = Depends(get_session),
+                        principal: Principal = Depends(get_principal)):
+    """Product の Owner の決裁。自分の申請は決裁できない (職務分離)。"""
+    row, product = _get_subscription(db, subscription_id)
+    _require_owner(db, principal, "mesh.subscription.approve", product, "subscription", row.id)
+    if row.subscriber == principal.subject:
+        authz.deny(db, principal, "mesh.subscription.approve", entity_type="subscription", entity_id=row.id,
+                   reason="自分の利用登録は決裁できません (職務分離)")
+    mesh_contracts.lock(db, db.get(DataContract, row.contract_id))
+    _guard(mesh_subscriptions.decide, db, row, approve=body.approve, comment=body.comment, actor=principal.subject)
+    audit.record(db, principal.audit_actor, "mesh.subscription.decision", "subscription", row.id,
+                 {"approve": body.approve, "comment": body.comment, "status": row.status})
+    return row
+
+
+@router.post("/subscriptions/{subscription_id}/migrate", response_model=SubscriptionOut)
+def migrate_subscription(subscription_id: str, body: SubscriptionMigrateIn, db: Session = Depends(get_session),
+                         principal: Principal = Depends(get_principal)):
+    """新しいメジャー版に付け替える。機密度が上がる場合は承認を取り直す。"""
+    row, product = _get_subscription(db, subscription_id)
+    _require_party(db, principal, row, product)
+    contract = db.get(DataContract, row.contract_id)
+    mesh_contracts.lock(db, contract)
+    previous = row.major
+    _guard(mesh_subscriptions.migrate, db, row, contract=contract, asset=db.get(DataAsset, db.get(OutputPort, row.output_port_id).asset_id),
+           major=body.major, purpose_id=body.purpose_id)
+    audit.record(db, principal.audit_actor, "mesh.subscription.migrate", "subscription", row.id,
+                 {"from_major": previous, "to_major": row.major, "purpose_id": row.purpose_id, "status": row.status})
+    return row
+
+
+@router.post("/subscriptions/{subscription_id}/cancel", response_model=SubscriptionOut)
+def cancel_subscription(subscription_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    row, product = _get_subscription(db, subscription_id)
+    _require_party(db, principal, row, product)
+    mesh_contracts.lock(db, db.get(DataContract, row.contract_id))
+    _guard(mesh_subscriptions.cancel, db, row)
+    audit.record(db, principal.audit_actor, "mesh.subscription.cancel", "subscription", row.id, {"status": row.status})
+    return row

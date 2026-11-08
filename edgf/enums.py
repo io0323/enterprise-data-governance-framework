@@ -192,6 +192,15 @@ class ContractStatus(str, Enum):
     RETIRED = "retired"
 
 
+class SubscriptionStatus(str, Enum):
+    """§15 / §4 Data Consumer の利用登録。閲覧権限は与えない (ABAC と AccessGrant はこれまで通り)"""
+    PENDING = "pending"
+    ACTIVE = "active"
+    REJECTED = "rejected"
+    SUSPENDED = "suspended"
+    CANCELLED = "cancelled"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

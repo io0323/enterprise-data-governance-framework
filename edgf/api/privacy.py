@@ -14,8 +14,8 @@ from edgf.models import Consent, DataAsset, Domain, ErasureRequest, ErasureTask,
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (ConsentCheckIn, ConsentIn, ConsentOut, ConsentRecorded, ErasureRejectIn, ErasureRequestDetail,
                           ErasureRequestIn, ErasureRequestOut, ErasureTaskCompleteIn, ErasureTaskOut, ErasureWorkItem,
-                          PurposeIn, PurposeOut, PurposeUpdate, SubjectIdentifier)
-from edgf.services import audit, consent, erasure, privacy
+                          PurposeIn, PurposeOut, PurposeUpdate, PurposeWithdrawIn, SubjectIdentifier)
+from edgf.services import audit, consent, erasure, mesh_subscriptions, privacy
 from edgf.services.erasure import ErasureStateError
 from edgf.services.subject_ref import to_subject_ref
 
@@ -110,6 +110,22 @@ def update_purpose(purpose_id: str, body: PurposeUpdate, db: Session = Depends(g
     return purpose
 
 
+@router.post("/purposes/{purpose_id}/withdraw")
+def withdraw_purpose(purpose_id: str, body: PurposeWithdrawIn, db: Session = Depends(get_session),
+                     principal: Principal = Depends(get_principal)):
+    """目的そのものを撤回する (主体ごとの同意の撤回とは別)。その目的の利用登録を suspended にする (§15)。"""
+    purpose = _get_purpose(db, purpose_id)
+    authz.require(db, principal, "privacy.purpose.write", entity_type="purpose", entity_id=purpose.id)
+    if purpose.withdrawn_at:
+        raise HTTPException(409, f"purpose already withdrawn: {purpose.id}")
+    purpose.withdrawn_at, purpose.withdrawn_by, purpose.withdrawn_reason = utcnow(), principal.subject, body.reason
+    db.flush()
+    suspended = mesh_subscriptions.suspend_for_purpose(db, principal.audit_actor, purpose)
+    audit.record(db, principal.audit_actor, "privacy.purpose_withdraw", "purpose", purpose.id,
+                 {"reason": body.reason, "subscriptions_suspended": suspended})
+    return {"purpose": PurposeOut.model_validate(purpose), "subscriptions_suspended": suspended}
+
+
 # ---------------- Consent Registry (§12 Consent) ----------------
 @router.post("/consents", response_model=ConsentRecorded, status_code=201)
 def record_consent(body: ConsentIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
@@ -119,6 +135,8 @@ def record_consent(body: ConsentIn, db: Session = Depends(get_session), principa
     expires = to_naive_utc(body.expires_at) if body.expires_at else None
     if expires is not None and (body.status != ConsentStatus.GRANTED or expires <= utcnow()):
         raise HTTPException(422, "expires_at は status=granted のときに未来の日時で指定してください")
+    if purpose.withdrawn_at and body.status == ConsentStatus.GRANTED:
+        raise HTTPException(409, f"目的 {purpose.id} は撤回されているため、新しい同意を記録できません")
     row = consent.record(db, subject_ref=_subject_ref(body), purpose_id=purpose.id, status=body.status.value,
                          recorded_by=principal.subject, source=body.source, expires_at=expires)
     opened: list[str] = []

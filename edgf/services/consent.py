@@ -31,6 +31,9 @@ def effective_status(row: Consent | None, now: datetime | None = None) -> str:
 def check(db: Session, subject_ref: str, purpose: PrivacyPurpose) -> dict[str, Any]:
     """目的内利用かどうかを判定する。同意以外の法的根拠を持つ目的は同意不要。"""
     base = {"purpose_id": purpose.id, "legal_basis": purpose.default_legal_basis}
+    if purpose.withdrawn_at:
+        return {**base, "consent_required": purpose.default_legal_basis == LegalBasis.CONSENT.value, "allowed": False,
+                "status": None, "reason": "この目的は撤回されています"}
     if purpose.default_legal_basis != LegalBasis.CONSENT.value:
         return {**base, "consent_required": False, "allowed": True, "status": None,
                 "reason": f"法的根拠が {purpose.default_legal_basis} の目的のため、同意は不要です"}

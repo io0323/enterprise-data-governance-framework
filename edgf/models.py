@@ -207,6 +207,10 @@ class PrivacyPurpose(Base):
     domain: Mapped[str | None] = mapped_column(ForeignKey("domains.name"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    # 目的そのものの撤回 (主体ごとの同意の撤回とは別)。撤回後は新しい同意と利用登録を受け付けない
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime)
+    withdrawn_by: Mapped[str | None] = mapped_column(String(200))
+    withdrawn_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class Consent(Base):
@@ -671,6 +675,25 @@ class ContractVersion(Base):
     sunset_shortened_reason: Mapped[str | None] = mapped_column(Text)
     retired_by: Mapped[str | None] = mapped_column(String(200))
     retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class MeshSubscription(Base):
+    """§15 / §4 Data Consumer の利用登録。閲覧権限は与えない。Contract のメジャー版に対して登録する。"""
+    __tablename__ = "mesh_subscriptions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    subscriber: Mapped[str] = mapped_column(String(200), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("data_products.id"), index=True)
+    output_port_id: Mapped[str] = mapped_column(ForeignKey("output_ports.id"), index=True)
+    contract_id: Mapped[str] = mapped_column(ForeignKey("data_contracts.id"), index=True)
+    major: Mapped[int] = mapped_column(Integer)
+    purpose_id: Mapped[str] = mapped_column(ForeignKey("privacy_purposes.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decision_comment: Mapped[str] = mapped_column(Text, default="")
+    suspended_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class AuditEvent(Base):

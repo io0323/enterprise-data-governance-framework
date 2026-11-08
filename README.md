@@ -172,9 +172,13 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `mdm.rule.approve` | Golden Record 生成規則の承認 (§8.2) | 対象の owner | ✓ |
 | `mdm.rule.write` | エンティティ定義の再読込 (公開) | ロール: admin, committee | ✓ |
 | `mesh.contract.check` | Contract の案の互換性の判定と影響の確認 | 対象の custodian / owner / steward |  |
+| `mesh.contract.expedite_retire` | 旧版の併存期間の短縮 (理由必須) | ロール: committee | ✓ |
 | `mesh.contract.publish` | Data Contract の版の公開と旧版の retire (対象 Product の Owner) | 対象の owner | ✓ |
 | `mesh.contract.write` | Data Contract の下書きの作成・更新 | ドメイン内ロール: owner, steward |  |
 | `mesh.product.write` | Data Product と Output Port の登録・更新 | ドメイン内ロール: owner, steward |  |
+| `mesh.subscription.approve` | 利用登録の承認 (対象 Product の Owner) | 対象の owner | ✓ |
+| `mesh.subscription.read` | 全利用者の利用登録の参照 | ロール: admin, committee |  |
+| `mesh.subscription.request` | 利用登録の申請と自分の登録の変更 (閲覧権限は与えない) | 認証済みの全員 |  |
 | `policy.evaluate_all` | 全資産の自動監査と Issue 化 | ロール: admin, committee |  |
 | `policy.reload` | ポリシーの再読込 (公開) | ロール: admin, committee | ✓ |
 | `privacy.consent.check` | 目的内利用の判定と同意履歴の参照 | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |

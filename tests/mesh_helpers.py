@@ -77,6 +77,27 @@ def setup_contract(client, *, sensitivity="internal", qn="sales.orders_pub", **a
         domain(client)
     schema = [{"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": c["description"]} for c in COLUMNS]
     a = port_asset(client, qn, sensitivity=sensitivity, schema=schema, **asset_kw)
-    p = product(client, f"product-{qn}")
+    p = product(client, "product-" + qn.replace(".", "-"))
     port = add_port(client, p["id"], a["id"])
     return {"asset": a, "product": p, "port": port, "contract": contract(client, port["id"])}
+
+
+def mark_published(product_id) -> None:
+    """DATSIS の判定は tests/test_mesh_datsis.py で確認する。ここでは状態だけを公開済みにする。"""
+    from sqlalchemy import text
+
+    from edgf.db import engine
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE data_products SET status = 'published' WHERE id = :id"), {"id": product_id})
+
+
+def purpose(client, purpose_id="analytics") -> str:
+    r = client.post(f"{API}/privacy/purposes", headers=COMMITTEE, json={"id": purpose_id, "description": "d", "default_legal_basis": "contract"})
+    assert r.status_code == 201, r.text
+    return purpose_id
+
+
+def subscribe(client, subscriber, port_id, purpose_id="analytics", code=201, **kw):
+    r = client.post(f"{MESH}/subscriptions", headers=U(subscriber), json={"output_port_id": port_id, "purpose_id": purpose_id, **kw})
+    assert r.status_code == code, r.text
+    return r.json()

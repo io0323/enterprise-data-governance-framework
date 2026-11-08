@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -9,10 +10,12 @@ from sqlalchemy.orm import Session
 
 from edgf import authz
 from edgf.auth import SENSITIVITY_LEVELS
+from edgf.config import settings
 from edgf.enums import ContractStatus, EscalationLevel
+from edgf.errors import ProblemError
 from edgf.models import (ContractVersion, DataAsset, DataContract, DataProduct, OutputPort, PrivacyPurpose, QualityRule,
-                         fit_identifier, utcnow)
-from edgf.services import audit, issues, mesh_compat
+                         fit_identifier, to_naive_utc, utcnow)
+from edgf.services import audit, issues, mesh_compat, mesh_subscriptions
 from edgf.services.mesh import MeshStateError, MeshValidationError
 from edgf.services.mesh_compat import Bump
 from edgf.services.quality import latest_run
@@ -165,8 +168,73 @@ def publish(db: Session, actor: str, contract: DataContract, row: ContractVersio
     now = utcnow()
     row.status, row.published_by, row.published_at = C.PUBLISHED.value, publisher, now
     db.flush()
+    result: dict[str, Any] = {"changes": [c["code"] for c in changes]}
+    if baseline is not None and row.major > baseline.major:
+        result.update(_on_new_major(db, actor, contract, row, product, asset, now))
     check_drift(db, actor, asset)
-    return {"changes": [c["code"] for c in changes]}
+    return result
+
+
+def _on_new_major(db: Session, actor: str, contract: DataContract, row: ContractVersion, product: DataProduct, asset: DataAsset,
+                  now: datetime) -> dict[str, Any]:
+    """旧版を deprecated にして併存させ、利用者と下流の Owner に知らせる。利用条件から外れた登録は止める。"""
+    sunset = now + timedelta(days=settings.contract_deprecation_days)
+    deprecated = db.scalars(select(ContractVersion).where(ContractVersion.contract_id == contract.id,
+                                                          ContractVersion.status == C.PUBLISHED.value,
+                                                          ContractVersion.major < row.major)).all()
+    for old in deprecated:
+        old.status, old.deprecated_at, old.sunset_at = C.DEPRECATED.value, now, sunset
+    db.flush()
+    suspended = mesh_subscriptions.suspend_for_narrowed_usage(db, actor, contract, row, product)
+    opened = mesh_subscriptions.notify_new_major(db, actor, contract, row, product, asset, sunset)
+    return {"deprecated_majors": sorted({v.major for v in deprecated}), "sunset_at": sunset,
+            "subscriptions_suspended": suspended, "issues_opened": opened}
+
+
+def _major_versions(db: Session, contract: DataContract, major: int) -> list[ContractVersion]:
+    return list(db.scalars(select(ContractVersion).where(ContractVersion.contract_id == contract.id, ContractVersion.major == major,
+                                                         ContractVersion.status != C.DRAFT.value)
+                           .order_by(ContractVersion.minor, ContractVersion.patch)))
+
+
+def _deprecated_major(db: Session, contract: DataContract, major: int) -> list[ContractVersion]:
+    versions = _major_versions(db, contract, major)
+    if not versions:
+        raise MeshValidationError(f"メジャー版 {major} の公開済みの版はありません")
+    if any(v.status != C.DEPRECATED.value for v in versions):
+        raise MeshStateError(f"メジャー版 {major} は deprecated ではありません (新しいメジャー版の公開が先に必要です)")
+    return versions
+
+
+def retire_major(db: Session, contract: DataContract, major: int, retirer: str) -> list[ContractVersion]:
+    """旧版を retired にできるのは、併存期間が満了し、かつ有効な利用登録が残っていない場合だけ。"""
+    versions = _deprecated_major(db, contract, major)
+    now = utcnow()
+    blockers = []
+    sunset = max(v.sunset_at for v in versions)
+    if sunset > now:
+        blockers.append(f"併存期間が満了していません (満了: {sunset.isoformat()})")
+    remaining = mesh_subscriptions.valid_count(db, contract.id, major)
+    if remaining:
+        blockers.append(f"有効な利用登録が {remaining} 件残っています")
+    if blockers:
+        raise ProblemError(409, f"メジャー版 {major} を retire できません", type_="contract-retire-blocked", blockers=blockers)
+    for version in versions:
+        version.status, version.retired_at, version.retired_by = C.RETIRED.value, now, retirer
+    db.flush()
+    return versions
+
+
+def expedite_retire(db: Session, contract: DataContract, major: int, *, reason: str, sunset_at: datetime | None, actor: str) -> datetime:
+    """Committee による併存期間の短縮。retire の条件のうち、期間だけを変える (利用登録の条件は残る)。"""
+    versions = _deprecated_major(db, contract, major)
+    new_sunset = to_naive_utc(sunset_at) if sunset_at else utcnow()
+    if new_sunset >= max(v.sunset_at for v in versions):
+        raise MeshValidationError("sunset_at は今の満了日時より前にしてください (延長はできません)")
+    for version in versions:
+        version.sunset_at, version.sunset_shortened_by, version.sunset_shortened_reason = new_sunset, actor, reason
+    db.flush()
+    return new_sunset
 
 
 def drift_of(db: Session, asset: DataAsset, row: ContractVersion) -> list[dict[str, Any]]:

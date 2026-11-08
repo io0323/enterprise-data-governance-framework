@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus,
-                        ContractStatus, ProductStatus, RemediationStatus)
+                        ContractStatus, ProductStatus, RemediationStatus, SubscriptionStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -329,6 +329,12 @@ class PurposeOut(ORM):
     domain: str | None
     created_at: datetime
     updated_at: datetime
+    withdrawn_at: datetime | None = None
+    withdrawn_reason: str | None = None
+
+
+class PurposeWithdrawIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000, description="目的を撤回する理由。個人情報を含めないこと")
 
 
 class ConsentIn(SubjectIdentifier):
@@ -1010,3 +1016,52 @@ class ContractCheckIn(MeshInput):
     cdm_mappings: dict[str, str] | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class SubscriptionIn(MeshInput):
+    output_port_id: str = Field(max_length=36)
+    purpose_id: str = Field(max_length=80)
+    major: int | None = Field(default=None, ge=0, description="Contract のメジャー版。省略時は最新")
+
+
+class SubscriptionDecisionIn(MeshInput):
+    approve: bool
+    comment: str = Field(default="", max_length=1000, description="却下のときは必須")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> SubscriptionDecisionIn:
+        if not self.approve and not self.comment.strip():
+            raise ValueError("却下には comment が必要です")
+        return self
+
+
+class SubscriptionMigrateIn(MeshInput):
+    major: int = Field(ge=0, description="付け替え先のメジャー版")
+    purpose_id: str | None = Field(default=None, max_length=80, description="利用目的も変える場合に指定")
+
+
+class SubscriptionOut(ORM):
+    id: str
+    subscriber: str
+    product_id: str
+    output_port_id: str
+    contract_id: str
+    major: int
+    purpose_id: str
+    status: SubscriptionStatus
+    decided_by: str | None
+    decided_at: datetime | None
+    decision_comment: str
+    suspended_reason: str | None
+    created_at: datetime
+
+
+class ExpediteRetireIn(MeshInput):
+    reason: str = Field(max_length=1000, description="期間を短縮する理由 (必須)")
+    sunset_at: datetime | None = Field(default=None, description="新しい満了日時 (省略時は現在)。今の満了日時より前であること")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ExpediteRetireIn:
+        if not self.reason.strip():
+            raise ValueError("期間の短縮には reason が必要です")
+        return self
