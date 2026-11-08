@@ -86,7 +86,7 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), princi
 def search_assets(
     request: Request, response: Response,
     q: str | None = Query(None, description="名前/説明/タグ/用語の横断検索"),
-    domain: str | None = None, data_class: str | None = None, sensitivity: str | None = None,
+    domain: str | None = None, data_class: str | None = None, ai_kind: str | None = None, sensitivity: str | None = None,
     owner: str | None = None, certification: str | None = None, lifecycle_state: str | None = None,
     is_cde: bool | None = None, orphan: bool | None = Query(None, description="Owner未割当 (Unknown Owner) のみ"),
     include_deleted: bool = False, page: Page = Depends(page_params()),
@@ -105,7 +105,7 @@ def search_assets(
                               DataAsset.description.ilike(like, escape=_LIKE_ESCAPE),
                               DataAsset.id.in_(term_assets),
                               cast(DataAsset.tags, String).ilike(tag_like, escape=_LIKE_ESCAPE)))
-    for col, val in (("domain", domain), ("data_class", data_class), ("sensitivity", sensitivity),
+    for col, val in (("domain", domain), ("data_class", data_class), ("ai_kind", ai_kind), ("sensitivity", sensitivity),
                      ("owner", owner), ("certification", certification), ("lifecycle_state", lifecycle_state),
                      ("is_cde", is_cde)):
         if val is not None:

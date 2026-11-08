@@ -1,12 +1,16 @@
 """§17 KPI / Metrics, §20 Maturity indicator."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from edgf.models import AuditEvent, DataAsset, GoldenRecord, Issue, MdmReview, MdmXref, utcnow
+from edgf.enums import DataClass, DatasetVersionStatus, RemediationStatus
+from edgf.models import (AuditEvent, DataAsset, DatasetVersion, GoldenRecord, Issue, MdmReview, MdmXref, ModelRemediation,
+                         utcnow)
+from edgf.services.ai import card_complete
+from edgf.services.ai_inherit import compute as compute_inherited, is_violation
 from edgf.services.issues import OPEN_STATES
 from edgf.services.policy import evaluate_asset
 from edgf.services.quality import latest_run
@@ -14,6 +18,26 @@ from edgf.services.quality import latest_run
 
 def _rate(n: int, d: int) -> float | None:
     return round(n / d, 4) if d else None
+
+
+def _ai_metrics(db: Session, assets: list[DataAsset], now: datetime) -> dict:
+    """§14 AI 統制の KPI。成熟度の判定 (§20) には使わない。"""
+    ai_assets = [a for a in assets if a.data_class == DataClass.AI.value]
+    ids = [a.id for a in ai_assets]
+    versions = db.scalars(select(DatasetVersion.status).where(DatasetVersion.asset_id.in_(ids),
+                                                              DatasetVersion.status != DatasetVersionStatus.SUPERSEDED.value)).all()
+    # accept の期限切れは、定期処理で pending に戻る前から未決として数える
+    pending = db.scalar(select(func.count()).select_from(ModelRemediation).where(
+        ModelRemediation.asset_id.in_(ids),
+        or_(ModelRemediation.status == RemediationStatus.PENDING.value,
+            and_(ModelRemediation.status == RemediationStatus.ACCEPTED.value, ModelRemediation.accept_until < now)))) or 0
+    return {
+        "ai_asset_count": len(ai_assets),
+        "ai_training_approved_rate": _rate(versions.count(DatasetVersionStatus.APPROVED.value), len(versions)),
+        "ai_remediation_pending_count": pending,
+        "ai_card_complete_rate": _rate(sum(1 for a in ai_assets if card_complete(db, a)), len(ai_assets)),
+        "ai_inheritance_violation_count": sum(1 for a in ai_assets if is_violation(a, compute_inherited(db, a))),
+    }
 
 
 def compute(db: Session, domain: str | None = None) -> dict:
@@ -83,6 +107,7 @@ def compute(db: Session, domain: str | None = None) -> dict:
         "mdm_review_pending_count": pending_reviews,  # §8 裁定キューの件数
         "mdm_duplicate_rate": _rate(auto_merged + steward_merged, len(links)),  # ソースのうち既存に統合された割合
         "mdm_auto_merge_rate": _rate(auto_merged, auto_merged + steward_merged),  # 統合のうち自動マージの割合
+        **_ai_metrics(db, list(assets), now),
     }
 
 
