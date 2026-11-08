@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from edgf.enums import (Certification, DataClass, EscalationLevel, IssueStatus, LegalBasis, LifecycleState,
+from edgf.enums import (Certification, ConsentStatus, DataClass, EscalationLevel, IssueStatus, LegalBasis, LifecycleState,
                         PiiCategory, QualityDimension, Sensitivity, Severity)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
@@ -274,3 +274,60 @@ class ExceptionOut(ORM):
     status: str
     expires_at: datetime
     created_at: datetime
+
+
+# ---------- Privacy ----------
+class SubjectIdentifier(BaseModel):
+    """データ主体の識別子。受け取った時点で subject_ref に変換して破棄する (レスポンスにもログにも出さない)。"""
+    identifier_type: str = Field(pattern=IDENTIFIER_TYPE_PATTERN, description="識別子の種別 (例: customer_id, email)")
+    identifier: SecretStr = Field(min_length=1, max_length=512, description="データ主体の識別子 (保存されません)")
+
+
+class PurposeIn(BaseModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,80}$", description="目的 ID (例: marketing)")
+    description: str = Field(min_length=1)
+    default_legal_basis: LegalBasis
+    retention_days: int | None = Field(default=None, ge=1)
+    domain: str | None = None
+
+
+class PurposeUpdate(BaseModel):
+    description: str | None = Field(default=None, min_length=1)
+    default_legal_basis: LegalBasis | None = None
+    retention_days: int | None = Field(default=None, ge=1)
+
+
+class PurposeOut(ORM):
+    id: str
+    description: str
+    default_legal_basis: LegalBasis
+    retention_days: int | None
+    domain: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsentIn(SubjectIdentifier):
+    purpose_id: str
+    status: ConsentStatus
+    source: str = Field(default="", max_length=200, description="取得元 (同意画面やシステムの ID。個人情報を含めないこと)")
+    expires_at: datetime | None = Field(default=None, description="同意の有効期限 (status=granted のときのみ)")
+
+
+class ConsentOut(ORM):
+    seq: int
+    subject_ref: str
+    purpose_id: str
+    status: ConsentStatus
+    source: str
+    recorded_by: str
+    recorded_at: datetime
+    expires_at: datetime | None
+
+
+class ConsentRecorded(ConsentOut):
+    issues_opened: list[str] = Field(default_factory=list)
+
+
+class ConsentCheckIn(SubjectIdentifier):
+    purpose_id: str

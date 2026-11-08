@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 os.environ["EDGF_DATABASE_URL"] = "sqlite://"
@@ -14,6 +15,7 @@ from sqlalchemy import text
 from edgf import migrate
 from edgf.db import Base, engine
 from edgf.main import create_app
+from edgf.observability import JsonFormatter
 
 
 def reset_db() -> None:
@@ -53,3 +55,32 @@ def sales_asset(client):
     })
     assert r.status_code == 201, r.text
     return r.json()
+
+
+def dump_database() -> str:
+    """全テーブルの全行を文字列化する (生の識別子が残っていないことの検査用)。"""
+    with engine.connect() as conn:
+        rows = [str(tuple(row)) for table in Base.metadata.sorted_tables for row in conn.execute(table.select())]
+    return "\n".join(rows).lower()
+
+
+class LogCapture(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.setFormatter(JsonFormatter())
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+    def text(self) -> str:
+        return "\n".join(self.lines).lower()
+
+
+@pytest.fixture()
+def edgf_logs():
+    h = LogCapture()
+    logger = logging.getLogger("edgf")
+    logger.addHandler(h)
+    yield h
+    logger.removeHandler(h)

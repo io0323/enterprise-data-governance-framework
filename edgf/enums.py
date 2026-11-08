@@ -95,6 +95,13 @@ class LegalBasis(str, Enum):
     LEGITIMATE_INTEREST = "legitimate_interest"
 
 
+class ConsentStatus(str, Enum):
+    """§12 Consent"""
+    GRANTED = "granted"
+    WITHDRAWN = "withdrawn"
+    EXPIRED = "expired"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

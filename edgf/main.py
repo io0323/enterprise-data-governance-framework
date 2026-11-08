@@ -14,6 +14,7 @@ from edgf.deps import get_principal
 from edgf.errors import PROBLEM_RESPONSES, install_problem_handlers
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from edgf.services.policy import get_policies
+from edgf.services.subject_ref import validate_subject_key
 
 log = logging.getLogger("edgf")
 
@@ -33,6 +34,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     s = app_settings or settings
     configure_logging(s.log_level, s.log_format)
     authenticator = build_authenticator(s)  # 設定不備・production での dev モードはここで停止 (fail fast)
+    validate_subject_key(s)  # production で EDGF_SUBJECT_KEY が無ければ停止
     app = FastAPI(
         title="Enterprise Data Governance Framework",
         version=__version__,

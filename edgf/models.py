@@ -7,7 +7,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, Text, UniqueConstraint
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Table, Text,
+                        UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from edgf.db import Base
@@ -172,6 +173,35 @@ class AccessGrant(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
     revoked_by: Mapped[str | None] = mapped_column(String(200))
+
+
+class PrivacyPurpose(Base):
+    """§12 処理目的のカタログ。資産とは DataAsset.schema の processing_purposes で関連付く。"""
+    __tablename__ = "privacy_purposes"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    description: Mapped[str] = mapped_column(Text)
+    default_legal_basis: Mapped[str] = mapped_column(String(30))
+    retention_days: Mapped[int | None] = mapped_column(Integer)
+    domain: Mapped[str | None] = mapped_column(ForeignKey("domains.name"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Consent(Base):
+    """§12 Consent: 追記のみ。現在の状態は subject_ref × purpose の最新の行で決まる。
+
+    データ主体の識別子は保持せず、HMAC の subject_ref だけを持つ (§18.2)。
+    """
+    __tablename__ = "consents"
+    __table_args__ = (Index("ix_consents_subject_purpose", "subject_ref", "purpose_id"),)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subject_ref: Mapped[str] = mapped_column(String(64))
+    purpose_id: Mapped[str] = mapped_column(ForeignKey("privacy_purposes.id"))
+    status: Mapped[str] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(200), default="")
+    recorded_by: Mapped[str] = mapped_column(String(200))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class AuditEvent(Base):

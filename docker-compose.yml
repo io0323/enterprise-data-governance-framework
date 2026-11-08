@@ -24,6 +24,8 @@ services:
       EDGF_CLAIM_SUBJECT: ${EDGF_CLAIM_SUBJECT:-sub}
       EDGF_CLAIM_ROLES: ${EDGF_CLAIM_ROLES:-roles}
       EDGF_ROLE_MAP: ${EDGF_ROLE_MAP:-}
+      # §12 subject_ref の HMAC 鍵。production で未設定なら起動しない
+      EDGF_SUBJECT_KEY: ${EDGF_SUBJECT_KEY:-}
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}

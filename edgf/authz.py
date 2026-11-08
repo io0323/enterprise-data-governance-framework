@@ -24,8 +24,8 @@ from sqlalchemy import and_, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from edgf.auth import (ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, ROLES, SENSITIVITY_LEVELS, STEWARD,
-                       Principal)
+from edgf.auth import (ADMIN, COMMITTEE, CONSENT_COLLECTOR, CONSUMER, CUSTODIAN, OWNER, ROLES, SENSITIVITY_LEVELS,
+                       STEWARD, Principal)
 from edgf.errors import ProblemError
 from edgf.models import AccessGrant, DataAsset, utcnow
 
@@ -99,6 +99,11 @@ PERMISSIONS: Mapping[str, Rule] = {
     # Privacy (§12)
     "privacy.inventory.read": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER, STEWARD),
                                    description="PII インベントリの参照"),
+    "privacy.purpose.write": rule(roles=(ADMIN, COMMITTEE), description="Purpose カタログの登録・更新"),
+    "privacy.consent.write": rule(roles=(ADMIN, COMMITTEE, CONSENT_COLLECTOR), domain_roles=(STEWARD,),
+                                  description="同意の取得・撤回の記録 (ドメインは Purpose の所属で判定)"),
+    "privacy.consent.check": rule(roles=(ADMIN, COMMITTEE, CONSENT_COLLECTOR), domain_roles=(STEWARD,),
+                                  description="目的内利用の判定と同意履歴の参照"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -116,6 +121,8 @@ def validate_permissions(permissions: Mapping[str, Rule]) -> None:
             raise ValueError(f"{action}: Custodian に承認権限を与えることはできません (§4 Business Ownership)")
         if r.approval and (CONSUMER in r.roles | r.domain_roles or r.authenticated):
             raise ValueError(f"{action}: 承認行為を全員に開放することはできません")
+        if r.approval and CONSENT_COLLECTOR in r.roles | r.domain_roles:
+            raise ValueError(f"{action}: サービスアカウント用ロールに承認権限を与えることはできません")
 
 
 validate_permissions(PERMISSIONS)
@@ -210,16 +217,17 @@ def require_read(db: Session, principal: Principal, asset: DataAsset) -> None:
         deny(db, principal, "asset.read", entity_type="asset", entity_id=asset.id, reason=reason)
 
 
-def require_scope(db: Session, principal: Principal, action: str) -> ColumnElement[bool]:
+def require_scope(db: Session, principal: Principal, action: str, domain_column: Any = None) -> ColumnElement[bool]:
     """ドメイン横断の一覧で使う SQL 条件。全社ロールは全件、ドメイン内ロールは所属ドメインのみ。権限が無ければ 403。"""
     r = PERMISSIONS[action]
+    domain_column = DataAsset.domain if domain_column is None else domain_column
     if r.authenticated or principal.roles & r.roles:
         return true()
     if principal.roles & r.domain_roles:
         if "*" in principal.domains:
             return true()
         if principal.domains:
-            return DataAsset.domain.in_(sorted(principal.domains))
+            return domain_column.in_(sorted(principal.domains))
     deny(db, principal, action, entity_type="privacy", entity_id="*",
          reason=f"この操作 ({action}: {r.description}) を行う権限がありません", required=r)
 

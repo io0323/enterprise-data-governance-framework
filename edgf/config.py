@@ -58,6 +58,8 @@ class Settings:
     claim_roles: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_ROLES", "roles"))
     claim_clearance: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_CLEARANCE", "clearance"))
     claim_domains: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_DOMAINS", "domains"))
+    # §12 subject_ref (HMAC-SHA256) の秘密鍵。production では必須 (edgf/services/subject_ref.py)
+    subject_key: str = field(default_factory=lambda: os.getenv("EDGF_SUBJECT_KEY", ""))
     # IdP 側のロール/グループ名 → edgf ロール (例: "dg-committee=committee,dg-admins=admin")
     role_map: tuple[tuple[str, str], ...] = field(default_factory=lambda: _env_pairs("EDGF_ROLE_MAP"))
 

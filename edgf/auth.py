@@ -29,7 +29,9 @@ AUTH_MODES = ("jwt", "dev")
 
 # §4.1 の役割 + プラットフォーム管理者
 ADMIN, COMMITTEE, OWNER, STEWARD, CUSTODIAN, CONSUMER = "admin", "committee", "owner", "steward", "custodian", "consumer"
-ROLES: tuple[str, ...] = (ADMIN, COMMITTEE, OWNER, STEWARD, CUSTODIAN, CONSUMER)
+# 同意取得システム (CMP など) のサービスアカウント専用。privacy.consent.* だけを許可する最小権限のロール
+CONSENT_COLLECTOR = "consent_collector"
+ROLES: tuple[str, ...] = (ADMIN, COMMITTEE, OWNER, STEWARD, CUSTODIAN, CONSUMER, CONSENT_COLLECTOR)
 
 SENSITIVITY_LEVELS: tuple[str, ...] = tuple(s.value for s in Sensitivity)  # public < internal < confidential < restricted
 
@@ -38,6 +40,7 @@ ROLE_DEFAULT_CLEARANCE: Mapping[str, str] = {
     ADMIN: "restricted", COMMITTEE: "restricted",
     OWNER: "confidential", STEWARD: "confidential", CUSTODIAN: "confidential",
     CONSUMER: "internal",
+    CONSENT_COLLECTOR: "public",
 }
 
 # JWKS の公開鍵で検証するため非対称鍵アルゴリズムのみ許可する (HS* による鍵混同攻撃を防ぐ)
@@ -112,10 +115,14 @@ def _as_list(raw: Any) -> list[str]:
 
 
 def normalize_roles(raw: Any, role_map: Mapping[str, str] | None = None) -> frozenset[str]:
-    """IdP のロール/グループを edgf ロールへ写像する。未知のロールは捨て、consumer は常に付与する。"""
+    """IdP のロール/グループを edgf ロールへ写像する。未知のロールは捨て、consumer を付与する。
+
+    consent_collector だけを持つサービスアカウントには consumer を付けない (最小権限)。
+    """
     role_map = role_map or {}
     mapped = {role_map.get(r, r) for r in _as_list(raw)}
-    return frozenset(r for r in mapped if r in ROLES) | {CONSUMER}
+    roles = frozenset(r for r in mapped if r in ROLES)
+    return roles if roles == {CONSENT_COLLECTOR} else roles | {CONSUMER}
 
 
 def resolve_clearance(raw: Any, roles: Iterable[str]) -> str:
