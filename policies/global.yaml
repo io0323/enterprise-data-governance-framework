@@ -97,6 +97,27 @@ policies:
     when: {data_class: [ai]}
     check: {type: ai_training_approved}  # controls の自己申告では合格にしない。TrainingApproval の記録で判定する
 
+  - id: AI-002
+    name: AI資産の実効機密度は宣言値以下であること(上流から継承)
+    design_ref: "§14 Embedding Data / Vector Data"
+    severity: critical
+    when: {data_class: [ai]}
+    check: {type: ai_inheritance}
+
+  - id: AI-003
+    name: RAGコーパスの構成元はCertifiedの資産に限る
+    design_ref: "§14 RAG Data"
+    severity: high
+    when: {ai_kind: [rag_corpus]}
+    check: {type: ai_rag_certified_sources}
+
+  - id: AI-004
+    name: PIIを含む元からのEmbedding/Vectorは仮名化以上が必須
+    design_ref: "§14 Embedding Data"
+    severity: critical
+    when: {ai_kind: [vector_index, embedding_set]}
+    check: {type: ai_embedding_protected}
+
   - id: CAT-001
     name: Glossary用語との紐付け
     design_ref: "§6.2 Glossary"

@@ -20,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
-from sqlalchemy import and_, or_, select, true
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -144,6 +144,9 @@ PERMISSIONS: Mapping[str, Rule] = {
                                 description="学習利用の承認 (構成元の資産の Owner と Committee)"),
     "ai.model.approve": rule(relations=("owner",), approval=True, description="Model Version の承認と再開"),
     "ai.model.suspend": rule(roles=(COMMITTEE,), relations=("owner",), description="Model Version の停止と廃止"),
+    "ai.inheritance.recompute": rule(roles=(ADMIN, COMMITTEE), description="継承した統制属性の全件再計算"),
+    # RAG サービスの実行主体が検索のたびに呼ぶ判定 (承認ではないため Custodian を含む)
+    "ai.rag.authorize": rule(relations=("custodian",), description="RAG の検索結果を利用者の権限で絞り込む判定"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -217,6 +220,11 @@ def require(db: Session, principal: Principal, action: str, *, asset: DataAsset 
 
 
 # ---------------------------------------------------------------- ABAC (読み取り)
+def effective_sensitivity(asset: DataAsset) -> str:
+    """ABAC で使う機密度。AI 資産は上流から継承した実効値で判定する (§14 Embedding / Vector / RAG)。"""
+    return asset.effective_sensitivity or asset.sensitivity
+
+
 def _level(sensitivity: str) -> int:
     return SENSITIVITY_LEVELS.index(sensitivity) if sensitivity in SENSITIVITY_LEVELS else len(SENSITIVITY_LEVELS)
 
@@ -236,13 +244,14 @@ def readable_clause(principal: Principal) -> ColumnElement[bool]:
     if principal.roles & PRIVILEGED_READERS:
         return true()
     party = or_(*[getattr(DataAsset, rel) == principal.subject for rel in ASSET_RELATIONS])
-    return or_(party, DataAsset.sensitivity.in_(_clearance_sensitivities(principal)), _active_grant(principal.subject))
+    sensitivity = func.coalesce(DataAsset.effective_sensitivity, DataAsset.sensitivity)
+    return or_(party, sensitivity.in_(_clearance_sensitivities(principal)), _active_grant(principal.subject))
 
 
 def can_read(db: Session, principal: Principal, asset: DataAsset) -> bool:
     if principal.roles & PRIVILEGED_READERS or relations_of(principal, asset):
         return True
-    if asset.sensitivity in _clearance_sensitivities(principal):
+    if effective_sensitivity(asset) in _clearance_sensitivities(principal):
         return True
     return db.scalar(select(DataAsset.id).where(and_(DataAsset.id == asset.id, _active_grant(principal.subject)))) \
         is not None
@@ -250,10 +259,11 @@ def can_read(db: Session, principal: Principal, asset: DataAsset) -> bool:
 
 def require_read(db: Session, principal: Principal, asset: DataAsset) -> None:
     if not can_read(db, principal, asset):
-        if asset.sensitivity == RESTRICTED:
+        sensitivity = effective_sensitivity(asset)
+        if sensitivity == RESTRICTED:
             reason = "restricted 資産の閲覧には Owner の承認が必要です (§11 Access Control)"
         else:
-            reason = f"clearance ({principal.clearance}) が資産の機密度 ({asset.sensitivity}) に達していません"
+            reason = f"clearance ({principal.clearance}) が資産の機密度 ({sensitivity}) に達していません"
         deny(db, principal, "asset.read", entity_type="asset", entity_id=asset.id, reason=reason)
 
 

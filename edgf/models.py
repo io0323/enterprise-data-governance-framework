@@ -84,6 +84,10 @@ class DataAsset(Base):
     privacy_params: Mapped[dict] = mapped_column(JSON, default=dict)
     # §14 data_class=ai のときの種別 (training_dataset / embedding_set / vector_index / rag_corpus / model)
     ai_kind: Mapped[str | None] = mapped_column(String(20), index=True)
+    # §14 継承した統制属性 (Lineage の上流から計算する)。AI 資産以外は NULL で、ABAC は宣言値を使う
+    effective_sensitivity: Mapped[str | None] = mapped_column(String(20))
+    effective_contains_pii: Mapped[bool | None] = mapped_column(Boolean)
+    inheritance: Mapped[dict] = mapped_column(JSON, default=dict)  # 実効値を決めた上流と解除の根拠 (名前のみ)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)

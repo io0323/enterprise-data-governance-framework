@@ -81,3 +81,16 @@ def approve_dataset(client, dataset_version_id, source_owners=("src-owner",), co
         assert r.status_code == 200, r.text
     assert r.json()["status"] == "approved", r.text
     return r.json()
+
+
+def certify(client, asset_id, owner="src-owner") -> None:
+    """Certification のゲートを通して Certified にする (品質の実績と active が必要)。"""
+    run_quality(client, asset_id)
+    assert client.post(f"{API}/assets/{asset_id}/lifecycle", headers=ADMIN, json={"target_state": "active"}).status_code == 200
+    r = client.post(f"{API}/assets/{asset_id}/certification", headers=U(owner), json={"certification": "certified"})
+    assert r.status_code == 200, r.text
+
+
+def policy_result(client, asset_id, policy_id):
+    results = client.get(f"{API}/policies/evaluate/assets/{asset_id}", headers=ADMIN).json()["results"]
+    return next((r for r in results if r["policy_id"] == policy_id), None)

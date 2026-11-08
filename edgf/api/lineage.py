@@ -12,7 +12,7 @@ from edgf.db import get_session
 from edgf.deps import get_principal
 from edgf.models import DataAsset, fit_identifier
 from edgf.schemas import LineageEdgeIn, OpenLineageEvent
-from edgf.services import audit, lineage
+from edgf.services import ai_inherit, audit, lineage
 
 router = APIRouter(prefix="/lineage", tags=["lineage"])
 
@@ -25,6 +25,7 @@ def add_edge(body: LineageEdgeIn, db: Session = Depends(get_session), principal:
     except ValueError as ex:
         raise HTTPException(422, str(ex)) from ex
     audit.record(db, principal.audit_actor, "lineage.edge", "lineage", f"{e.source}->{e.target}", body.model_dump())
+    ai_inherit.refresh(db, principal.audit_actor, [e.target])
     return {"id": e.id, "source": e.source, "target": e.target, "job": e.job}
 
 
@@ -45,6 +46,7 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
                 lineage.upsert_edge(db, i.name, o.name, job, run_id=event.run.runId)
                 count += 1
     audit.record(db, principal.audit_actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count})
+    ai_inherit.refresh(db, principal.audit_actor, [o.name for o in event.outputs])
     return {"accepted": True, "edges": count}
 
 

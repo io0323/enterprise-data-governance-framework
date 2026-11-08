@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -27,7 +27,9 @@ def _inventory(db: Session, principal: Principal, domain: str | None, category: 
                purpose: str | None, legal_basis: LegalBasis | None) -> list[dict]:
     """権限のあるドメインかつ ABAC で閲覧できる資産に絞る。"""
     scope = authz.require_scope(db, principal, "privacy.inventory.read")
-    stmt = select(DataAsset).where(scope, authz.readable_clause(principal), DataAsset.contains_pii.is_(True),
+    # 上流から PII を継承した AI 資産も PII の所在に含める (§14)
+    stmt = select(DataAsset).where(scope, authz.readable_clause(principal),
+                                   or_(DataAsset.contains_pii.is_(True), DataAsset.effective_contains_pii.is_(True)),
                                    DataAsset.lifecycle_state != LifecycleState.DELETED.value)
     if domain:
         stmt = stmt.where(DataAsset.domain == domain)

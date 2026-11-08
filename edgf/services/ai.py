@@ -19,6 +19,8 @@ from edgf.services.mdm_rules import get_entities
 
 MODEL = AiKind.MODEL.value
 TRAINING_DATASET = AiKind.TRAINING_DATASET.value
+RAG_CORPUS = AiKind.RAG_CORPUS.value
+ALL_KINDS = tuple(k.value for k in AiKind)
 DATA_KINDS = tuple(k.value for k in AiKind if k != AiKind.MODEL)  # Dataset Card を持つ種別
 AI_TRAINING_PURPOSE = "ai_training"
 # lineage_edges に反映するデータセット単位のエッジの job。これ以外の job のエッジは版の情報と対応しない

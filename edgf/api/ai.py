@@ -14,10 +14,10 @@ from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
 from edgf.models import DataAsset, DatasetCard, DatasetVersion, ModelCard, ModelUsage, ModelVersion, TrainingApproval
 from edgf.pagination import Page, page_params, paginate, paginate_list
-from edgf.schemas import (DatasetCardIn, DatasetCardOut, DatasetSourceOut, DatasetVersionIn, DatasetVersionOut, ModelCardIn,
-                          ModelCardOut, ModelSuspendIn, ModelUsageIn, ModelUsageOut, ModelVersionIn, ModelVersionOut, TrainingApprovalIn, TrainingApprovalOut,
+from edgf.schemas import (DatasetCardIn, InheritanceOut, DatasetCardOut, DatasetSourceOut, DatasetVersionIn, DatasetVersionOut, ModelCardIn,
+                          ModelCardOut, ModelSuspendIn, ModelUsageIn, ModelUsageOut, ModelVersionIn, ModelVersionOut, RagAuthorizeIn, TrainingApprovalIn, TrainingApprovalOut,
                           TrainingDecisionIn)
-from edgf.services import ai, ai_lineage, ai_training, audit
+from edgf.services import ai, ai_inherit, ai_lineage, ai_rag, ai_training, audit
 from edgf.services.ai import AiStateError, AiValidationError
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -112,6 +112,7 @@ def register_dataset_version(asset_id: str, body: DatasetVersionIn, db: Session 
     audit.record(db, principal.audit_actor, "ai.dataset_version.register", "dataset_version", version.id, {
         "asset_id": asset.id, "version": version.version, "manifest_hash": version.manifest_hash,
         "record_count": version.record_count, "sources": [s.qualified_name for s in ai.sources_of(db, version)]})
+    ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])
     return _dataset_out(db, version)
 
 
@@ -138,6 +139,7 @@ def register_model_version(asset_id: str, body: ModelVersionIn, db: Session = De
                      dataset_version_ids=body.dataset_version_ids, actor=principal.subject)
     audit.record(db, principal.audit_actor, "ai.model_version.register", "model_version", version.id, {
         "asset_id": asset.id, "version": version.version, "dataset_version_ids": sorted(d.id for d in version.datasets)})
+    ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])
     return _model_out(version)
 
 
@@ -279,6 +281,8 @@ def add_model_usage(version_id: str, body: ModelUsageIn, db: Session = Depends(g
                    description=body.description, actor=principal.subject)
     audit.record(db, principal.audit_actor, "ai.model_usage.add", "model_version", version.id,
                  {"usage_id": usage.id, "kind": usage.kind, "target": usage.target, "target_asset_id": usage.target_asset_id})
+    if usage.target_asset_id:
+        ai_inherit.refresh(db, principal.audit_actor, [db.get(DataAsset, usage.target_asset_id).qualified_name])
     return usage
 
 
@@ -319,3 +323,38 @@ def impacted_models(asset_id: str, request: Request, response: Response, page: P
             view = {"qualified_name": view["qualified_name"], "status": view["status"], "redacted": True}
         rows.append(view)
     return paginate_list(rows, page, request, response)
+
+
+# ---------------- 統制属性の継承 (§14 Embedding / Vector / RAG) ----------------
+@router.get("/assets/{asset_id}/inheritance", response_model=InheritanceOut)
+def get_inheritance(asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """実効の統制属性を、その時点の Lineage から計算して返す。"""
+    asset = load_asset(db, principal, asset_id)
+    _guard(ai.require_kind, asset, *ai.ALL_KINDS)
+    inherited = ai_inherit.compute(db, asset)
+    return InheritanceOut(asset_id=asset.id, declared_sensitivity=asset.sensitivity, effective_sensitivity=inherited.sensitivity,
+                          declared_contains_pii=asset.contains_pii, effective_contains_pii=inherited.contains_pii,
+                          violation=ai_inherit.is_violation(asset, inherited), **inherited.view())
+
+
+@router.post("/inheritance/recompute")
+def recompute_inheritance(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """全 AI 資産の実効値を再計算する。通常は変更のたびに自動で再計算される (既存データの移行用)。"""
+    authz.require(db, principal, "ai.inheritance.recompute", entity_type="asset", entity_id="*")
+    result = ai_inherit.recompute_all(db, principal.audit_actor)
+    audit.record(db, principal.audit_actor, "ai.inheritance.recompute_all", "asset", "*", result)
+    return result
+
+
+# ---------------- RAG (§14 RAG Data: アクセス制御を検索時に適用) ----------------
+@router.post("/rag/authorize")
+def authorize_rag(body: RagAuthorizeIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """検索でヒットした構成元のうち、利用者の権限で ABAC を通過した資産だけを返す。
+
+    ステートレスで、呼び出し頻度が高いので監査には記録しない (POST /privacy/consents/check と同じ扱い)。
+    """
+    corpus = load_asset(db, principal, body.corpus_asset_id, "ai.rag.authorize")
+    _guard(ai.require_kind, corpus, ai.RAG_CORPUS)
+    return ai_rag.authorize(db, corpus, subject=body.user.subject, roles=body.user.roles,
+                            clearance=body.user.clearance.value if body.user.clearance else None,
+                            hit_asset_ids=body.hit_asset_ids)

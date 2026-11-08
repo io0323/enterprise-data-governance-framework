@@ -118,6 +118,9 @@ class AssetOut(ORM, AssetBase):
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
+    effective_sensitivity: Sensitivity | None = Field(default=None, description="§14 継承を含む実効機密度 (AI 資産のみ)。ABAC はこの値で判定する")
+    effective_contains_pii: bool | None = Field(default=None, description="§14 継承を含む実効の contains_pii (AI 資産のみ)")
+    inheritance: dict[str, Any] = Field(default_factory=dict, description="実効値を決めた上流と継承の解除の根拠")
 
 
 class LifecycleChange(BaseModel):
@@ -737,3 +740,29 @@ class ModelUsageOut(ORM):
     description: str
     created_by: str
     created_at: datetime
+
+
+class RagUser(AiInput):
+    subject: str = Field(min_length=1, max_length=200, description="検索の利用者 (JWT の subject)")
+    roles: list[str] = Field(default_factory=list, max_length=50)
+    clearance: Sensitivity | None = Field(default=None, description="省略時はロールから導く")
+
+
+class RagAuthorizeIn(AiInput):
+    """検索語やチャンクの本文、Embedding は受け取らない (§18.2)。ヒットした構成元の資産 ID だけを渡す。"""
+    corpus_asset_id: str = Field(max_length=36)
+    user: RagUser
+    hit_asset_ids: list[str] = Field(max_length=1000, description="検索でヒットした構成元の資産")
+
+
+class InheritanceOut(BaseModel):
+    asset_id: str
+    declared_sensitivity: str
+    effective_sensitivity: str
+    declared_contains_pii: bool
+    effective_contains_pii: bool
+    violation: bool
+    sensitivity_from: list[str]
+    pii_from: list[str]
+    released_by: list[str]
+    unregistered_upstream: list[str]

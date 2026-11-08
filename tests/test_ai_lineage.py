@@ -108,7 +108,10 @@ def test_trace_redacts_unreadable_sources(client):
     dv = dataset_version(client, train["id"], [secret["id"]])
     model = ai_asset(client, "ai.m", "model")
     mv = model_version(client, model["id"], [dv["id"]])
-    t = client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=U("reader", clearance="internal")).json()
+    # モデルは restricted を継承するので、clearance だけでは閲覧できない
+    assert client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=U("reader", clearance="internal")).status_code == 403
+    # モデルの当事者には系譜を返すが、閲覧できない構成元の詳細は伏せる
+    t = client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=U("ai-owner")).json()
     assert t["sources"] == [{"qualified_name": "crm.secret", "redacted": True}]
     assert t["datasets"][0]["version"] == "v1"
     full = client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=ADMIN).json()

@@ -18,12 +18,14 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_u
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import ai, audit, privacy
+from edgf.services import ai, ai_inherit, audit, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
 
 MAX_GRANT_DAYS = 365  # 恒久承認は不可 (§13 Exception と同じ上限)
+# 下流の AI 資産の実効値に影響する項目 (§14)
+INHERITANCE_FIELDS = {"sensitivity", "contains_pii", "schema_", "privacy_technique", "privacy_params", "data_class", "ai_kind"}
 
 
 
@@ -76,6 +78,7 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), princi
     db.add(asset)
     db.flush()
     audit.record(db, principal.audit_actor, "asset.register", "asset", asset.id, {"qualified_name": asset.qualified_name})
+    ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])  # 既存の Lineage の上流として登録された場合も含む
     return asset
 
 
@@ -178,6 +181,8 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
         changes["certification_reset"] = True
     db.flush()
     audit.record(db, principal.audit_actor, "asset.update", "asset", asset.id, changes)
+    if set(changes) & INHERITANCE_FIELDS:
+        ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])
     return asset
 
 
