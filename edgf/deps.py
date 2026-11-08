@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from edgf import authz
 from edgf.auth import AuthError, AuthUnavailable, Principal
 from edgf.errors import ProblemError
 from edgf.models import DataAsset
@@ -30,4 +31,13 @@ def get_asset_or_404(db: Session, asset_id: str) -> DataAsset:
     asset = db.get(DataAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"asset not found: {asset_id}")
+    return asset
+
+
+def load_asset(db: Session, principal: Principal, asset_id: str, action: str | None = None) -> DataAsset:
+    """資産を取得し、ABAC の閲覧可否と (指定時は) 操作権限を判定する。"""
+    asset = get_asset_or_404(db, asset_id)
+    authz.require_read(db, principal, asset)
+    if action:
+        authz.require(db, principal, action, asset=asset)
     return asset

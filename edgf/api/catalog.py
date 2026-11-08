@@ -8,24 +8,29 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import String, cast, or_, select
 from sqlalchemy.orm import Session
 
-from edgf.db import get_session
+from edgf import authz
 from edgf.auth import Principal
-from edgf.deps import get_asset_or_404, get_principal
+from edgf.db import get_session
+from edgf.deps import get_principal, load_asset
 from edgf.enums import LIFECYCLE_TRANSITIONS, Certification, LifecycleState
 from edgf.errors import ProblemError
-from edgf.models import DataAsset, Domain, GlossaryTerm, utcnow
+from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
-from edgf.schemas import (AssetCreate, AssetOut, AssetUpdate, CertificationChange, DomainIn, DomainOut,
-                          LegalHoldChange, LifecycleChange, OwnershipChange)
+from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
+                          DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
 from edgf.services import audit
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
 
+MAX_GRANT_DAYS = 365  # 恒久承認は不可 (§13 Exception と同じ上限)
+
+
 
 # ---------------- Domains (§15) ----------------
 @router.post("/domains", response_model=DomainOut, status_code=201)
 def create_domain(body: DomainIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "domain.create", entity_type="domain", entity_id=body.name)
     if db.get(Domain, body.name):
         raise HTTPException(409, "domain already exists")
     d = Domain(**body.model_dump())
@@ -60,6 +65,7 @@ def _validate_domain(db: Session, domain: str | None) -> None:
 @router.post("/assets", response_model=AssetOut, status_code=201)
 def register_asset(body: AssetCreate, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """Discovery/登録。Metadata First: 分類・機密度は必須 (§6.3)。"""
+    authz.require(db, principal, "asset.register", domain=body.domain, entity_id=body.qualified_name)
     if db.scalar(select(DataAsset).where(DataAsset.qualified_name == body.qualified_name)):
         raise HTTPException(409, f"already registered: {body.qualified_name}")
     _validate_domain(db, body.domain)
@@ -81,9 +87,10 @@ def search_assets(
     owner: str | None = None, certification: str | None = None, lifecycle_state: str | None = None,
     is_cde: bool | None = None, orphan: bool | None = Query(None, description="Owner未割当 (Unknown Owner) のみ"),
     include_deleted: bool = False, page: Page = Depends(page_params()),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session), principal: Principal = Depends(get_principal),
 ):
-    stmt = select(DataAsset)
+    """閲覧できない資産 (ABAC) は件数を含め一覧から除外する。"""
+    stmt = select(DataAsset).where(authz.readable_clause(principal))
     if q:
         like = _contains(q)
         term_assets = select(DataAsset.id).join(DataAsset.terms).where(
@@ -109,35 +116,40 @@ def search_assets(
 
 @router.get("/assets/retention-due", response_model=list[AssetOut])
 def retention_due(request: Request, response: Response, page: Page = Depends(page_params()),
-                  db: Session = Depends(get_session)):
+                  db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """§10.2 保持期限到達資産 (Legal Hold中は除外)。"""
     now = utcnow()
     assets = db.scalars(select(DataAsset).where(
         DataAsset.retention_days.is_not(None), DataAsset.legal_hold.is_(False),
-        DataAsset.lifecycle_state != LifecycleState.DELETED.value).order_by(DataAsset.qualified_name)).all()
+        DataAsset.lifecycle_state != LifecycleState.DELETED.value, authz.readable_clause(principal))
+        .order_by(DataAsset.qualified_name)).all()
     due = [a for a in assets if a.created_at + timedelta(days=a.retention_days) <= now]
     return paginate_list(due, page, request, response)
 
 
 @router.get("/assets/by-name/{qualified_name}", response_model=AssetOut)
-def get_asset_by_name(qualified_name: str, db: Session = Depends(get_session)):
+def get_asset_by_name(qualified_name: str, db: Session = Depends(get_session),
+                      principal: Principal = Depends(get_principal)):
     a = db.scalar(select(DataAsset).where(DataAsset.qualified_name == qualified_name))
     if not a:
         raise HTTPException(404, "asset not found")
+    authz.require_read(db, principal, a)
     return a
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut)
-def get_asset(asset_id: str, db: Session = Depends(get_session)):
-    return get_asset_or_404(db, asset_id)
+def get_asset(asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    return load_asset(db, principal, asset_id)
 
 
 @router.patch("/assets/{asset_id}", response_model=AssetOut)
 def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
-    asset = get_asset_or_404(db, asset_id)
+    asset = load_asset(db, principal, asset_id, "asset.update")
     changes = body.model_dump(exclude_unset=True, by_alias=False, mode="json")
     if "domain" in changes:
         _validate_domain(db, changes["domain"])
+        if changes["domain"] != asset.domain:  # 移管先ドメインでも権限が必要
+            authz.require(db, principal, "asset.update", domain=changes["domain"], entity_id=asset.id)
     for k, v in changes.items():
         setattr(asset, k, v)
     # 認証済み資産の構造・分類変更は再認証を要求する
@@ -152,7 +164,7 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
 @router.put("/assets/{asset_id}/ownership", response_model=AssetOut)
 def change_ownership(asset_id: str, body: OwnershipChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """§4 Owner/Steward/Custodian の割当。Ownerは単一 (共同Owner禁止)。"""
-    asset = get_asset_or_404(db, asset_id)
+    asset = load_asset(db, principal, asset_id, "asset.ownership_change")
     before = {"owner": asset.owner, "steward": asset.steward, "custodian": asset.custodian}
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(asset, k, v)
@@ -163,7 +175,9 @@ def change_ownership(asset_id: str, body: OwnershipChange, db: Session = Depends
 
 @router.post("/assets/{asset_id}/lifecycle", response_model=AssetOut)
 def change_lifecycle(asset_id: str, body: LifecycleChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
-    asset = get_asset_or_404(db, asset_id)
+    # 削除指示は Owner または Committee のみ (§10.1 Delete)。それ以外の遷移は資産の更新権限
+    action = "asset.delete" if body.target_state == LifecycleState.DELETED else "asset.update"
+    asset = load_asset(db, principal, asset_id, action)
     current = LifecycleState(asset.lifecycle_state)
     if body.target_state not in LIFECYCLE_TRANSITIONS[current]:
         raise HTTPException(409, f"invalid transition {current.value} -> {body.target_state.value}")
@@ -184,7 +198,7 @@ def change_lifecycle(asset_id: str, body: LifecycleChange, db: Session = Depends
 
 @router.post("/assets/{asset_id}/legal-hold", response_model=AssetOut)
 def set_legal_hold(asset_id: str, body: LegalHoldChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
-    asset = get_asset_or_404(db, asset_id)
+    asset = load_asset(db, principal, asset_id, "asset.legal_hold")
     asset.legal_hold = body.legal_hold
     db.flush()
     audit.record(db, principal.audit_actor, "asset.legal_hold", "asset", asset.id, body.model_dump())
@@ -194,25 +208,27 @@ def set_legal_hold(asset_id: str, body: LegalHoldChange, db: Session = Depends(g
 @router.post("/assets/{asset_id}/refreshed", response_model=AssetOut)
 def mark_refreshed(asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """Data Plane からの更新通知 (Operational Metadata / Freshness)。"""
-    asset = get_asset_or_404(db, asset_id)
+    asset = load_asset(db, principal, asset_id, "asset.refresh_notify")
     asset.last_refreshed_at = utcnow()
     db.flush()
+    audit.record(db, principal.audit_actor, "asset.refreshed", "asset", asset.id,
+                 {"last_refreshed_at": asset.last_refreshed_at})
     return asset
 
 
 @router.get("/assets/{asset_id}/certification/check")
-def check_certification(asset_id: str, db: Session = Depends(get_session)):
-    asset = get_asset_or_404(db, asset_id)
+def check_certification(asset_id: str, db: Session = Depends(get_session),
+                        principal: Principal = Depends(get_principal)):
+    asset = load_asset(db, principal, asset_id)
     blockers = certification_blockers(db, asset)
     return {"asset_id": asset_id, "certifiable": not blockers, "blockers": blockers}
 
 
 @router.post("/assets/{asset_id}/certification", response_model=AssetOut)
 def change_certification(asset_id: str, body: CertificationChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
-    asset = get_asset_or_404(db, asset_id)
+    # Certification はその資産の Owner / Steward のみ (§7)
+    asset = load_asset(db, principal, asset_id, "asset.certify")
     if body.certification == Certification.CERTIFIED:
-        if principal.subject not in (asset.owner, asset.steward):
-            raise HTTPException(403, "CertificationはOwnerまたはStewardのみ実行できます")
         blockers = certification_blockers(db, asset)
         if blockers:
             raise ProblemError(409, "Certification の前提条件を満たしていません", type_="certification-blocked",
@@ -221,3 +237,47 @@ def change_certification(asset_id: str, body: CertificationChange, db: Session =
     db.flush()
     audit.record(db, principal.audit_actor, "asset.certification", "asset", asset.id, body.model_dump(mode="json"))
     return asset
+
+
+# ---------------- Access Grants (§4.2 アクセス承認 / §11) ----------------
+@router.post("/assets/{asset_id}/access-grants", response_model=AccessGrantOut, status_code=201)
+def grant_access(asset_id: str, body: AccessGrantIn, db: Session = Depends(get_session),
+                 principal: Principal = Depends(get_principal)):
+    """Owner が利用者に資産の閲覧を承認する (restricted 資産の閲覧に必須)。"""
+    asset = load_asset(db, principal, asset_id, "asset.access_grant")
+    expires = body.expires_at.replace(tzinfo=None)
+    now = utcnow()
+    if expires <= now or expires > now + timedelta(days=MAX_GRANT_DAYS):
+        raise HTTPException(422, f"expires_at は現在から{MAX_GRANT_DAYS}日以内の未来である必要があります (恒久承認は不可)")
+    g = AccessGrant(asset_id=asset.id, subject=body.subject, purpose=body.purpose,
+                    granted_by=principal.subject, expires_at=expires)
+    db.add(g)
+    db.flush()
+    audit.record(db, principal.audit_actor, "access.grant", "asset", asset.id,
+                 {"grant_id": g.id, "subject": g.subject, "purpose": g.purpose, "expires_at": g.expires_at})
+    return g
+
+
+@router.get("/assets/{asset_id}/access-grants", response_model=list[AccessGrantOut])
+def list_access_grants(asset_id: str, request: Request, response: Response, include_inactive: bool = False,
+                       page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                       principal: Principal = Depends(get_principal)):
+    asset = load_asset(db, principal, asset_id, "asset.access_grant.read")
+    stmt = select(AccessGrant).where(AccessGrant.asset_id == asset.id)
+    if not include_inactive:
+        stmt = stmt.where(AccessGrant.revoked_at.is_(None), AccessGrant.expires_at > utcnow())
+    return paginate(db, stmt.order_by(AccessGrant.created_at.desc(), AccessGrant.id), page, request, response)
+
+
+@router.delete("/assets/{asset_id}/access-grants/{grant_id}", response_model=AccessGrantOut)
+def revoke_access(asset_id: str, grant_id: str, db: Session = Depends(get_session),
+                  principal: Principal = Depends(get_principal)):
+    asset = load_asset(db, principal, asset_id, "asset.access_revoke")
+    g = db.get(AccessGrant, grant_id)
+    if g is None or g.asset_id != asset.id:
+        raise HTTPException(404, "access grant not found")
+    if g.revoked_at is None:
+        g.revoked_at, g.revoked_by = utcnow(), principal.subject
+        db.flush()
+        audit.record(db, principal.audit_actor, "access.revoke", "asset", asset.id, {"grant_id": g.id, "subject": g.subject})
+    return g

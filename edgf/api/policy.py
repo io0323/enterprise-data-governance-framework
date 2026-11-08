@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from edgf.db import get_session
+from edgf import authz
 from edgf.auth import Principal
-from edgf.deps import get_asset_or_404, get_principal
+from edgf.db import get_session
+from edgf.deps import get_principal, load_asset
 from edgf.models import DataAsset, PolicyException, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import ExceptionDecision, ExceptionIn, ExceptionOut
@@ -28,6 +29,7 @@ def list_policies(request: Request, response: Response, page: Page = Depends(pag
 
 @router.post("/reload")
 def reload_policies(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "policy.reload", entity_type="policy", entity_id="*")
     try:
         ps = get_policies(reload=True)
     except PolicyLoadError as e:
@@ -37,8 +39,8 @@ def reload_policies(db: Session = Depends(get_session), principal: Principal = D
 
 
 @router.get("/evaluate/assets/{asset_id}")
-def evaluate_one(asset_id: str, db: Session = Depends(get_session)):
-    asset = get_asset_or_404(db, asset_id)
+def evaluate_one(asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    asset = load_asset(db, principal, asset_id)
     res = evaluate_asset(db, asset)
     return {"asset_id": asset.id, "qualified_name": asset.qualified_name,
             "compliant": all(r["status"] != "fail" for r in res), "results": res}
@@ -46,6 +48,7 @@ def evaluate_one(asset_id: str, db: Session = Depends(get_session)):
 
 @router.post("/evaluate")
 def evaluate(open_issues: bool = False, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "policy.evaluate_all", entity_type="policy", entity_id="*")
     """全資産の自動監査。open_issues=true で違反を Issue 化 (重複起票なし)。"""
     report = evaluate_all(db)
     opened = 0
@@ -66,7 +69,7 @@ def evaluate(open_issues: bool = False, db: Session = Depends(get_session), prin
 
 @router.post("/exceptions", response_model=ExceptionOut, status_code=201)
 def request_exception(body: ExceptionIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
-    get_asset_or_404(db, body.asset_id)
+    load_asset(db, principal, body.asset_id, "exception.request")
     if body.policy_id not in {p.id for p in get_policies()}:
         raise HTTPException(422, f"unknown policy: {body.policy_id}")
     expires = body.expires_at.replace(tzinfo=None)
@@ -85,8 +88,11 @@ def request_exception(body: ExceptionIn, db: Session = Depends(get_session), pri
 
 @router.get("/exceptions", response_model=list[ExceptionOut])
 def list_exceptions(request: Request, response: Response, status: str | None = None,
-                    page: Page = Depends(page_params()), db: Session = Depends(get_session)):
-    stmt = select(PolicyException).order_by(PolicyException.created_at.desc(), PolicyException.id)
+                    page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                    principal: Principal = Depends(get_principal)):
+    readable = select(DataAsset.id).where(authz.readable_clause(principal))
+    stmt = select(PolicyException).where(PolicyException.asset_id.in_(readable)) \
+        .order_by(PolicyException.created_at.desc(), PolicyException.id)
     if status:
         stmt = stmt.where(PolicyException.status == status)
     return paginate(db, stmt, page, request, response)
@@ -98,10 +104,12 @@ def decide_exception(exception_id: str, body: ExceptionDecision, db: Session = D
     ex = db.get(PolicyException, exception_id)
     if not ex:
         raise HTTPException(404, "exception not found")
+    authz.require(db, principal, "exception.decide", entity_type="exception", entity_id=ex.id)
     if ex.status != "pending":
         raise HTTPException(409, f"already decided: {ex.status}")
     if principal.subject == ex.requested_by:
-        raise HTTPException(403, "申請者本人は承認できません (職務分離)")
+        authz.deny(db, principal, "exception.decide", entity_type="exception", entity_id=ex.id,
+                   reason="申請者本人は承認できません (職務分離)")
     ex.status = "approved" if body.approve else "rejected"
     ex.approved_by = principal.subject
     db.flush()

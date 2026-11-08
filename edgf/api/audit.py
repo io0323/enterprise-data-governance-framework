@@ -5,7 +5,10 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from edgf import authz
+from edgf.auth import Principal
 from edgf.db import get_session
+from edgf.deps import get_principal
 from edgf.models import AuditEvent
 from edgf.pagination import Page, page_params, paginate
 from edgf.services.audit import verify_chain
@@ -15,7 +18,10 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 @router.get("/events")
 def list_events(request: Request, response: Response, entity_id: str | None = None, action: str | None = None,
-                actor: str | None = None, request_id: str | None = None, page: Page = Depends(page_params()), db: Session = Depends(get_session)):
+                actor: str | None = None, request_id: str | None = None, page: Page = Depends(page_params()),
+                db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """監査ログは全資産の操作内容を含むため Committee / admin のみ参照できる (§13, §19 Security)。"""
+    authz.require(db, principal, "audit.read", entity_type="audit", entity_id="*")
     stmt = select(AuditEvent).order_by(AuditEvent.seq.desc())
     for col, val in (("entity_id", entity_id), ("action", action), ("actor", actor), ("request_id", request_id)):
         if val:

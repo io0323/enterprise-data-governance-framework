@@ -157,6 +157,23 @@ class PolicyException(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AccessGrant(Base):
+    """§4.2 アクセス承認 (Owner A/R) / §11 Access Control: 資産メタデータの閲覧承認 (期限付き)。
+
+    restricted 資産は Owner の承認が無い限り当事者・Committee 以外に表示しない (edgf/authz.py)。
+    """
+    __tablename__ = "access_grants"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    subject: Mapped[str] = mapped_column(String(200), index=True)
+    purpose: Mapped[str] = mapped_column(Text)
+    granted_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoked_by: Mapped[str | None] = mapped_column(String(200))
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

@@ -109,6 +109,24 @@ class OwnershipChange(BaseModel):
     custodian: str | None = None
 
 
+class AccessGrantIn(BaseModel):
+    subject: str = Field(min_length=1, max_length=200, description="閲覧を承認する利用者 (JWT の subject)")
+    purpose: str = Field(min_length=1, description="利用目的 (§12 目的内利用)")
+    expires_at: datetime = Field(description="期限 (恒久承認は不可。最大365日)")
+
+
+class AccessGrantOut(ORM):
+    id: str
+    asset_id: str
+    subject: str
+    purpose: str
+    granted_by: str
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+    revoked_by: str | None
+
+
 # ---------- Glossary ----------
 class TermIn(BaseModel):
     name: str
