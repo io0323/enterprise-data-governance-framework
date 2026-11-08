@@ -39,3 +39,44 @@ def add_port(client, product_id, asset_id, name="main", **kw) -> dict:
                     json={"name": name, "asset_id": asset_id, "port_type": "table", "address_uri": "warehouse://sales/orders", **kw})
     assert r.status_code == 201, r.text
     return r.json()
+
+
+COLUMNS = [{"name": "order_id", "type": "bigint", "nullable": False, "description": "受注 ID"},
+           {"name": "amount", "type": "int", "nullable": True, "description": "金額"}]
+
+
+def contract_body(version="1.0.0", **kw) -> dict:
+    return {"version": version, "description": "受注の契約", "schema": COLUMNS, "sensitivity": "internal", **kw}
+
+
+def contract(client, port_id) -> dict:
+    r = client.post(f"{MESH}/contracts", headers=STEWARD, json={"output_port_id": port_id})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def draft(client, contract_id, version="1.0.0", **kw) -> dict:
+    r = client.post(f"{MESH}/contracts/{contract_id}/versions", headers=STEWARD, json=contract_body(version, **kw))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def publish(client, version_id, code=200, headers=PO):
+    r = client.post(f"{MESH}/contract-versions/{version_id}/publish", headers=headers)
+    assert r.status_code == code, r.text
+    return r.json()
+
+
+def published(client, contract_id, version="1.0.0", **kw) -> dict:
+    return publish(client, draft(client, contract_id, version, **kw)["id"])
+
+
+def setup_contract(client, *, sensitivity="internal", qn="sales.orders_pub", **asset_kw) -> dict:
+    """ドメイン、Output Port の資産 (Contract と同じスキーマ)、Product、Port、Contract を用意する。"""
+    if client.get(f"{API}/domains", headers=ADMIN).headers["X-Total-Count"] == "0":
+        domain(client)
+    schema = [{"name": c["name"], "type": c["type"], "nullable": c["nullable"], "description": c["description"]} for c in COLUMNS]
+    a = port_asset(client, qn, sensitivity=sensitivity, schema=schema, **asset_kw)
+    p = product(client, f"product-{qn}")
+    port = add_port(client, p["id"], a["id"])
+    return {"asset": a, "product": p, "port": port, "contract": contract(client, port["id"])}

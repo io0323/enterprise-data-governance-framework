@@ -1,0 +1,217 @@
+"""§15 Standardization: Data Contract の版の管理、公開、スキーマのずれの検出."""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from edgf import authz
+from edgf.auth import SENSITIVITY_LEVELS
+from edgf.enums import ContractStatus, EscalationLevel
+from edgf.models import (ContractVersion, DataAsset, DataContract, DataProduct, OutputPort, PrivacyPurpose, QualityRule,
+                         fit_identifier, utcnow)
+from edgf.services import audit, issues, mesh_compat
+from edgf.services.mesh import MeshStateError, MeshValidationError
+from edgf.services.mesh_compat import Bump
+from edgf.services.quality import latest_run
+
+C = ContractStatus
+LIVE = (C.PUBLISHED.value, C.DEPRECATED.value)
+CONTENT_KEYS = ("description", "schema_", "quality_sla", "freshness_sla_hours", "sensitivity", "purposes", "conforms_to", "cdm_mappings")
+
+
+class VersionBumpRequired(Exception):
+    """前の版と比べて、版の上げ方が足りない (409)。"""
+
+    def __init__(self, message: str, *, required: str, actual: str | None, changes: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.required, self.actual, self.changes = required, actual, changes
+        self.breaking = [c["code"] for c in changes if c["breaking"]]
+
+
+def lock(db: Session, contract: DataContract) -> None:
+    """公開、利用登録、retire を Contract の行ロックで直列化する (同時に実行すると版の順序や条件の判定が崩れる)。"""
+    db.refresh(contract, with_for_update=True)
+
+
+def create_contract(db: Session, port: OutputPort, *, name: str | None, actor: str) -> DataContract:
+    if db.scalar(select(DataContract.id).where(DataContract.output_port_id == port.id)):
+        raise MeshStateError("この Output Port の Contract は登録済みです")
+    contract = DataContract(product_id=port.product_id, output_port_id=port.id, name=name or port.name,
+                            schema_object=port.name, created_by=actor)
+    db.add(contract)
+    db.flush()
+    return contract
+
+
+def _validate_content(db: Session, asset: DataAsset, content: Mapping[str, Any]) -> None:
+    for purpose in content.get("purposes") or []:
+        if db.get(PrivacyPurpose, purpose) is None:
+            raise MeshValidationError(f"unknown purpose: {purpose}")
+    rule_ids = (content.get("quality_sla") or {}).get("rule_ids") or []
+    if rule_ids:
+        known = set(db.scalars(select(QualityRule.id).where(QualityRule.asset_id == asset.id)))
+        missing = sorted(set(rule_ids) - known)
+        if missing:
+            raise MeshValidationError(f"Output Port の資産に無い品質ルールです: {missing}")
+
+
+def _set_label(row: ContractVersion, label: str) -> None:
+    row.version = label
+    row.major, row.minor, row.patch = mesh_compat.parse_version(label)
+
+
+def create_version(db: Session, contract: DataContract, asset: DataAsset, *, version: str, content: Mapping[str, Any], actor: str) -> ContractVersion:
+    _validate_content(db, asset, content)
+    if db.scalar(select(ContractVersion.id).where(ContractVersion.contract_id == contract.id, ContractVersion.version == version)):
+        raise MeshStateError(f"版 {version} は登録済みです")
+    row = ContractVersion(contract_id=contract.id, status=C.DRAFT.value, created_by=actor, **content)
+    _set_label(row, version)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def update_draft(db: Session, row: ContractVersion, asset: DataAsset, *, version_label: str, content: Mapping[str, Any]) -> None:
+    if row.status != C.DRAFT.value:
+        raise MeshStateError(f"状態が {row.status} の版は変更できません (公開した版は不変です)")
+    _validate_content(db, asset, content)
+    if version_label != row.version and db.scalar(select(ContractVersion.id).where(
+            ContractVersion.contract_id == row.contract_id, ContractVersion.version == version_label)):
+        raise MeshStateError(f"版 {version_label} は登録済みです")
+    _set_label(row, version_label)
+    for key, value in content.items():
+        setattr(row, key, value)
+    db.flush()
+
+
+def latest_published(db: Session, contract: DataContract) -> ContractVersion | None:
+    return db.scalar(select(ContractVersion).where(ContractVersion.contract_id == contract.id, ContractVersion.status.in_(LIVE))
+                     .order_by(ContractVersion.major.desc(), ContractVersion.minor.desc(), ContractVersion.patch.desc()).limit(1))
+
+
+def view(row: ContractVersion) -> dict[str, Any]:
+    return {k: getattr(row, k) for k in CONTENT_KEYS}
+
+
+def quality_status(db: Session, asset: DataAsset, sla: Mapping[str, Any] | None) -> dict[str, Any]:
+    """品質 SLA を最新の品質検査の結果と照合する。値は扱わず、スコアとルールの結果だけを見る。"""
+    sla = sla or {}
+    min_score, rule_ids = sla.get("min_score"), sla.get("rule_ids") or []
+    declared = min_score is not None or bool(rule_ids)
+    run = latest_run(db, asset.id)
+    breaches = []
+    if declared and run is None:
+        breaches.append("品質検査の実績がありません")
+    elif run is not None:
+        if min_score is not None and run.score < min_score:
+            breaches.append(f"Quality Score {run.score} < {min_score}")
+        results = {r["rule_id"]: r for r in run.results or []}
+        for rule_id in rule_ids:
+            result = results.get(rule_id)
+            if result is None or result.get("breached"):
+                breaches.append(f"品質ルール {rule_id} を満たしていません")
+    return {"declared": declared, "ok": declared and not breaches, "score": run.score if run else None, "breaches": breaches}
+
+
+def check(db: Session, contract: DataContract, asset: DataAsset, proposal: Mapping[str, Any], version: str | None) -> dict[str, Any]:
+    """案を最新の公開版と比べる。何も保存しない。"""
+    baseline = latest_published(db, contract)
+    merged = {**(view(baseline) if baseline else {}), **proposal}
+    if baseline is None:
+        result: dict[str, Any] = {"baseline_version": None, "changes": [], "breaking_changes": [], "required_bump": None,
+                                  "suggested_version": version or "1.0.0", "allowed": True}
+    else:
+        changes = mesh_compat.compare(view(baseline), merged)
+        need = mesh_compat.required_bump(changes)
+        old = (baseline.major, baseline.minor, baseline.patch)
+        allowed = None
+        if version is not None:
+            actual = mesh_compat.actual_bump(old, mesh_compat.parse_version(version))
+            allowed = actual is not None and actual >= need
+        result = {"baseline_version": baseline.version, "changes": changes,
+                  "breaking_changes": [c for c in changes if c["breaking"]], "required_bump": need.name.lower(),
+                  "suggested_version": mesh_compat.next_version(old, need), "allowed": allowed}
+    result["quality"] = quality_status(db, asset, merged.get("quality_sla"))
+    return result
+
+
+def _check_publishable(db: Session, row: ContractVersion, baseline: ContractVersion | None, asset: DataAsset) -> tuple[list[dict[str, Any]], Bump | None]:
+    if row.status != C.DRAFT.value:
+        raise MeshStateError(f"状態が {row.status} の版は公開できません")
+    level = SENSITIVITY_LEVELS.index
+    if level(row.sensitivity) < level(authz.effective_sensitivity(asset)):
+        raise MeshValidationError(f"Contract の機密度 {row.sensitivity} が資産の機密度 {authz.effective_sensitivity(asset)} を下回っています")
+    if baseline is None:
+        return [], None
+    old, new = (baseline.major, baseline.minor, baseline.patch), (row.major, row.minor, row.patch)
+    actual = mesh_compat.actual_bump(old, new)
+    changes = mesh_compat.compare(view(baseline), view(row))
+    need = mesh_compat.required_bump(changes)
+    if actual is None:
+        raise MeshStateError(f"版 {row.version} は最新の公開版 {baseline.version} より新しくありません")
+    if actual < need:
+        raise VersionBumpRequired(f"この変更には {need.name.lower()} 版の更新が必要です (指定は {actual.name.lower()} 版の更新)",
+                                  required=need.name.lower(), actual=actual.name.lower(), changes=changes)
+    return changes, actual
+
+
+def publish(db: Session, actor: str, contract: DataContract, row: ContractVersion, product: DataProduct, port: OutputPort,
+            asset: DataAsset, publisher: str) -> dict[str, Any]:
+    baseline = latest_published(db, contract)
+    changes, _ = _check_publishable(db, row, baseline, asset)
+    now = utcnow()
+    row.status, row.published_by, row.published_at = C.PUBLISHED.value, publisher, now
+    db.flush()
+    check_drift(db, actor, asset)
+    return {"changes": [c["code"] for c in changes]}
+
+
+def drift_of(db: Session, asset: DataAsset, row: ContractVersion) -> list[dict[str, Any]]:
+    """Contract と Catalog の実際のスキーマのずれ。説明の違いは含めない。"""
+    catalog = [{"name": c.get("name"), "type": c.get("type", "string"), "nullable": c.get("nullable"), "pii": c.get("pii"),
+                "description": next((x.get("description") for x in row.schema_ if x["name"] == c.get("name")), ""),
+                "identifier_type": next((x.get("identifier_type") for x in row.schema_ if x["name"] == c.get("name")), None),
+                "reference_set": next((x.get("reference_set") for x in row.schema_ if x["name"] == c.get("name")), None)}
+               for c in asset.schema_ or []]
+    # Catalog に nullable の宣言が無いカラムは比較しない
+    contract_side = []
+    declared = {c["name"]: c["nullable"] for c in catalog}
+    for col in row.schema_:
+        contract_side.append({**col, "nullable": col.get("nullable") if declared.get(col["name"]) is not None else None})
+    changes = mesh_compat.compare_schema(contract_side, catalog)
+    level = SENSITIVITY_LEVELS.index
+    effective = authz.effective_sensitivity(asset)
+    if level(effective) > level(row.sensitivity):
+        changes.append({**mesh_compat.make_change("sensitivity_raised", "sensitivity", f"{row.sensitivity} → {effective}")})
+    return changes
+
+
+def check_drift(db: Session, actor: str, asset: DataAsset) -> list[dict[str, Any]]:
+    """Catalog の更新は拒否せず、ずれがあれば Output Port の資産の Owner と Product の Owner に Issue で知らせる (§15)。"""
+    port = db.scalar(select(OutputPort).where(OutputPort.asset_id == asset.id))
+    contract = db.scalar(select(DataContract).where(DataContract.output_port_id == port.id)) if port else None
+    row = latest_published(db, contract) if contract else None
+    if row is None:
+        return []
+    changes = drift_of(db, asset, row)
+    if not changes:
+        return []
+    product = db.get(DataProduct, contract.product_id)
+    ref = drift_ref(contract.id)
+    issue = issues.open_issue(
+        db, actor, asset=asset, kind="contract", severity="high", source_ref=ref, level=EscalationLevel.OWNER,
+        title=f"[CONTRACT] {asset.qualified_name}: Contract {row.version} と Catalog のスキーマがずれています",
+        description="ずれの内容: " + ", ".join(f"{c['code']}({c['target']})" for c in changes) + " (§15 Data Contract)")
+    if issue:
+        issue.assignee = product.owner
+        audit.record(db, actor, "mesh.contract.drift", "data_contract", contract.id, {
+            "version": row.version, "asset_id": asset.id, "issue_id": issue.id, "changes": [c["code"] for c in changes]})
+        db.flush()
+    return changes
+
+
+def drift_ref(contract_id: str) -> str:
+    return fit_identifier(f"mesh-drift:{contract_id}", 100)

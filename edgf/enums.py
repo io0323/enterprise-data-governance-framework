@@ -184,6 +184,14 @@ class ProductStatus(str, Enum):
     RETIRED = "retired"
 
 
+class ContractStatus(str, Enum):
+    """§15 Data Contract の版"""
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    DEPRECATED = "deprecated"    # 新しいメジャー版の公開後、併存期間中
+    RETIRED = "retired"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

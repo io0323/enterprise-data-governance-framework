@@ -61,9 +61,7 @@ def downstream(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Ses
     return {"asset": qualified_name, "edges": lineage.traverse(db, qualified_name, "downstream", depth)}
 
 
-@router.get("/{qualified_name}/impact")
-def impact(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Session = Depends(get_session),
-           principal: Principal = Depends(get_principal)):
+def redacted_impact(db: Session, principal: Principal, qualified_name: str, depth: int = 10) -> dict:
     """閲覧できない下流資産 (ABAC) は名前と深さだけを返し、詳細を伏せる。
 
     通知先 Owner (owners_to_notify) とリスク判定は変更管理 (§16 Change) に必要なため全資産で算出する。
@@ -79,3 +77,9 @@ def impact(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Session
         redacted.append(i)
     result["impacted"] = redacted
     return result
+
+
+@router.get("/{qualified_name}/impact")
+def impact(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Session = Depends(get_session),
+           principal: Principal = Depends(get_principal)):
+    return redacted_impact(db, principal, qualified_name, depth)

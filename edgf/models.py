@@ -629,6 +629,50 @@ class OutputPort(Base):
     product: Mapped[DataProduct] = relationship(back_populates="ports")
 
 
+class DataContract(Base):
+    """§15 Standardization: Output Port ごとの Data Contract。内容は版 (ContractVersion) が持つ。"""
+    __tablename__ = "data_contracts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    product_id: Mapped[str] = mapped_column(ForeignKey("data_products.id"), index=True)
+    output_port_id: Mapped[str] = mapped_column(ForeignKey("output_ports.id"), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    schema_object: Mapped[str] = mapped_column(String(200))  # ODCS の schema[].name
+    external_id: Mapped[str | None] = mapped_column(String(200))  # ODCS の id (取り込み元の識別子)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ContractVersion(Base):
+    """セマンティックバージョニングの版。公開した版は変更できない。"""
+    __tablename__ = "contract_versions"
+    __table_args__ = (UniqueConstraint("contract_id", "version", name="uq_contract_version"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    contract_id: Mapped[str] = mapped_column(ForeignKey("data_contracts.id"), index=True)
+    version: Mapped[str] = mapped_column(String(50))
+    major: Mapped[int] = mapped_column(Integer)
+    minor: Mapped[int] = mapped_column(Integer)
+    patch: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    schema_: Mapped[list] = mapped_column("schema", JSON, default=list)
+    quality_sla: Mapped[dict] = mapped_column(JSON, default=dict)  # min_score / rule_ids
+    freshness_sla_hours: Mapped[int | None] = mapped_column(Integer)
+    sensitivity: Mapped[str] = mapped_column(String(20))
+    purposes: Mapped[list] = mapped_column(JSON, default=list)  # 利用条件 (§12 Purpose の ID)
+    conforms_to: Mapped[str | None] = mapped_column(String(300))  # <cdm_entity>@<version>
+    cdm_mappings: Mapped[dict] = mapped_column(JSON, default=dict)  # CDM の属性 → Contract のカラム
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deprecated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sunset_at: Mapped[datetime | None] = mapped_column(DateTime)  # 併存期間の満了
+    sunset_shortened_by: Mapped[str | None] = mapped_column(String(200))
+    sunset_shortened_reason: Mapped[str | None] = mapped_column(Text)
+    retired_by: Mapped[str | None] = mapped_column(String(200))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

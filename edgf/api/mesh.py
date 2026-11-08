@@ -11,11 +11,14 @@ from sqlalchemy.orm import Session
 from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
-from edgf.deps import get_principal
-from edgf.models import DataAsset, DataProduct, OutputPort
+from edgf.api.lineage import redacted_impact
+from edgf.deps import get_principal, load_asset
+from edgf.errors import ProblemError
+from edgf.models import ContractVersion, DataAsset, DataContract, DataProduct, OutputPort
 from edgf.pagination import Page, page_params, paginate
-from edgf.schemas import OutputPortIn, OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate
-from edgf.services import audit, mesh
+from edgf.schemas import (ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, OutputPortIn,
+                          OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate)
+from edgf.services import audit, mesh, mesh_contracts
 from edgf.services.mesh import MeshStateError, MeshValidationError
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
@@ -49,8 +52,9 @@ def _port_out(db: Session, principal: Principal, port: OutputPort) -> OutputPort
     """閲覧できない資産のポートは名前だけを返す (Product 自体は発見できるようにする)。"""
     if not authz.can_read(db, principal, db.get(DataAsset, port.asset_id)):
         return OutputPortOut(id=port.id, product_id=port.product_id, name=port.name, redacted=True)
+    contract_id = db.scalar(select(DataContract.id).where(DataContract.output_port_id == port.id))
     return OutputPortOut(id=port.id, product_id=port.product_id, name=port.name, asset_id=port.asset_id,
-                         port_type=port.port_type, address_uri=port.address_uri)
+                         port_type=port.port_type, address_uri=port.address_uri, contract_id=contract_id)
 
 
 def _product_out(db: Session, principal: Principal, product: DataProduct) -> ProductOut:
@@ -130,3 +134,150 @@ def update_port(port_id: str, body: OutputPortUpdate, db: Session = Depends(get_
 @router.get("/ports/{port_id}", response_model=OutputPortOut)
 def get_port(port_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     return _port_out(db, principal, _get_port(db, port_id))
+
+
+# ---------------- Data Contract (§15 Standardization) ----------------
+def _get_contract(db: Session, contract_id: str) -> DataContract:
+    contract = db.get(DataContract, contract_id)
+    if contract is None:
+        raise HTTPException(404, f"data contract not found: {contract_id}")
+    return contract
+
+
+def _context(db: Session, contract: DataContract) -> tuple[DataProduct, OutputPort, DataAsset]:
+    port = db.get(OutputPort, contract.output_port_id)
+    return db.get(DataProduct, contract.product_id), port, db.get(DataAsset, port.asset_id)
+
+
+def _require_owner(db: Session, principal: Principal, action: str, product: DataProduct, entity_type: str, entity_id: str) -> None:
+    """Product の Owner だけに許す操作 (Output Port の資産の Owner とは別の人でありうる)。"""
+    authz.require(db, principal, action, relations=("owner",) if product.owner == principal.subject else (),
+                  entity_type=entity_type, entity_id=entity_id)
+
+
+def _get_version(db: Session, version_id: str) -> tuple[ContractVersion, DataContract]:
+    version = db.get(ContractVersion, version_id)
+    if version is None:
+        raise HTTPException(404, f"contract version not found: {version_id}")
+    return version, db.get(DataContract, version.contract_id)
+
+
+def _content(body: ContractVersionIn) -> dict[str, Any]:
+    return body.model_dump(by_alias=False, exclude={"version"}, mode="json")
+
+
+@router.post("/contracts", response_model=ContractOut, status_code=201)
+def create_contract(body: ContractIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    port = _get_port(db, body.output_port_id)
+    product = db.get(DataProduct, port.product_id)
+    authz.require(db, principal, "mesh.contract.write", domain=product.domain, entity_type="output_port", entity_id=port.id)
+    contract = _guard(mesh_contracts.create_contract, db, port, name=body.name, actor=principal.subject)
+    audit.record(db, principal.audit_actor, "mesh.contract.create", "data_contract", contract.id,
+                 {"output_port_id": port.id, "product_id": product.id})
+    return contract
+
+
+@router.get("/contracts", response_model=list[ContractOut])
+def list_contracts(request: Request, response: Response, product_id: str | None = None, page: Page = Depends(page_params()),
+                   db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """閲覧できない Output Port の Contract は件数を含めて除外する (ABAC)。"""
+    stmt = select(DataContract).join(OutputPort, DataContract.output_port_id == OutputPort.id) \
+        .join(DataAsset, OutputPort.asset_id == DataAsset.id).where(authz.readable_clause(principal)) \
+        .order_by(DataContract.created_at, DataContract.id)
+    if product_id:
+        stmt = stmt.where(DataContract.product_id == product_id)
+    return paginate(db, stmt, page, request, response)
+
+
+@router.get("/contracts/{contract_id}", response_model=ContractOut)
+def get_contract(contract_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    contract = _get_contract(db, contract_id)
+    _, port, _ = _context(db, contract)
+    load_asset(db, principal, port.asset_id)
+    return contract
+
+
+@router.post("/contracts/{contract_id}/versions", response_model=ContractVersionOut, status_code=201)
+def create_contract_version(contract_id: str, body: ContractVersionIn, db: Session = Depends(get_session),
+                            principal: Principal = Depends(get_principal)):
+    contract = _get_contract(db, contract_id)
+    product, _, asset = _context(db, contract)
+    authz.require(db, principal, "mesh.contract.write", domain=product.domain, entity_type="data_contract", entity_id=contract.id)
+    version = _guard(mesh_contracts.create_version, db, contract, asset, version=body.version, content=_content(body),
+                     actor=principal.subject)
+    audit.record(db, principal.audit_actor, "mesh.contract.version_create", "contract_version", version.id,
+                 {"contract_id": contract.id, "version": version.version})
+    return version
+
+
+@router.get("/contracts/{contract_id}/versions", response_model=list[ContractVersionOut])
+def list_contract_versions(contract_id: str, request: Request, response: Response, page: Page = Depends(page_params()),
+                           db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    contract = _get_contract(db, contract_id)
+    _, port, _ = _context(db, contract)
+    load_asset(db, principal, port.asset_id)
+    stmt = select(ContractVersion).where(ContractVersion.contract_id == contract.id) \
+        .order_by(ContractVersion.major, ContractVersion.minor, ContractVersion.patch, ContractVersion.id)
+    return paginate(db, stmt, page, request, response)
+
+
+@router.get("/contract-versions/{version_id}", response_model=ContractVersionOut)
+def get_contract_version(version_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    version, contract = _get_version(db, version_id)
+    _, port, _ = _context(db, contract)
+    load_asset(db, principal, port.asset_id)
+    return version
+
+
+@router.put("/contract-versions/{version_id}", response_model=ContractVersionOut)
+def update_contract_version(version_id: str, body: ContractVersionIn, db: Session = Depends(get_session),
+                            principal: Principal = Depends(get_principal)):
+    """下書きだけを変更できる。公開した版は変更できない (409)。"""
+    version, contract = _get_version(db, version_id)
+    product, _, asset = _context(db, contract)
+    authz.require(db, principal, "mesh.contract.write", domain=product.domain, entity_type="contract_version", entity_id=version.id)
+    _guard(mesh_contracts.update_draft, db, version, asset, version_label=body.version, content=_content(body))
+    audit.record(db, principal.audit_actor, "mesh.contract.version_update", "contract_version", version.id,
+                 {"contract_id": contract.id, "version": version.version})
+    return version
+
+
+@router.post("/contract-versions/{version_id}/publish", response_model=ContractVersionOut)
+def publish_contract_version(version_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """Product の Owner の承認で公開する。前の版と比べて必要な版の上げ方に足りなければ 409 で拒否し、証跡を残す。"""
+    version, contract = _get_version(db, version_id)
+    product, port, asset = _context(db, contract)
+    _require_owner(db, principal, "mesh.contract.publish", product, "contract_version", version.id)
+    mesh_contracts.lock(db, contract)
+    try:
+        result = _guard(mesh_contracts.publish, db, principal.audit_actor, contract, version, product, port, asset,
+                        principal.subject)
+    except mesh_contracts.VersionBumpRequired as e:
+        _reject_publish(db, principal, version_id, contract.id, product.domain, e)
+    audit.record(db, principal.audit_actor, "mesh.contract.publish", "contract_version", version.id, {
+        "contract_id": contract.id, "version": version.version, **result})
+    return version
+
+
+def _reject_publish(db: Session, principal: Principal, version_id: str, contract_id: str, domain: str,
+                    error: mesh_contracts.VersionBumpRequired) -> None:
+    """拒否も統制の実行なので証跡を確定させる (§13 Evidence。KPI の集計にも使う)。"""
+    db.rollback()
+    audit.record(db, principal.audit_actor, "mesh.contract.publish_rejected", "contract_version", version_id, {
+        "contract_id": contract_id, "domain": domain, "required_bump": error.required, "actual_bump": error.actual,
+        "breaking": error.breaking, "changes": [c["code"] for c in error.changes]})
+    db.commit()
+    raise ProblemError(409, str(error), type_="contract-version-bump-required", required_bump=error.required,
+                       actual_bump=error.actual, changes=error.changes)
+
+
+@router.post("/contracts/{contract_id}/check")
+def check_contract(contract_id: str, body: ContractCheckIn, db: Session = Depends(get_session),
+                   principal: Principal = Depends(get_principal)):
+    """Data Plane の CI からデプロイ前に呼ぶ判定 (ステートレス。呼び出し頻度が高いので監査には記録しない)。"""
+    contract = _get_contract(db, contract_id)
+    product, port, asset = _context(db, contract)
+    load_asset(db, principal, asset.id, "mesh.contract.check")
+    proposal = body.model_dump(by_alias=False, exclude_unset=True, exclude={"version"}, mode="json")
+    result = mesh_contracts.check(db, contract, asset, proposal, body.version)
+    return {**result, "impact": redacted_impact(db, principal, asset.qualified_name), "subscribers": []}
