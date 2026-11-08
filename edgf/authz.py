@@ -132,6 +132,13 @@ PERMISSIONS: Mapping[str, Rule] = {
     "refdata.write": rule(domain_roles=(OWNER, STEWARD), description="Reference Data の下書きの作成"),
     "refdata.publish": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
                             description="Reference Data の版の公開"),
+    # Data Governance & AI (§14)
+    "ai.card.write": rule(domain_roles=(STEWARD,), relations=("owner", "steward"),
+                          description="Dataset Card / Model Card の登録・更新"),
+    # Data Plane のパイプラインからの登録を想定 (承認ではないため Custodian を含む)
+    "ai.dataset_version.register": rule(relations=ASSET_RELATIONS, description="Dataset Version の登録"),
+    "ai.model_version.register": rule(relations=ASSET_RELATIONS,
+                                      description="Model Version の登録、デプロイと利用先の記録"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

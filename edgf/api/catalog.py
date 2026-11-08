@@ -18,7 +18,7 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_u
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import audit, privacy
+from edgf.services import ai, audit, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
@@ -155,6 +155,13 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
         _validate_domain(db, changes["domain"])
         if changes["domain"] != asset.domain:  # 移管先ドメインでも権限が必要
             authz.require(db, principal, "asset.update", domain=changes["domain"], entity_id=asset.id)
+    if {"ai_kind", "data_class"} & set(changes):
+        try:
+            ai.check_kind_change(db, asset, changes.get("data_class", asset.data_class), changes.get("ai_kind", asset.ai_kind))
+        except ai.AiValidationError as e:
+            raise HTTPException(422, str(e)) from e
+        except ai.AiStateError as e:
+            raise HTTPException(409, str(e)) from e
     for k, v in changes.items():
         setattr(asset, k, v)
     if set(changes) & {"schema_", "contains_pii", "privacy_technique", "privacy_params"}:

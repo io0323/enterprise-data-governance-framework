@@ -135,6 +135,30 @@ class ErasureTaskStatus(str, Enum):
     CANCELLED = "cancelled"          # 要求の却下による取消
 
 
+class AiKind(str, Enum):
+    """§14 AI 資産の種別 (data_class=ai)。実体は Data Plane にあり、Control Plane はメタデータだけを持つ (§18.2)"""
+    TRAINING_DATASET = "training_dataset"
+    EMBEDDING_SET = "embedding_set"
+    VECTOR_INDEX = "vector_index"
+    RAG_CORPUS = "rag_corpus"
+    MODEL = "model"
+
+
+class DatasetVersionStatus(str, Enum):
+    """§14 Training Data: 学習データの版"""
+    DRAFT = "draft"
+    APPROVED = "approved"
+    SUPERSEDED = "superseded"        # 以降の学習には使えない
+
+
+class ModelVersionStatus(str, Enum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    DEPLOYED = "deployed"
+    SUSPENDED = "suspended"
+    RETIRED = "retired"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

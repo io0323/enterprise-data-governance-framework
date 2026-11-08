@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from edgf.enums import (Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
-                        IssueStatus, LegalBasis, LifecycleState,
+from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
+                        DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
@@ -70,12 +71,19 @@ class AssetBase(BaseModel):
     controls: list[str] = Field(default_factory=list)
     privacy_technique: PrivacyTechnique = PrivacyTechnique.NONE
     privacy_params: dict[str, Any] = Field(default_factory=dict, description="k (k-匿名性) / key_vault_ref (仮名化キーの分離保管先)")
+    ai_kind: AiKind | None = Field(default=None, description="§14 data_class=ai の種別")
 
     model_config = ConfigDict(populate_by_name=True)
 
 
 class AssetCreate(AssetBase):
     qualified_name: str = Field(min_length=1, max_length=300, description="例: sales.orders")
+
+    @model_validator(mode="after")
+    def _ai_kind_only_for_ai(self) -> AssetCreate:
+        if self.ai_kind is not None and self.data_class != DataClass.AI:
+            raise ValueError("ai_kind は data_class=ai の資産にだけ指定できます")
+        return self
 
 
 class AssetUpdate(BaseModel):
@@ -97,6 +105,7 @@ class AssetUpdate(BaseModel):
     controls: list[str] | None = None
     privacy_technique: PrivacyTechnique | None = None
     privacy_params: dict[str, Any] | None = None
+    ai_kind: AiKind | None = None
 
 
 class AssetOut(ORM, AssetBase):
@@ -524,3 +533,143 @@ class RefCodeIn(BaseModel):
 class RefDataVersionIn(BaseModel):
     codes: list[RefCodeIn] = Field(default_factory=list)
     note: str = Field(default="", max_length=1000)
+
+
+# ---------- Data Governance & AI (§14) ----------
+# 学習データ・Embedding・ベクトル・サンプルは Data Plane の責務 (§18.2)。誤って送られた値を黙って捨てるのではなく
+# 検証エラーにして、呼び出し側に気付かせる (エラーの応答とログに値は含まれない)
+class AiInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+ExternalUri = Annotated[str, Field(min_length=1, max_length=2000, description="Data Plane 上の実体への外部参照")]
+LongText = Annotated[str, Field(max_length=4000)]
+
+
+def check_external_uri(uri: str | None) -> str | None:
+    """外部参照だけを受け付ける。data: は値そのものを URI に埋め込めるので拒否し、認証情報を含む URI も保存しない。"""
+    if uri is None:
+        return None
+    parts = urlsplit(uri)
+    if not parts.scheme or parts.scheme.lower() == "data" or not (parts.netloc or parts.path):
+        raise ValueError("external_uri は Data Plane の実体を指す外部参照で指定してください (data: は不可)")
+    if parts.username or parts.password:
+        raise ValueError("external_uri に認証情報を含めることはできません")
+    return uri
+
+
+class DatasetCardIn(AiInput):
+    purpose: LongText = ""
+    collection_source: LongText = ""
+    license: str = Field(default="", max_length=200)
+    consent_purpose_id: str | None = Field(default=None, max_length=80, description="同意の根拠 (Purpose の ID。標準は ai_training)")
+    known_biases: LongText = ""
+    constraints: LongText = ""
+
+
+class DatasetCardOut(ORM):
+    asset_id: str
+    purpose: str
+    collection_source: str
+    license: str
+    consent_purpose_id: str | None
+    known_biases: str
+    constraints: str
+    updated_by: str
+    updated_at: datetime
+
+
+class ModelCardIn(AiInput):
+    intended_use: LongText = ""
+    out_of_scope_use: LongText = ""
+    metrics: dict[str, float | int | Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=dict, max_length=100, description="評価指標 (名前 → スカラー値。配列は受け付けない)")
+    bias_evaluation_ref: str = Field(default="", max_length=2000, description="バイアス評価の結果の外部参照")
+    constraints: LongText = ""
+
+
+class ModelCardOut(ORM):
+    asset_id: str
+    intended_use: str
+    out_of_scope_use: str
+    metrics: dict[str, Any]
+    bias_evaluation_ref: str
+    constraints: str
+    updated_by: str
+    updated_at: datetime
+
+
+class DatasetSourceIn(AiInput):
+    asset_id: str = Field(max_length=36)
+    kind: Literal["asset", "mdm", "reference_data", "dataset_version"] = "asset"
+    version: str = Field(min_length=1, max_length=100, description="構成元の版 (reference_data は版番号、dataset_version は版の名前)")
+
+
+class DatasetSourceOut(ORM):
+    asset_id: str
+    qualified_name: str
+    kind: str
+    version: str
+
+
+class DatasetVersionIn(AiInput):
+    version: str = Field(min_length=1, max_length=100)
+    manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$", description="Data Plane が計算した manifest の SHA-256")
+    record_count: int = Field(ge=0)
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    external_uri: ExternalUri | None = None
+    sources: list[DatasetSourceIn] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _validate(self) -> DatasetVersionIn:
+        check_external_uri(self.external_uri)
+        if self.period_start and self.period_end and self.period_start > self.period_end:
+            raise ValueError("period_start は period_end 以前にしてください")
+        return self
+
+
+class DatasetVersionOut(ORM):
+    id: str
+    asset_id: str
+    version: str
+    manifest_hash: str
+    record_count: int
+    period_start: datetime | None
+    period_end: datetime | None
+    external_uri: str | None
+    status: DatasetVersionStatus
+    registered_by: str
+    created_at: datetime
+    approved_at: datetime | None
+    superseded_at: datetime | None
+    superseded_reason: str | None
+    sources: list[DatasetSourceOut] = Field(default_factory=list)
+
+
+class ModelVersionIn(AiInput):
+    version: str = Field(min_length=1, max_length=100)
+    external_uri: ExternalUri | None = None
+    dataset_version_ids: list[str] = Field(min_length=1, max_length=100, description="学習に使った Dataset Version")
+
+    @model_validator(mode="after")
+    def _validate(self) -> ModelVersionIn:
+        check_external_uri(self.external_uri)
+        return self
+
+
+class ModelVersionOut(ORM):
+    id: str
+    asset_id: str
+    version: str
+    external_uri: str | None
+    status: ModelVersionStatus
+    registered_by: str
+    created_at: datetime
+    approved_by: str | None
+    approved_at: datetime | None
+    deployed_at: datetime | None
+    suspended_at: datetime | None
+    suspended_reason: str | None
+    retired_at: datetime | None
+    dataset_version_ids: list[str] = Field(default_factory=list)
