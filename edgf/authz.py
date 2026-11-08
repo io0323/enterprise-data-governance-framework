@@ -118,6 +118,20 @@ PERMISSIONS: Mapping[str, Rule] = {
     # 物理削除の実行と報告 (§4.2 ライフサイクル実行 R)。承認ではないため Custodian を含む
     "privacy.erasure.task_ack": rule(relations=("custodian",), description="消去タスクの受領"),
     "privacy.erasure.task_complete": rule(relations=("custodian",), description="消去タスクの完了報告"),
+    # Master Data Management (§8)
+    "mdm.read": rule(authenticated=True, description="MDM のメタデータの参照 (ABAC で絞り込む。値は返さない)"),
+    "mdm.rule.write": rule(roles=(ADMIN, COMMITTEE), approval=True, description="エンティティ定義の再読込 (公開)"),
+    "mdm.rule.approve": rule(relations=("owner",), approval=True, description="Golden Record 生成規則の承認 (§8.2)"),
+    # Data Plane からの呼び出しを想定した実行行為 (承認ではないため Custodian を含む)
+    "mdm.match": rule(domain_roles=(STEWARD,), relations=("custodian",), description="ソースレコードのマッチング"),
+    "mdm.compose": rule(domain_roles=(STEWARD,), relations=("custodian",),
+                        description="Golden Record の生成と内容ハッシュの検証"),
+    "mdm.review.decide": rule(relations=("owner", "steward"), approval=True,
+                              description="裁定 (merge / not_match / split) と属性値の指定"),
+    "mdm.review.escalate": rule(roles=(ADMIN, COMMITTEE), description="裁定キューの期限超過の処理"),
+    "refdata.write": rule(domain_roles=(OWNER, STEWARD), description="Reference Data の下書きの作成"),
+    "refdata.publish": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                            description="Reference Data の版の公開"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

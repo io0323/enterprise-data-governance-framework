@@ -184,20 +184,20 @@ def _version(db: Path) -> str:
 def test_migration_round_trips_each_step(tmp_path):
     db = tmp_path / "m.db"
     url = f"sqlite:///{db}"
-    _alembic(["upgrade", "head"], url)
+    _alembic(["upgrade", "0006"], url)
     assert _version(db) == "0006" and {"consents", "privacy_purposes", "erasure_requests", "erasure_tasks"} <= _tables(db)
     _alembic(["downgrade", "-1"], url)  # 0006 → 0005
     assert _version(db) == "0005"
     with sqlite3.connect(db) as conn:
         assert "privacy_technique" not in [r[1] for r in conn.execute("PRAGMA table_info(data_assets)")]
-    _alembic(["upgrade", "head"], url)
+    _alembic(["upgrade", "0006"], url)
     assert _version(db) == "0006"
     _alembic(["downgrade", "-1"], url)
     _alembic(["downgrade", "-1"], url)  # 0005 → 0004
     assert _version(db) == "0004" and "erasure_tasks" not in _tables(db) and "consents" in _tables(db)
     _alembic(["downgrade", "-1"], url)  # 0004 → 0003
     assert _version(db) == "0003" and "consents" not in _tables(db)
-    _alembic(["upgrade", "head"], url)
+    _alembic(["upgrade", "0006"], url)
     assert _version(db) == "0006"
 
 

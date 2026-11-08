@@ -1,0 +1,31 @@
+# MDM エンティティ定義: 人を表すマスタ (§8)。Golden Record の生成規則は Owner の承認が必要 (§8.2)。
+version: 1
+entity_type: party
+asset: mdm.party        # 対応する Catalog の master 資産 (Metadata First)
+attributes:
+  - {name: email, type: string, identifier_type: email}   # identifier_type: Phase 8 の subject_ref と対応付ける
+  - {name: customer_no, type: string, identifier_type: customer_id}
+  - {name: full_name, type: string}
+  - {name: address, type: string}
+  - {name: birth_date, type: date}
+  - {name: segment, type: string}
+sources:                # source_system ごとの信頼度 (大きいほど優先)
+  crm: 100
+  erp: 80
+  web: 10
+match:
+  exact_keys:           # 第1段: いずれかのキーが完全一致すれば自動マージ
+    - [email]
+    - [customer_no]
+  similarity:           # 第2段: 属性ごとの類似度の重み付き合計
+    weights: {full_name: 0.6, address: 0.3, birth_date: 0.1}
+    similar_floor: 0.6  # 属性の比較結果を similar とする下限 (未満は mismatch)
+    auto_merge: 0.92
+    review: 0.75
+survivorship:
+  email: {rule: most_recent}
+  customer_no: {rule: source_priority}
+  full_name: {rule: source_priority}
+  address: {rule: most_complete}
+  birth_date: {rule: source_priority}
+  segment: {rule: most_frequent}

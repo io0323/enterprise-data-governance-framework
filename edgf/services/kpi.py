@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from edgf.models import AuditEvent, DataAsset, Issue, utcnow
+from edgf.models import AuditEvent, DataAsset, GoldenRecord, Issue, MdmReview, MdmXref, utcnow
 from edgf.services.issues import OPEN_STATES
 from edgf.services.policy import evaluate_asset
 from edgf.services.quality import latest_run
@@ -59,6 +59,13 @@ def compute(db: Session, domain: str | None = None) -> dict:
     usage_stmt = select(AuditEvent).where(AuditEvent.ts >= since, AuditEvent.entity_type == "asset")
     active_assets = {e.entity_id for e in db.scalars(usage_stmt)} & set(ids)
 
+    links = db.scalars(select(MdmXref.link_type).join(GoldenRecord, MdmXref.golden_id == GoldenRecord.id)
+                       .where(GoldenRecord.asset_id.in_(ids), MdmXref.tombstoned_at.is_(None))).all()
+    auto_merged = links.count("auto_merge")
+    steward_merged = links.count("steward_merge")
+    pending_reviews = db.scalar(select(func.count()).select_from(MdmReview).where(
+        MdmReview.status == "pending", MdmReview.asset_id.in_(ids))) or 0
+
     return {
         "scope": domain or "enterprise",
         "asset_count": n,
@@ -73,6 +80,9 @@ def compute(db: Session, domain: str | None = None) -> dict:
         "overdue_issue_count": sum(1 for i in open_issues if i.due_at and i.due_at < now),
         "mean_time_to_resolve_days": round(mttr, 2) if mttr is not None else None,  # 目標 30日以内
         "governance_activity_assets_30d": len(active_assets),  # Usage 代理指標
+        "mdm_review_pending_count": pending_reviews,  # §8 裁定キューの件数
+        "mdm_duplicate_rate": _rate(auto_merged + steward_merged, len(links)),  # ソースのうち既存に統合された割合
+        "mdm_auto_merge_rate": _rate(auto_merged, auto_merged + steward_merged),  # 統合のうち自動マージの割合
     }
 
 

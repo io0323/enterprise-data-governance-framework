@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from edgf import __version__, db, migrate
 from edgf.errors import ProblemError
+from edgf.services.mdm_rules import get_entities
 from edgf.services.policy import get_policies
 
 router = APIRouter(tags=["ops"])
@@ -39,6 +40,7 @@ def ready():
         checks.setdefault("schema", "unknown")
     try:
         get_policies()
+        get_entities()
         checks["policies"] = "ok"
     except Exception as e:  # noqa: BLE001
         log.warning("readiness check failed: policies", extra={"fields": {"error": str(e)}})

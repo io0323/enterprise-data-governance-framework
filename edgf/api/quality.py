@@ -12,7 +12,7 @@ from edgf.deps import get_asset_or_404, get_principal, load_asset
 from edgf.models import QualityRule, QualityRun
 from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import QualityRuleIn, QualityRuleOut, QualityRunIn, QualityRunOut
-from edgf.services import audit, issues
+from edgf.services import audit, issues, refdata
 from edgf.services.quality import evaluate, latest_run, validate_rule
 
 router = APIRouter(prefix="/quality", tags=["quality"])
@@ -23,6 +23,7 @@ def add_rule(asset_id: str, body: QualityRuleIn, db: Session = Depends(get_sessi
     asset = load_asset(db, principal, asset_id, "quality.rule_write")
     try:
         validate_rule(body.rule_type, body.column, body.params)
+        refdata.validate_rule_reference(db, body.rule_type, body.params)  # reference_set: <id>[@version]
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     rule = QualityRule(asset_id=asset.id, **body.model_dump(mode="json"))
@@ -59,7 +60,11 @@ def run_quality(asset_id: str, body: QualityRunIn, db: Session = Depends(get_ses
     rules = db.scalars(select(QualityRule).where(QualityRule.asset_id == asset.id)).all()
     if not rules:
         raise HTTPException(409, "品質ルールが未定義です")
-    result = evaluate(list(rules), body.records)
+    try:
+        resolved = refdata.resolve_rules(db, rules)
+    except refdata.RefDataStateError as e:
+        raise HTTPException(409, str(e)) from e
+    result = evaluate(resolved, body.records)
     run = QualityRun(asset_id=asset.id, record_count=len(body.records), **result)
     db.add(run)
     db.flush()

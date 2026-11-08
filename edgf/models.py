@@ -5,9 +5,9 @@ Control Plane はデータ本体を保持せず、メタデータ・統制状態
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Table, Text,
+from sqlalchemy import (JSON, Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Table, Text,
                         UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -242,6 +242,7 @@ class ErasureTask(Base):
     origin: Mapped[str] = mapped_column(String(20))  # identifier_match / lineage
     depth: Mapped[int] = mapped_column(Integer, default=0)
     columns: Mapped[list] = mapped_column(JSON, default=list)
+    golden_ids: Mapped[list] = mapped_column(JSON, default=list)  # MDM Hub 向け: 消去する Golden Record
     status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
     withheld_reason: Mapped[str | None] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(String(200))
@@ -254,6 +255,139 @@ class ErasureTask(Base):
     records_deleted: Mapped[int | None] = mapped_column(Integer)
     evidence_hash: Mapped[str | None] = mapped_column(String(64))  # Data Plane が算出した証跡のハッシュ
     note: Mapped[str] = mapped_column(Text, default="")
+
+
+class MdmRuleApproval(Base):
+    """§8.2 Golden Record 生成規則の Owner 承認。ルール本文のハッシュに対して記録する。"""
+    __tablename__ = "mdm_rule_approvals"
+    __table_args__ = (UniqueConstraint("entity_type", "rule_hash", name="uq_mdm_rule_approval"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(50))
+    rule_hash: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str] = mapped_column(String(200))
+    approved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GoldenRecord(Base):
+    """§8 Golden Record の識別子と状態。属性値は Data Plane (MDM Hub) が保持する (§18.2)。"""
+    __tablename__ = "golden_records"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    entity_type: Mapped[str] = mapped_column(String(50), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)  # Metadata First
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active / tombstoned
+    recompose_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    current_version: Mapped[int] = mapped_column(Integer, default=0)
+    hash_salt: Mapped[str | None] = mapped_column(String(32))  # 消去時に破棄する (content_hash の辞書攻撃を防ぐ)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    tombstoned_by_request: Mapped[str | None] = mapped_column(String(36))
+
+
+class MdmXref(Base):
+    """ソースレコードと Golden Record の相互参照。キーは HMAC の source_ref でのみ保持する。"""
+    __tablename__ = "mdm_xrefs"
+    __table_args__ = (UniqueConstraint("entity_type", "source_ref", name="uq_mdm_xref_source"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(50))
+    source_ref: Mapped[str] = mapped_column(String(64), index=True)
+    source_system: Mapped[str] = mapped_column(String(100))
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), index=True)
+    link_type: Mapped[str] = mapped_column(String(20))  # new / auto_merge / steward_merge / split
+    linked_by: Mapped[str] = mapped_column(String(200))
+    linked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class GoldenVersion(Base):
+    """§8 Versioning: 版の情報。値は持たず、内容ハッシュと属性ごとの由来を持つ。追記のみ。"""
+    __tablename__ = "golden_versions"
+    __table_args__ = (UniqueConstraint("golden_id", "version", name="uq_golden_version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    valid_from: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime)
+    content_hash: Mapped[str | None] = mapped_column(String(64))  # merge / split 直後は再構成待ちのため NULL
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(String(20))  # compose / merge / split / steward_override
+    created_by: Mapped[str] = mapped_column(String(200))
+    tombstoned: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class MdmReview(Base):
+    """Steward の裁定キュー。候補の参照と比較結果だけを持ち、属性値は持たない (§18.2)。
+
+    (entity_type, source_ref, golden_id) で一意。not_match のペアは行が残るので再起票されない。
+    """
+    __tablename__ = "mdm_reviews"
+    __table_args__ = (UniqueConstraint("entity_type", "source_ref", "golden_id", name="uq_mdm_review_pair"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    entity_type: Mapped[str] = mapped_column(String(50))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"))
+    source_ref: Mapped[str] = mapped_column(String(64), index=True)
+    source_system: Mapped[str] = mapped_column(String(100))
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"))
+    score: Mapped[float] = mapped_column(Float)
+    comparisons: Mapped[dict] = mapped_column(JSON, default=dict)  # 属性ごとの match / similar / mismatch
+    subject_refs: Mapped[list] = mapped_column(JSON, default=list)  # 裁定後に subject_ref と対応付けるため (HMAC のみ)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    new_golden_id: Mapped[str | None] = mapped_column(String(36))  # not_match / split で生まれた Golden Record
+
+
+class MdmSubjectLink(Base):
+    """人を表す Golden Record と Phase 8 の subject_ref の対応 (消去の対象特定に使う)。"""
+    __tablename__ = "mdm_subject_links"
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), primary_key=True)
+    subject_ref: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    identifier_type: Mapped[str] = mapped_column(String(50))
+
+
+class RefDataSet(Base):
+    """§8 Reference Data Set。Catalog の reference 資産と対応付ける (Metadata First)。"""
+    __tablename__ = "reference_data_sets"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RefDataVersion(Base):
+    """公開 (published) した版は変更できない。"""
+    __tablename__ = "reference_data_versions"
+    __table_args__ = (UniqueConstraint("set_id", "version", name="uq_reference_data_version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    set_id: Mapped[str] = mapped_column(ForeignKey("reference_data_sets.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    note: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class RefCode(Base):
+    """コード値。Control Plane が値を保持する唯一の例外 (public / internal かつ PII なしの資産に限る)。"""
+    __tablename__ = "reference_codes"
+    __table_args__ = (UniqueConstraint("version_id", "code", name="uq_reference_code"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("reference_data_versions.id"), index=True)
+    code: Mapped[str] = mapped_column(String(100))
+    label: Mapped[str] = mapped_column(String(300))
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    standard: Mapped[str | None] = mapped_column(String(100))  # 外部標準の出典 (例: ISO 3166-1)
+    standard_version: Mapped[str | None] = mapped_column(String(50))  # 例: 2026
 
 
 class AuditEvent(Base):
