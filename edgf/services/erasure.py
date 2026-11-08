@@ -19,10 +19,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.config import settings
-from edgf.enums import ESCALATION_ORDER, ErasureStatus, ErasureTaskStatus
+from edgf.enums import ESCALATION_ORDER, AiKind, ErasureStatus, ErasureTaskStatus
 from edgf.models import DataAsset, ErasureRequest, ErasureTask, Issue, utcnow
 from edgf.observability import request_id_var
-from edgf.services import issues, lineage, mdm
+from edgf.services import ai_lineage, ai_remediation, issues, lineage, mdm
 from edgf.services.privacy import effective_pii_columns, pii_columns
 
 S, T = ErasureStatus, ErasureTaskStatus
@@ -33,6 +33,9 @@ TERMINAL_TASKS = (T.COMPLETED.value, T.FAILED.value, T.WITHHELD.value, T.CANCELL
 MAX_LINEAGE_DEPTH = 50
 LEGAL_HOLD_REASON = "Legal Hold 中のため削除しません (§10.2)"
 DELETED = "deleted"
+MODEL = AiKind.MODEL.value
+# §14: PII の宣言に関わらず必ずタスクを発行する AI 資産。モデルにはタスクを発行せず ModelRemediation で扱う
+AI_TASK_KINDS = (AiKind.VECTOR_INDEX.value, AiKind.RAG_CORPUS.value, AiKind.TRAINING_DATASET.value, AiKind.EMBEDDING_SET.value)
 
 
 class ErasureStateError(ValueError):
@@ -77,26 +80,34 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
     db.flush()
 
     assets = {a.qualified_name: a for a in db.scalars(select(DataAsset))}
-    targets: dict[str, tuple[str, int]] = {
-        qn: ("identifier_match", 0) for qn, a in assets.items()
-        if a.lifecycle_state != DELETED and a.contains_pii and _identifier_columns(a, req.identifier_type)}
+    roots = {qn for qn, a in assets.items()
+             if a.lifecycle_state != DELETED and a.contains_pii and _identifier_columns(a, req.identifier_type)}
+    targets: dict[str, tuple[str, int]] = {qn: ("identifier_match", 0) for qn in roots if assets[qn].ai_kind != MODEL}
     goldens_by_name: dict[str, list[str]] = {}
     for asset_id, golden_ids in mdm.goldens_for_subject(db, req.subject_ref).items():
         asset = db.get(DataAsset, asset_id)
         if asset.lifecycle_state != DELETED:
             goldens_by_name[asset.qualified_name] = golden_ids
             targets.setdefault(asset.qualified_name, ("mdm_golden", 0))
+            roots.add(asset.qualified_name)
     unregistered: set[str] = set()
-    for start in list(targets):
+    for start in sorted(roots):
         for edge in lineage.traverse(db, start, "downstream", MAX_LINEAGE_DEPTH):
             name, depth = edge["to"], edge["depth"]
             asset = assets.get(name)
             if asset is None:
                 unregistered.add(name)
-            elif asset.lifecycle_state != DELETED and asset.contains_pii:
+            elif asset.lifecycle_state != DELETED and asset.ai_kind != MODEL \
+                    and (asset.contains_pii or asset.ai_kind in AI_TASK_KINDS):
                 current = targets.get(name)
                 if current is None or (current[0] == "lineage" and depth < current[1]):
                     targets[name] = ("lineage", depth)
+
+    impact = ai_lineage.affected_by_assets(db, roots)
+    versions_by_asset: dict[str, list[str]] = {}
+    for version in impact.dataset_versions:
+        versions_by_asset.setdefault(version.asset_id, []).append(version.id)
+    req.ai_impact = ai_remediation.impact_view(roots, impact)
 
     no_custodian = []
     for qn, (origin, depth) in targets.items():
@@ -105,7 +116,8 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
         identifier_cols = _identifier_columns(asset, req.identifier_type)
         columns = identifier_cols or [c["name"] for c in pii_columns(asset.schema_)]
         db.add(ErasureTask(request_id=req.id, asset_id=asset.id, qualified_name=qn, origin=origin, depth=depth,
-                           columns=columns, golden_ids=goldens_by_name.get(qn, []),
+                           columns=columns, golden_ids=goldens_by_name.get(qn, []), ai_kind=asset.ai_kind,
+                           dataset_version_ids=versions_by_asset.get(asset.id, []),
                            status=T.WITHHELD.value if held else T.PLANNED.value,
                            withheld_reason=LEGAL_HOLD_REASON if held else None))
         if not asset.custodian and not held:
@@ -118,6 +130,8 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
         warnings.append(f"Custodian が未割当のため応答できない資産があります: {sorted(no_custodian)}")
     if unregistered:
         warnings.append("Catalog に未登録の下流資産があります。削除指示を出せないため個別に確認してください")
+    if impact.unversioned_models:
+        warnings.append(f"Model Version が未登録のため影響を特定できないモデルがあります: {impact.unversioned_models}")
     req.warnings = warnings
     req.status = S.SCOPED.value
     req.scoped_at = utcnow()
@@ -156,8 +170,11 @@ def _finalize_if_done(db: Session, req: ErasureRequest) -> None:
     req.finished_at = utcnow()
 
 
-def dispatch(db: Session, req: ErasureRequest) -> None:
-    """削除指示を発行する (pull 型: タスクが Data Plane から見えるようになる)。"""
+def dispatch(db: Session, req: ErasureRequest, actor: str) -> None:
+    """削除指示を発行する (pull 型: タスクが Data Plane から見えるようになる)。
+
+    AI 資産への伝播もここで確定する。scope の時点では却下される可能性があり、版の superseded は元に戻せないため。
+    """
     _require_status(req, S.APPROVED.value)
     for t in tasks_of(db, req):
         if t.status == T.PLANNED.value:
@@ -168,6 +185,7 @@ def dispatch(db: Session, req: ErasureRequest) -> None:
     req.status = S.DISPATCHED.value
     req.dispatched_at = utcnow()
     db.flush()
+    ai_remediation.apply_erasure(db, req, actor)
     _finalize_if_done(db, req)
     db.flush()
 
@@ -223,10 +241,12 @@ def certificate(db: Session, req: ErasureRequest) -> dict[str, Any]:
         "verified_at": req.verified_at, "verified_by": req.verified_by,
         "unregistered_downstream": req.unregistered_downstream or [],
         "tasks": [{"task_id": t.id, "asset_id": t.asset_id, "qualified_name": t.qualified_name, "origin": t.origin,
-                   "depth": t.depth, "golden_ids": t.golden_ids, "status": t.status, "records_deleted": t.records_deleted,
+                   "depth": t.depth, "golden_ids": t.golden_ids, "ai_kind": t.ai_kind,
+                   "dataset_version_ids": t.dataset_version_ids, "status": t.status, "records_deleted": t.records_deleted,
                    "evidence_hash": t.evidence_hash, "withheld_reason": t.withheld_reason, "note": t.note,
                    "approved_by": t.approved_by, "completed_by": t.completed_by, "completed_at": t.completed_at,
                    "request_id": t.completion_request_id} for t in tasks_of(db, req)],
+        **ai_remediation.certificate_section(db, req),
     }
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
     return {**body, "certificate_hash": digest, "issued_at": utcnow(), "request_id": request_id_var.get()}

@@ -20,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
-from sqlalchemy import and_, or_, select, true
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -132,6 +132,27 @@ PERMISSIONS: Mapping[str, Rule] = {
     "refdata.write": rule(domain_roles=(OWNER, STEWARD), description="Reference Data の下書きの作成"),
     "refdata.publish": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
                             description="Reference Data の版の公開"),
+    # Data Governance & AI (§14)
+    "ai.card.write": rule(domain_roles=(STEWARD,), relations=("owner", "steward"),
+                          description="Dataset Card / Model Card の登録・更新"),
+    # Data Plane のパイプラインからの登録を想定 (承認ではないため Custodian を含む)
+    "ai.dataset_version.register": rule(relations=ASSET_RELATIONS, description="Dataset Version の登録"),
+    "ai.model_version.register": rule(relations=ASSET_RELATIONS,
+                                      description="Model Version の登録、デプロイと利用先の記録"),
+    "ai.training.request": rule(relations=("owner", "steward"), description="学習利用の承認の申請と取り下げ"),
+    "ai.training.approve": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                                description="学習利用の承認 (構成元の資産の Owner と Committee)"),
+    "ai.model.approve": rule(relations=("owner",), approval=True, description="Model Version の承認と再開"),
+    "ai.model.suspend": rule(roles=(COMMITTEE,), relations=("owner",), description="Model Version の停止と廃止"),
+    "ai.incident.create": rule(roles=(COMMITTEE,), domain_roles=(OWNER, STEWARD), description="データ汚染・リコールの起票"),
+    "ai.remediation.decide": rule(roles=(COMMITTEE,), approval=True,
+                                  description="消去の影響を受けたモデル版の是正の判断 (retrain / unlearn / accept)"),
+    # 判断された是正の実施報告 (判断ではないため Custodian を含む)
+    "ai.remediation.complete": rule(relations=("owner", "custodian"), description="是正の完了報告"),
+    "ai.remediation.escalate": rule(roles=(ADMIN, COMMITTEE), description="是正の期限超過の処理"),
+    "ai.inheritance.recompute": rule(roles=(ADMIN, COMMITTEE), description="継承した統制属性の全件再計算"),
+    # RAG サービスの実行主体が検索のたびに呼ぶ判定 (承認ではないため Custodian を含む)
+    "ai.rag.authorize": rule(relations=("custodian",), description="RAG の検索結果を利用者の権限で絞り込む判定"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -205,6 +226,11 @@ def require(db: Session, principal: Principal, action: str, *, asset: DataAsset 
 
 
 # ---------------------------------------------------------------- ABAC (読み取り)
+def effective_sensitivity(asset: DataAsset) -> str:
+    """ABAC で使う機密度。AI 資産は上流から継承した実効値で判定する (§14 Embedding / Vector / RAG)。"""
+    return asset.effective_sensitivity or asset.sensitivity
+
+
 def _level(sensitivity: str) -> int:
     return SENSITIVITY_LEVELS.index(sensitivity) if sensitivity in SENSITIVITY_LEVELS else len(SENSITIVITY_LEVELS)
 
@@ -224,13 +250,14 @@ def readable_clause(principal: Principal) -> ColumnElement[bool]:
     if principal.roles & PRIVILEGED_READERS:
         return true()
     party = or_(*[getattr(DataAsset, rel) == principal.subject for rel in ASSET_RELATIONS])
-    return or_(party, DataAsset.sensitivity.in_(_clearance_sensitivities(principal)), _active_grant(principal.subject))
+    sensitivity = func.coalesce(DataAsset.effective_sensitivity, DataAsset.sensitivity)
+    return or_(party, sensitivity.in_(_clearance_sensitivities(principal)), _active_grant(principal.subject))
 
 
 def can_read(db: Session, principal: Principal, asset: DataAsset) -> bool:
     if principal.roles & PRIVILEGED_READERS or relations_of(principal, asset):
         return True
-    if asset.sensitivity in _clearance_sensitivities(principal):
+    if effective_sensitivity(asset) in _clearance_sensitivities(principal):
         return True
     return db.scalar(select(DataAsset.id).where(and_(DataAsset.id == asset.id, _active_grant(principal.subject)))) \
         is not None
@@ -238,10 +265,11 @@ def can_read(db: Session, principal: Principal, asset: DataAsset) -> bool:
 
 def require_read(db: Session, principal: Principal, asset: DataAsset) -> None:
     if not can_read(db, principal, asset):
-        if asset.sensitivity == RESTRICTED:
+        sensitivity = effective_sensitivity(asset)
+        if sensitivity == RESTRICTED:
             reason = "restricted 資産の閲覧には Owner の承認が必要です (§11 Access Control)"
         else:
-            reason = f"clearance ({principal.clearance}) が資産の機密度 ({asset.sensitivity}) に達していません"
+            reason = f"clearance ({principal.clearance}) が資産の機密度 ({sensitivity}) に達していません"
         deny(db, principal, "asset.read", entity_type="asset", entity_id=asset.id, reason=reason)
 
 

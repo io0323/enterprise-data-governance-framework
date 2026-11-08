@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from edgf.enums import ConsentStatus, EscalationLevel, LegalBasis, LifecycleState
 from edgf.models import Consent, DataAsset, PrivacyPurpose, utcnow
-from edgf.services import issues
+from edgf.services import ai_remediation, issues
 from edgf.services.privacy import pii_columns
 
 NO_RECORD = "none"
@@ -73,7 +73,7 @@ def open_withdrawal_issues(db: Session, actor: str, purpose: PrivacyPurpose) -> 
             description="撤回した主体のデータを、この目的で処理しないようにしてください (§12 目的外利用の遮断)。")
         if issue:
             opened.append(issue.id)
-    return opened
+    return opened + ai_remediation.open_withdrawal_issues(db, actor, purpose)
 
 
 def record(db: Session, *, subject_ref: str, purpose_id: str, status: str, recorded_by: str, source: str,

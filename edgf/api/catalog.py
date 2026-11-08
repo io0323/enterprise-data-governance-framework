@@ -18,12 +18,14 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_u
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import audit, privacy
+from edgf.services import ai, ai_inherit, audit, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
 
 MAX_GRANT_DAYS = 365  # 恒久承認は不可 (§13 Exception と同じ上限)
+# 下流の AI 資産の実効値に影響する項目 (§14)
+INHERITANCE_FIELDS = {"sensitivity", "contains_pii", "schema_", "privacy_technique", "privacy_params", "data_class", "ai_kind"}
 
 
 
@@ -76,6 +78,7 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), princi
     db.add(asset)
     db.flush()
     audit.record(db, principal.audit_actor, "asset.register", "asset", asset.id, {"qualified_name": asset.qualified_name})
+    ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])  # 既存の Lineage の上流として登録された場合も含む
     return asset
 
 
@@ -83,7 +86,7 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), princi
 def search_assets(
     request: Request, response: Response,
     q: str | None = Query(None, description="名前/説明/タグ/用語の横断検索"),
-    domain: str | None = None, data_class: str | None = None, sensitivity: str | None = None,
+    domain: str | None = None, data_class: str | None = None, ai_kind: str | None = None, sensitivity: str | None = None,
     owner: str | None = None, certification: str | None = None, lifecycle_state: str | None = None,
     is_cde: bool | None = None, orphan: bool | None = Query(None, description="Owner未割当 (Unknown Owner) のみ"),
     include_deleted: bool = False, page: Page = Depends(page_params()),
@@ -102,7 +105,7 @@ def search_assets(
                               DataAsset.description.ilike(like, escape=_LIKE_ESCAPE),
                               DataAsset.id.in_(term_assets),
                               cast(DataAsset.tags, String).ilike(tag_like, escape=_LIKE_ESCAPE)))
-    for col, val in (("domain", domain), ("data_class", data_class), ("sensitivity", sensitivity),
+    for col, val in (("domain", domain), ("data_class", data_class), ("ai_kind", ai_kind), ("sensitivity", sensitivity),
                      ("owner", owner), ("certification", certification), ("lifecycle_state", lifecycle_state),
                      ("is_cde", is_cde)):
         if val is not None:
@@ -155,6 +158,13 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
         _validate_domain(db, changes["domain"])
         if changes["domain"] != asset.domain:  # 移管先ドメインでも権限が必要
             authz.require(db, principal, "asset.update", domain=changes["domain"], entity_id=asset.id)
+    if {"ai_kind", "data_class"} & set(changes):
+        try:
+            ai.check_kind_change(db, asset, changes.get("data_class", asset.data_class), changes.get("ai_kind", asset.ai_kind))
+        except ai.AiValidationError as e:
+            raise HTTPException(422, str(e)) from e
+        except ai.AiStateError as e:
+            raise HTTPException(409, str(e)) from e
     for k, v in changes.items():
         setattr(asset, k, v)
     if set(changes) & {"schema_", "contains_pii", "privacy_technique", "privacy_params"}:
@@ -171,6 +181,8 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
         changes["certification_reset"] = True
     db.flush()
     audit.record(db, principal.audit_actor, "asset.update", "asset", asset.id, changes)
+    if set(changes) & INHERITANCE_FIELDS:
+        ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])
     return asset
 
 

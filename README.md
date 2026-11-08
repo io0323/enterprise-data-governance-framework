@@ -21,6 +21,7 @@
 | §19 | スキーマ版管理(Alembic)・統一エラーモデル(RFC 9457)・ページネーション・構造化ログ/request_id・liveness/readiness | `/health`, `/ready` |
 | §12 / §10 | PII Inventory(カラム単位)・Consent Registry・Right to Erasure ワークフロー・匿名化/仮名化の管理(PRV-003〜005) | `/privacy/...` |
 | §8 | Golden Record(値は持たず、xref・由来・版の情報のみ)、2 段階のマッチング、Survivorship、裁定キュー、as-of、Reference Data の版管理 | `/mdm/...`, `/reference-data/...` |
+| §14 | AI 資産(Dataset / Model Card、版の情報)、学習利用の承認、AI Lineage、統制属性の継承、RAG の判定、消去の伝播と是正、インシデント | `/ai/...` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
 ## 起動
@@ -59,7 +60,8 @@ docker compose up --build             # 既定: jwt モード (EDGF_OIDC_* が�
 | `EDGF_SUBJECT_KEY` | (production では必須) | `subject_ref` の HMAC 鍵。32 バイト以上。後述の「Data Privacy」を参照 |
 | `EDGF_ERASURE_SLA_DAYS` | `30` | 消去要求の対応期限(日) |
 | `EDGF_MDM_REVIEW_SLA_DAYS` | `7` | MDM の裁定キューの対応期限(日) |
-| `EDGF_MIN_K_ANONYMITY` | `5` | `anonymized` と宣言するために必要な k-匿名性の下限(PRV-003) |
+| `EDGF_MIN_K_ANONYMITY` | `5` | `anonymized` と宣言するために必要な k-匿名性の下限(PRV-003)。継承の解除の基準にもなる |
+| `EDGF_AI_REMEDIATION_SLA_DAYS` | `30` | ModelRemediation の判断と実施の期限(日) |
 
 ### スキーマ変更(Alembic)
 
@@ -128,6 +130,19 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 
 | アクション | 内容 | 許可される主体 | 承認 |
 |---|---|---|---|
+| `ai.card.write` | Dataset Card / Model Card の登録・更新 | ドメイン内ロール: steward<br>対象の owner / steward |  |
+| `ai.dataset_version.register` | Dataset Version の登録 | 対象の custodian / owner / steward |  |
+| `ai.incident.create` | データ汚染・リコールの起票 | ロール: committee<br>ドメイン内ロール: owner, steward |  |
+| `ai.inheritance.recompute` | 継承した統制属性の全件再計算 | ロール: admin, committee |  |
+| `ai.model.approve` | Model Version の承認と再開 | 対象の owner | ✓ |
+| `ai.model.suspend` | Model Version の停止と廃止 | ロール: committee<br>対象の owner |  |
+| `ai.model_version.register` | Model Version の登録、デプロイと利用先の記録 | 対象の custodian / owner / steward |  |
+| `ai.rag.authorize` | RAG の検索結果を利用者の権限で絞り込む判定 | 対象の custodian |  |
+| `ai.remediation.complete` | 是正の完了報告 | 対象の custodian / owner |  |
+| `ai.remediation.decide` | 消去の影響を受けたモデル版の是正の判断 (retrain / unlearn / accept) | ロール: committee | ✓ |
+| `ai.remediation.escalate` | 是正の期限超過の処理 | ロール: admin, committee |  |
+| `ai.training.approve` | 学習利用の承認 (構成元の資産の Owner と Committee) | ロール: committee<br>対象の owner | ✓ |
+| `ai.training.request` | 学習利用の承認の申請と取り下げ | 対象の owner / steward |  |
 | `asset.access_grant` | 閲覧の承認 (§4.2 アクセス承認 A/R) | 対象の owner | ✓ |
 | `asset.access_grant.read` | 閲覧承認の一覧 | ロール: admin, committee<br>対象の owner / steward |  |
 | `asset.access_revoke` | 閲覧承認の取消 | ロール: committee<br>対象の owner |  |
@@ -185,6 +200,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | public / internal / confidential | clearance がその機密度以上の利用者、資産の当事者(Owner/Steward/Custodian)、`committee`、`admin` |
 | restricted | 資産の当事者、`committee`、`admin`、**Owner が閲覧を承認した利用者**(clearance だけでは閲覧不可) |
 
+- AI 資産は、宣言値ではなく上流から継承した**実効機密度**で判定します(後述の「統制属性の継承」)。
 - clearance は claim(`EDGF_CLAIM_CLEARANCE`)で与えます。無い場合はロールから導きます(admin/committee=restricted、owner/steward/custodian=confidential、consumer=internal、consent_collector=public)。
 - 閲覧できない資産は、一覧(資産・保持期限・Issue・ポリシー例外・用語の紐付け先)から件数を含めて除外し、個別に取得しようとすると 403 になります。影響分析では名前と深さだけを返し、詳細を伏せます(通知先 Owner は変更管理に必要なので返します)。
 - Owner による閲覧承認: `POST /assets/{id}/access-grants`(`subject`, `purpose`, `expires_at`。期限は最大 365 日)。取り消しは `DELETE /assets/{id}/access-grants/{grant_id}` で、Owner と Committee が行えます。
@@ -244,7 +260,7 @@ stateDiagram-v2
     rejected --> [*]
 ```
 
-- **対象の特定**: `identifier_type` が一致するカラムを持つ資産を起点に、Lineage の下流のうち `contains_pii` の資産を加えます(非 PII の資産を経由した下流も含みます)。未登録の下流は `unregistered_downstream` として警告します。
+- **対象の特定**: `identifier_type` が一致するカラムを持つ資産を起点に、Lineage の下流のうち `contains_pii` の資産と、AI 資産(Embedding、ベクトル、RAG コーパス、学習データ)を加えます(非 PII の資産を経由した下流も含みます)。モデルにはタスクを発行せず、[ModelRemediation](#消去の伝播と-modelremediation) で扱います。未登録の下流は `unregistered_downstream` として警告します。
 - **Legal Hold**: 対象の特定時、発行時、ack 時に判定し、該当すれば `withheld`(理由を記録)にして削除しません(§10.2)。ack の後に Hold が設定された場合、実際に起きた削除の報告は証跡として記録し、警告を残します。
 - **承認**: Committee は全タスク、Owner は自分の資産のタスクだけを承認でき、全タスクが揃うと `approved` になります。受付者本人の承認と、削除を実行した本人の完了確認は職務分離で拒否します。
 - **期限超過**: 未完了タスクの資産ごとに Issue を起票します。Issue の期限も過ぎると、次の実行でエスカレーションします。
@@ -361,11 +377,131 @@ API は `/api/v1/reference-data` です。
 
 コード値は `code`, `label`, `valid_from`, `valid_to`, `standard`(外部標準の出典), `standard_version` を持ちます。品質ルールの `allowed_values` / `referential` からは `params.reference_set: <id>[@version]` で参照できます。版を省略すると最新の公開版のうち有効なコードで評価します。既存の `reference_values` / `values` の指定もそのまま使えます。
 
+## Data Governance & AI(§14)
+
+### AI 資産の境界(§18.2)
+
+| 対象 | 置き場所 | 内容 |
+|---|---|---|
+| 学習データ、Embedding、ベクトル、RAG コーパスの本文、モデルの重み、レジストリ本体 | **Data Plane** | Control Plane には保存しない。値を送ると 422 で拒否する(黙って捨てない) |
+| Dataset Card / Model Card | Control Plane | 目的、収集元、ライセンス、同意の根拠、既知のバイアス、意図した用途と用途外、評価指標(スカラー値のみ)、制約 |
+| 版の情報 | Control Plane | Data Plane が計算した manifest のハッシュ、件数、期間、構成元の資産とその版、外部参照の URI |
+| AI Lineage | Control Plane | 構成元(版)→ Dataset Version → Model Version → 利用先 |
+| 承認と是正判断の記録 | Control Plane | TrainingApproval、ModelRemediation、インシデント |
+| 継承した統制属性 | Control Plane | 実効機密度、実効の `contains_pii`、それを決めた上流の名前 |
+
+AI の API は未定義の項目を受け付けません(`extra="forbid"`)。`external_uri` は `data:` と認証情報を含む URI を拒否します。検証エラーの応答とログに値は含まれません。
+
+`data_class=ai` の資産には `ai_kind` を指定します: `training_dataset` / `embedding_set` / `vector_index` / `rag_corpus` / `model`。Card や版を登録した資産の種別は変更できません。Purpose `ai_training` は標準で用意しています(マイグレーション 0012。同じ ID が既にあれば定義を尊重します)。
+
+### AI Lineage
+
+```mermaid
+flowchart LR
+    S1["構成元の資産(版)"] --> DV["Dataset Version"]
+    S2["MDM / Reference Data の版"] --> DV
+    DV0["別の Dataset Version"] --> DV
+    DV --> MV["Model Version"]
+    MV --> U1["デプロイ"]
+    MV --> U2["RAG / 用途"]
+    S0["上流の資産"] -. lineage_edges .-> S1
+    S1 -. "データセット単位のエッジ" .-> DA["学習データの資産"]
+    DA -. "データセット単位のエッジ" .-> MA["モデルの資産"]
+```
+
+- 版を登録すると `lineage_edges` にもデータセット単位のエッジを反映するので、既存の `impact_analysis` と LIN-001 がそのまま使えます。
+- 影響の特定は版単位です。ただし、手動登録や OpenLineage のエッジで繋がる資産は、どの版が影響を受けるか分からないので全版を対象にします(消去と汚染の影響範囲から漏らさないため)。
+
+### 学習利用の承認(§14 Training Data)
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: Dataset Version の登録
+    draft --> approved: 全 Owner (必要なら Committee) の承認
+    draft --> superseded: 消去の発行
+    approved --> superseded: 消去の発行
+    superseded --> [*]
+```
+
+- **AI-001 は承認の記録で判定します**。`controls` に `training_approval` と書いても合格になりません。`training_dataset` は承認の記録がある approved の版、`model` は承認の記録がある学習データだけを使った版が必要です。Embedding、ベクトル、RAG は対象外で、`ai_kind` が未設定なら不合格です。
+- **申請の前提**(§14.1 の必須化。満たさなければ 409 `training-prerequisites-failed`): ライセンスの確認結果が `verified`、バイアス評価の参照、構成元の品質検査の実績(Reference Data と Dataset Version を除く)、全構成元の Owner、構成元の PII カラムの `processing_purposes` に `ai_training` があるか同意以外の法的根拠があること。同意と品質は Control Plane が計算して記録し、各承認の時点で計算し直します。
+- **承認者**: 構成元の全 Owner(1 人 1 枠)。構成元またはその上流に restricted か PII があれば Committee も必要です。却下は 1 件で確定し、理由が必須です。Committee の枠は、申請者と Owner として決裁した本人には開きません(職務分離)。申請後に Owner が交代したら、取り下げて申請し直します。
+- **Model Version**: `draft → approved → deployed`、`approved / deployed ⇄ suspended`、いずれからも `retired`。approved でない Dataset Version を使う版は承認も再開もできません(409 `model-approval-blocked`)。
+
+### 統制属性の継承(§14 Embedding / Vector / RAG)
+
+- 実効機密度 = 自身と Lineage の全上流の最大値、実効の `contains_pii` = 自身と全上流の論理和です。ABAC は実効機密度で判定します。
+- 解除できるのは、上流で PRV-003 を満たす `anonymized` を経た場合だけです。その資産より先は継承しません。すべての経路で匿名化を経る必要があり、仮名化では解除しません。
+- 上流の分類や保護手法の変更、資産の登録、Lineage の追加、版の登録で再計算します。実効値が宣言値を上回ると Owner 宛ての Issue(`policy:AI-002`)を起票し、Certified なら draft に戻します。
+
+| ポリシー | 内容 | 重大度 |
+|---|---|---|
+| AI-001 | 学習データに承認の記録があること | critical |
+| AI-002 | 実効の統制属性が宣言値以下であること | critical |
+| AI-003 | `rag_corpus` の構成元は Certified の資産だけ(Embedding とベクトルは透過して元の資産を見る。未登録の構成元や構成元なしは不合格) | high |
+| AI-004 | `vector_index` / `embedding_set` の上流に PII があれば `privacy_technique` が `pseudonymized` 以上(`pseudonymized` / `anonymized` / `aggregated`) | critical |
+
+### RAG の判定(§14 RAG Data)
+
+`POST /ai/rag/authorize` は RAG サービスが検索のたびに呼ぶ判定 API です。利用者(`subject`, `roles`, 任意の `clearance`)、コーパス、ヒットした構成元の資産 ID を受け取り、ABAC を通過した資産だけを `allowed_asset_ids` に返します。除外の理由は `denied` に入ります(`clearance` / `restricted_not_granted` / `not_in_corpus` / `unknown_asset` / `deleted`)。
+
+- **ステートレスで、呼び出し頻度が高いので監査には記録しません**(`POST /privacy/consents/check` と同じ扱い)。権限が無い呼び出しの拒否だけは `authz.denied` として記録します。
+- 検索語、チャンクの本文、Embedding は受け取りません(送ると 422)。コーパスの構成元でない資産は除外します(fail-close)。
+- 判定はコーパスではなく、ヒットした資産ごとに行います。呼び出せるのはコーパスの Custodian だけです。利用者の属性は呼び出し元の申告を信頼します。
+
+### 消去の伝播と ModelRemediation
+
+| 対象 | 動作 |
+|---|---|
+| `vector_index` / `rag_corpus` / `embedding_set` / `training_dataset` | `contains_pii` の宣言に関わらず ErasureTask を発行する |
+| `training_dataset` の該当版 | 発行時に superseded にする。以降の学習には使えない(Legal Hold でデータを残す場合も同じ) |
+| `model` | 自動では何もしない。影響を受けたモデル版(`retired` を除く)ごとに未決の ModelRemediation を作る |
+
+対象の特定(`scope`)では `ai_impact` で影響の予定を示すだけで、版と Remediation は承認後の `dispatch` で確定します(却下される可能性があり、superseded は元に戻せないため)。`scope` の後に登録された版も `dispatch` で含めます。
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: 消去の発行
+    pending --> retrain: Committee の判断
+    pending --> unlearn: Committee の判断
+    pending --> accepted: Committee の判断(理由と期限が必須、最大 365 日)
+    accepted --> pending: 期限切れ(Issue を起票)
+    accepted --> retrain: 判断の変更
+    accepted --> unlearn: 判断の変更
+    retrain --> completed: 再学習した版を報告
+    unlearn --> completed: 証跡のハッシュを報告
+    completed --> [*]
+```
+
+- 消去証明には `ai_assets`(タスクの結果)、`dataset_versions`、`model_remediations`、`model_remediation_open` を含めます。データの消去が完了しても、未完了の是正があれば `model_remediation_open` が true になります。
+- 判断は完了するまで変更できます(図は主な遷移です)。`retrain` の完了には、同じモデルの別の版(approved か deployed で、superseded の学習データを使わないもの)が必要です。
+- 期限超過は `POST /ai/remediations/escalate-overdue` で Issue を起票します(未決は Committee、実施中は Owner 宛て)。Issue の期限も過ぎるとエスカレーションします。
+- `ai_training` の同意が撤回されると、Card の同意の根拠がこの目的の資産と、この目的の PII カラムを持つ資産の下流にある AI 資産の Owner に Issue を起票します。
+
+### API(`/api/v1/ai`)
+
+| API | 内容 |
+|---|---|
+| `PUT/GET /assets/{id}/dataset-card`, `/model-card` | Card |
+| `POST/GET /assets/{id}/dataset-versions`, `GET /dataset-versions/{id}` | Dataset Version(版は変更できない) |
+| `POST/GET /assets/{id}/model-versions`, `GET /model-versions/{id}` | Model Version(学習に使った Dataset Version は必須) |
+| `POST /model-versions/{id}/approve` / `deploy` / `suspend` / `resume` / `retire` | 状態遷移 |
+| `POST/GET /model-versions/{id}/usages` | 利用先(デプロイ、RAG、用途) |
+| `POST/GET /dataset-versions/{id}/training-approvals`, `GET /training-approvals/{id}`, `POST .../decision`, `.../withdraw` | 学習利用の承認 |
+| `GET /lineage/models/{model_version_id}` | モデル版から起点の資産まで遡る |
+| `GET /lineage/assets/{asset_id}/models` | その資産の影響を受けるモデル版 |
+| `GET /assets/{id}/inheritance`, `POST /inheritance/recompute` | 実効値の参照と全件再計算(既存データの移行用) |
+| `POST /rag/authorize` | RAG の判定 |
+| `GET /remediations[/{id}]`, `POST .../decision`, `.../complete`, `POST /remediations/escalate-overdue` | ModelRemediation |
+| `POST/GET /incidents`, `GET /incidents/{id}` | データ汚染・リコール。影響するモデル版を特定し、Owner と Committee 宛ての Issue を起票する。任意でモデル版を停止する |
+
+KPI(`/kpi`)に `ai_training_approved_rate`(superseded を除く版のうち approved の比率)、`ai_remediation_pending_count`(期限切れの accept を含む)、`ai_card_complete_rate`、`ai_inheritance_violation_count`、`ai_asset_count` を追加しました。成熟度の判定(§20)には使いません。
+
 ## API の共通仕様
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
   `{"type": "urn:edgf:problem:<slug>", "title", "status", "detail", "instance", "request_id", ...}`。
-  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `invalid-value`, `database-unavailable`, `audit-chain-contention`, `mdm-asset-missing`, `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
+  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `invalid-value`, `database-unavailable`, `audit-chain-contention`, `mdm-asset-missing`, `training-prerequisites-failed`(拡張 `blockers`), `model-approval-blocked`(拡張 `blockers`), `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
 - **ページネーション**: 一覧 API はすべて `limit`(1〜1000、既定 100。品質実行履歴のみ既定 20)と `offset` を受け付けます。後方互換のため本文は配列のままで、総件数は `X-Total-Count`、前後ページは `Link`(`rel="next"`/`"prev"`)ヘッダで返します。
 - **request_id**: `X-Request-ID` を受け取れば引き継ぎ(英数字と `._:-`、128 文字以内)、なければ採番してレスポンスヘッダとすべてのログ行に付けます。監査イベントにも記録し、ハッシュの対象に含めます(`GET /audit/events?request_id=...` で突き合わせできます)。
 - **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
@@ -385,8 +521,8 @@ API は `/api/v1/reference-data` です。
 | `alembic` | 必須 | SQLAlchemy 公式のマイグレーションツール(MIT)。§19 Integrity/Maintainability のスキーマ版管理のため |
 | `opentelemetry-sdk` / `-exporter-otlp-proto-http` / `-instrumentation-fastapi` | 任意(`otel`) | ベンダー中立のトレーシング標準(Apache-2.0)。§19 Observability。送信先は OTLP なので特定の製品に依存しない |
 | `PyJWT[crypto]` | 必須 | JWT の検証と JWKS の取得・キャッシュ(MIT。暗号処理は `cryptography`)。依存が少なく、JWKS のキャッシュと未知の `kid` での再取得(鍵ローテーション)を標準で備え、特定の IdP SDK を使わずに OIDC 準拠の検証ができるため |
-| (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています |
-| `pytest-cov` | 開発 | カバレッジ計測(services/ 85% 以上を目標) |
+| (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています。Phase 10 でも依存は追加していません |
+| `pytest-cov` | 開発 | カバレッジ計測(services/ 95% 以上を CI で検査) |
 
 ## 既知の制約と次フェーズ
 
@@ -401,7 +537,15 @@ API は `/api/v1/reference-data` です。
 - k-匿名性の `k` は申告値で、データ自体は検証しません(Control Plane はデータを持たないため)
 - 監査ガードはキーとパターンによる検査です。形式に特徴の無い識別子(顧客 ID など)は検出できないので、生の識別子を payload に渡さない実装とテスト(全テーブルの走査)で担保しています
 - `POST /consents/check` は高頻度の呼び出しを想定し、監査ログに記録しません。Purpose の `retention_days` はカタログ上の情報で、保持期限の自動執行とは連動していません(Phase 12 で対応)
-- ベクトル資産への消去の伝播は Phase 10 で対応します
+- **AI 資産の消去の伝播は実装済みです**が、Control Plane は主体がどの資産や版に含まれるかを知りません。下流の資産と該当しうる版をすべて対象にするので、実際には主体を含まない版も superseded になります。Data Plane は `subject_ref` で照合し、含まれなければ `records_deleted=0` で完了を報告してください
+- 消去のタスクは、匿名化を経た下流の AI 資産にも発行します。継承は解除されますが、`k` は申告値なので消去の対象からは外しません(含まれなければ 0 件で完了します)
+- 未完了の ModelRemediation があっても、消去要求の `verify` と `close` は止めません(是正は 30 日で終わらないことがあるため)。消去証明の `model_remediation_open` と Issue で追跡します
+- superseded の学習データを使うモデル版は、`accept` の判断があっても停止からは再開できません(再学習が必要です)。`retired` のモデル版には Remediation を作りません
+- インシデントは Issue の起票と任意の停止までで、ModelRemediation は作りません(是正の判断は消去の伝播に限っています)
+- manifest のハッシュ、件数、`k`、Unlearning の証跡はすべて Data Plane の申告で、Control Plane は検証しません。Card の自由記述に貼られた値は検出できません(項目の長さの上限と運用で抑えています。監査ログには本文を残しません)
+- 継承の計算は Lineage を都度辿ります。リネージの削除 API は無いので、DB を直接修正した場合は `POST /ai/inheritance/recompute` を実行してください。Phase 10 より前の `data_class=ai` の資産も、この API で実効値を作ります(それまで ABAC は宣言値で判定します)。未登録の上流は `unregistered_upstream` で示しますが、機密度が不明なので実効値には反映できません
+- Phase 10 より前の `data_class=ai` の資産は、AI-001 が承認の記録を求めるようになったので不合格になります(`ai_kind` の設定と承認が必要です)
+- `POST /ai/rag/authorize` はヒットごとに ABAC を判定し、呼び出しごとに Lineage を辿ります。性能は Phase 14 の負荷試験で確認します
 - **PostgreSQL 16 で検証済みです**(CI で SQLite と PostgreSQL の両方について pytest とマイグレーションの往復を毎回実行します)。残っている差異は次のとおりです
   - `ilike` の非 ASCII: PostgreSQL は `É` と `é` を同一視しますが、SQLite は ASCII だけです。検索結果が DB で変わるのはこの場合だけです
   - 照合順序: 一覧の並びは DB の照合順序に従います。ページングは一意キーで安定していますが、`postgres:16-alpine` 以外(glibc の `en_US.UTF-8` など)では大文字小文字や記号の順序が変わることがあります
@@ -414,4 +558,4 @@ API は `/api/v1/reference-data` です。
 - 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください
 - `split` の直後は、どのソースの識別子か判定できないので、`subject_ref` の対応を両方の Golden Record に残します(再構成で正しくなります。消去の対象から漏らさないための措置です)
 - Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
-- 未着手: AI資産(Model/Dataset Card、§14)、Catalog UI、スケジューラとの連携(`/issues/escalate-overdue`、`/policies/evaluate`、`/privacy/erasure-requests/escalate-overdue`、`/mdm/reviews/escalate-overdue` の定期実行)
+- 未着手: Catalog UI、スケジューラとの連携(`/issues/escalate-overdue`、`/policies/evaluate`、`/privacy/erasure-requests/escalate-overdue`、`/mdm/reviews/escalate-overdue`、`/ai/remediations/escalate-overdue` の定期実行)

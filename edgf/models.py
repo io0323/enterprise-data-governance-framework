@@ -82,6 +82,12 @@ class DataAsset(Base):
     # §12 保護手法とパラメータ (k: k-匿名性の k、key_vault_ref: 仮名化キーの分離保管先の識別子)
     privacy_technique: Mapped[str] = mapped_column(String(20), default="none")
     privacy_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    # §14 data_class=ai のときの種別 (training_dataset / embedding_set / vector_index / rag_corpus / model)
+    ai_kind: Mapped[str | None] = mapped_column(String(20), index=True)
+    # §14 継承した統制属性 (Lineage の上流から計算する)。AI 資産以外は NULL で、ABAC は宣言値を使う
+    effective_sensitivity: Mapped[str | None] = mapped_column(String(20))
+    effective_contains_pii: Mapped[bool | None] = mapped_column(Boolean)
+    inheritance: Mapped[dict] = mapped_column(JSON, default=dict)  # 実効値を決めた上流と解除の根拠 (名前のみ)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -242,6 +248,8 @@ class ErasureRequest(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text)
     unregistered_downstream: Mapped[list] = mapped_column(JSON, default=list)
     warnings: Mapped[list] = mapped_column(JSON, default=list)
+    # §14 消去の影響を受ける AI 資産 (起点の資産名と、Dataset Version / Model Version の ID。主体の情報は含まない)
+    ai_impact: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class ErasureTask(Base):
@@ -256,6 +264,8 @@ class ErasureTask(Base):
     depth: Mapped[int] = mapped_column(Integer, default=0)
     columns: Mapped[list] = mapped_column(JSON, default=list)
     golden_ids: Mapped[list] = mapped_column(JSON, default=list)  # MDM Hub 向け: 消去する Golden Record
+    ai_kind: Mapped[str | None] = mapped_column(String(20))  # §14 AI 資産のタスクの種別
+    dataset_version_ids: Mapped[list] = mapped_column(JSON, default=list)  # 学習データの該当版
     status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
     withheld_reason: Mapped[str | None] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(String(200))
@@ -401,6 +411,179 @@ class RefCode(Base):
     valid_to: Mapped[date | None] = mapped_column(Date)
     standard: Mapped[str | None] = mapped_column(String(100))  # 外部標準の出典 (例: ISO 3166-1)
     standard_version: Mapped[str | None] = mapped_column(String(50))  # 例: 2026
+
+
+class DatasetCard(Base):
+    """§14 AI Metadata: Dataset Card。学習データ・Embedding・Vector・RAG コーパスの説明 (値は持たない)。"""
+    __tablename__ = "dataset_cards"
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), primary_key=True)
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    collection_source: Mapped[str] = mapped_column(Text, default="")
+    license: Mapped[str] = mapped_column(String(200), default="")
+    consent_purpose_id: Mapped[str | None] = mapped_column(ForeignKey("privacy_purposes.id"))  # 同意の根拠 (§12 Purpose)
+    known_biases: Mapped[str] = mapped_column(Text, default="")
+    constraints: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[str] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ModelCard(Base):
+    """§14 AI Metadata: Model Card。重みとレジストリ本体は Data Plane が持つ (§18.2)。"""
+    __tablename__ = "model_cards"
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), primary_key=True)
+    intended_use: Mapped[str] = mapped_column(Text, default="")
+    out_of_scope_use: Mapped[str] = mapped_column(Text, default="")
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)  # 評価指標 (名前 → スカラー値)
+    bias_evaluation_ref: Mapped[str] = mapped_column(String(2000), default="")  # 結果の外部参照
+    constraints: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[str] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class DatasetVersion(Base):
+    """§14 Training Data の版管理。実データは持たず、Data Plane が計算した manifest のハッシュと件数だけを持つ。"""
+    __tablename__ = "dataset_versions"
+    __table_args__ = (UniqueConstraint("asset_id", "version", name="uq_dataset_version"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    version: Mapped[str] = mapped_column(String(100))
+    manifest_hash: Mapped[str] = mapped_column(String(64))
+    record_count: Mapped[int] = mapped_column(Integer)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime)
+    external_uri: Mapped[str | None] = mapped_column(String(2000))
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    registered_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    superseded_reason: Mapped[str | None] = mapped_column(String(100))  # 例: erasure:<id>
+
+
+class DatasetVersionSource(Base):
+    """Dataset Version の構成元。kind に応じて version の意味が変わる (資産の版 / MDM / Reference Data / 別の Dataset Version)。"""
+    __tablename__ = "dataset_version_sources"
+    __table_args__ = (UniqueConstraint("dataset_version_id", "asset_id", "kind", "version", name="uq_dataset_version_source"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_version_id: Mapped[str] = mapped_column(ForeignKey("dataset_versions.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    qualified_name: Mapped[str] = mapped_column(String(300))
+    kind: Mapped[str] = mapped_column(String(20), default="asset")  # asset / mdm / reference_data / dataset_version
+    version: Mapped[str] = mapped_column(String(100))
+
+
+model_version_dataset = Table(
+    "model_version_datasets",
+    Base.metadata,
+    Column("model_version_id", String(36), ForeignKey("model_versions.id", ondelete="CASCADE"), primary_key=True),
+    Column("dataset_version_id", String(36), ForeignKey("dataset_versions.id"), primary_key=True, index=True),
+)
+
+
+class ModelVersion(Base):
+    """§14 AI Metadata / AI Lineage: モデルの版。学習に使った Dataset Version と紐付く。重みは外部参照の URI だけを持つ。"""
+    __tablename__ = "model_versions"
+    __table_args__ = (UniqueConstraint("asset_id", "version", name="uq_model_version"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    version: Mapped[str] = mapped_column(String(100))
+    external_uri: Mapped[str | None] = mapped_column(String(2000))
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    registered_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    approved_by: Mapped[str | None] = mapped_column(String(200))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deployed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    suspended_reason: Mapped[str | None] = mapped_column(Text)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+    datasets: Mapped[list[DatasetVersion]] = relationship(secondary=model_version_dataset)
+
+
+class ModelUsage(Base):
+    """§14 AI Lineage: モデル版の利用先 (デプロイ、RAG、用途)。出力そのものは持たない。"""
+    __tablename__ = "model_usages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    model_version_id: Mapped[str] = mapped_column(ForeignKey("model_versions.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # deployment / rag / application
+    target: Mapped[str] = mapped_column(String(300))
+    target_asset_id: Mapped[str | None] = mapped_column(ForeignKey("data_assets.id"))
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrainingApproval(Base):
+    """§14 Training Data: Dataset Version ごとの学習利用の承認。controls の自己申告ではなく、この記録で AI-001 を判定する。"""
+    __tablename__ = "training_approvals"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dataset_version_id: Mapped[str] = mapped_column(ForeignKey("dataset_versions.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    requested_by: Mapped[str] = mapped_column(String(200))
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    license_status: Mapped[str] = mapped_column(String(20))
+    license_ref: Mapped[str] = mapped_column(String(2000), default="")
+    bias_evaluation_ref: Mapped[str] = mapped_column(String(2000), default="")
+    # Control Plane が計算して添付する (申請者の申告ではない)。値は含まず、カラム名とスコアだけ
+    consent_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    quality_summary: Mapped[list] = mapped_column(JSON, default=list)
+    decisions: Mapped[list[TrainingApprovalDecision]] = relationship(
+        back_populates="approval", cascade="all, delete-orphan", order_by="TrainingApprovalDecision.slot")
+
+
+class TrainingApprovalDecision(Base):
+    """承認の枠。Owner ごとに 1 つ (owner:<subject>)、必要なら Committee に 1 つ (committee)。全枠が揃うと承認になる。"""
+    __tablename__ = "training_approval_decisions"
+    __table_args__ = (UniqueConstraint("approval_id", "slot", name="uq_training_approval_slot"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("training_approvals.id", ondelete="CASCADE"), index=True)
+    slot: Mapped[str] = mapped_column(String(210))
+    required_subject: Mapped[str | None] = mapped_column(String(200))  # Committee の枠は NULL
+    asset_ids: Mapped[list] = mapped_column(JSON, default=list)  # この Owner が担当する構成元
+    decision: Mapped[str] = mapped_column(String(20), default="pending")  # pending / approved / rejected
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    comment: Mapped[str] = mapped_column(Text, default="")
+    approval: Mapped[TrainingApproval] = relationship(back_populates="decisions")
+
+
+class ModelRemediation(Base):
+    """§12 / §14 消去の影響を受けたモデル版の是正。モデルの重みは自動では変えず、Committee が判断する。"""
+    __tablename__ = "model_remediations"
+    __table_args__ = (UniqueConstraint("model_version_id", "erasure_request_id", name="uq_model_remediation"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    model_version_id: Mapped[str] = mapped_column(ForeignKey("model_versions.id"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    erasure_request_id: Mapped[str] = mapped_column(ForeignKey("erasure_requests.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    accept_until: Mapped[datetime | None] = mapped_column(DateTime)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_by: Mapped[str | None] = mapped_column(String(200))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    replacement_model_version_id: Mapped[str | None] = mapped_column(ForeignKey("model_versions.id"))
+    evidence_hash: Mapped[str | None] = mapped_column(String(64))  # Unlearning の証跡 (Data Plane が算出)
+
+
+class AiIncident(Base):
+    """§14 AI Lineage: データ汚染・リコール。起点は資産または Dataset Version。"""
+    __tablename__ = "ai_incidents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(20))
+    severity: Mapped[str] = mapped_column(String(10), default="high")
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    origin_asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    origin_dataset_version_id: Mapped[str | None] = mapped_column(ForeignKey("dataset_versions.id"))
+    affected_model_version_ids: Mapped[list] = mapped_column(JSON, default=list)
+    suspended_model_version_ids: Mapped[list] = mapped_column(JSON, default=list)
+    issue_ids: Mapped[list] = mapped_column(JSON, default=list)
+    reported_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AuditEvent(Base):

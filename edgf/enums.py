@@ -135,6 +135,47 @@ class ErasureTaskStatus(str, Enum):
     CANCELLED = "cancelled"          # 要求の却下による取消
 
 
+class AiKind(str, Enum):
+    """§14 AI 資産の種別 (data_class=ai)。実体は Data Plane にあり、Control Plane はメタデータだけを持つ (§18.2)"""
+    TRAINING_DATASET = "training_dataset"
+    EMBEDDING_SET = "embedding_set"
+    VECTOR_INDEX = "vector_index"
+    RAG_CORPUS = "rag_corpus"
+    MODEL = "model"
+
+
+class DatasetVersionStatus(str, Enum):
+    """§14 Training Data: 学習データの版"""
+    DRAFT = "draft"
+    APPROVED = "approved"
+    SUPERSEDED = "superseded"        # 以降の学習には使えない
+
+
+class ModelVersionStatus(str, Enum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    DEPLOYED = "deployed"
+    SUSPENDED = "suspended"
+    RETIRED = "retired"
+
+
+class TrainingApprovalStatus(str, Enum):
+    """§14 Training Data / §13 Approval: 学習利用の承認"""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+
+
+class RemediationStatus(str, Enum):
+    """§12 / §14 消去の影響を受けたモデル版の是正。許容には必ず期限がある"""
+    PENDING = "pending"      # Committee の判断待ち
+    RETRAIN = "retrain"      # 再学習を実施中
+    UNLEARN = "unlearn"      # Unlearning を実施中
+    ACCEPTED = "accepted"    # 期限付きで許容 (期限を過ぎると pending に戻る)
+    COMPLETED = "completed"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

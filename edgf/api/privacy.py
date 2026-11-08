@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -27,7 +27,9 @@ def _inventory(db: Session, principal: Principal, domain: str | None, category: 
                purpose: str | None, legal_basis: LegalBasis | None) -> list[dict]:
     """権限のあるドメインかつ ABAC で閲覧できる資産に絞る。"""
     scope = authz.require_scope(db, principal, "privacy.inventory.read")
-    stmt = select(DataAsset).where(scope, authz.readable_clause(principal), DataAsset.contains_pii.is_(True),
+    # 上流から PII を継承した AI 資産も PII の所在に含める (§14)
+    stmt = select(DataAsset).where(scope, authz.readable_clause(principal),
+                                   or_(DataAsset.contains_pii.is_(True), DataAsset.effective_contains_pii.is_(True)),
                                    DataAsset.lifecycle_state != LifecycleState.DELETED.value)
     if domain:
         stmt = stmt.where(DataAsset.domain == domain)
@@ -240,7 +242,7 @@ def scope_erasure_request(request_id: str, db: Session = Depends(get_session), p
     audit.record(db, principal.audit_actor, "erasure.scope", "erasure", req.id, {
         "assets": [t.qualified_name for t in tasks],
         "withheld": [t.qualified_name for t in tasks if t.status == "withheld"],
-        "unregistered_downstream": req.unregistered_downstream})
+        "unregistered_downstream": req.unregistered_downstream, "ai_impact": req.ai_impact})
     return _detail(db, principal, req)
 
 
@@ -275,8 +277,10 @@ def dispatch_erasure_request(request_id: str, db: Session = Depends(get_session)
     """削除指示を発行する。発行後のタスクは Data Plane から GET /privacy/erasure-tasks で取得できる。"""
     req = _get_request(db, request_id)
     authz.require(db, principal, "privacy.erasure.request", entity_type="erasure", entity_id=req.id)
-    _state_guard(erasure.dispatch, db, req)
-    audit.record(db, principal.audit_actor, "erasure.dispatch", "erasure", req.id, {"status": req.status})
+    _state_guard(erasure.dispatch, db, req, principal.audit_actor)
+    audit.record(db, principal.audit_actor, "erasure.dispatch", "erasure", req.id, {
+        "status": req.status, "dataset_version_ids": req.ai_impact.get("dataset_version_ids", []),
+        "model_version_ids": req.ai_impact.get("model_version_ids", [])})
     return _detail(db, principal, req)
 
 

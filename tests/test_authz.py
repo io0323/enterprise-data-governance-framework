@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -308,3 +309,10 @@ def test_rule_delete_and_glossary_unlink_are_authorized(client, world):
     assert_403(client, client.delete(f"{API}/glossary/terms/{t['id']}/assets/{orders}",
                                      headers=U("y", clearance="confidential")), "glossary.link", "y")
     assert client.delete(f"{API}/glossary/terms/{t['id']}/assets/{orders}", headers=U("o1")).json()["asset_ids"] == []
+
+
+def test_readme_permission_table_lists_every_action():
+    """権限表と README の食い違いを検出する。"""
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    missing = [action for action in authz.PERMISSIONS if f"| `{action}` |" not in readme]
+    assert missing == []

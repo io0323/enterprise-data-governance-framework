@@ -163,7 +163,7 @@ def test_audit_guard_rejects_request_with_pii_in_free_text(sales_asset, client):
 # ---------------------------------------------------------------- Purpose カタログ
 def test_purpose_catalog(registry):
     r = registry.get(f"{API}/privacy/purposes", headers=COLLECTOR)
-    assert [p["id"] for p in r.json()] == ["billing", "global", "marketing"] and r.headers["x-total-count"] == "3"
+    assert [p["id"] for p in r.json()] == ["ai_training", "billing", "global", "marketing"] and r.headers["x-total-count"] == "4"
     assert registry.post(f"{API}/privacy/purposes", headers=COMMITTEE, json={
         "id": "marketing", "description": "d", "default_legal_basis": "consent"}).status_code == 409
     assert registry.post(f"{API}/privacy/purposes", headers=COMMITTEE, json={
