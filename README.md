@@ -20,6 +20,7 @@
 | §17 / §20 | KPI(全社・ドメイン別)・成熟度の目安 | `/kpi`, `/kpi/domains` |
 | §19 | スキーマ版管理(Alembic)・統一エラーモデル(RFC 9457)・ページネーション・構造化ログ/request_id・liveness/readiness | `/health`, `/ready` |
 | §12 / §10 | PII Inventory(カラム単位)・Consent Registry・Right to Erasure ワークフロー・匿名化/仮名化の管理(PRV-003〜005) | `/privacy/...` |
+| §8 | Golden Record(値は持たず、xref・由来・版の情報のみ)、2 段階のマッチング、Survivorship、裁定キュー、as-of、Reference Data の版管理 | `/mdm/...`, `/reference-data/...` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
 ## 起動
@@ -50,6 +51,7 @@ docker compose up --build             # 既定: jwt モード (EDGF_OIDC_* が�
 | `EDGF_AUTH_MODE` | `jwt` | `jwt`(OIDC)または `dev`(開発専用)。後述の「認証」を参照 |
 | `EDGF_SUBJECT_KEY` | (production では必須) | `subject_ref` の HMAC 鍵。32 バイト以上。後述の「Data Privacy」を参照 |
 | `EDGF_ERASURE_SLA_DAYS` | `30` | 消去要求の対応期限(日) |
+| `EDGF_MDM_REVIEW_SLA_DAYS` | `7` | MDM の裁定キューの対応期限(日) |
 | `EDGF_MIN_K_ANONYMITY` | `5` | `anonymized` と宣言するために必要な k-匿名性の下限(PRV-003) |
 
 ### スキーマ変更(Alembic)
@@ -140,6 +142,13 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `issue.escalate_overdue` | SLA 超過 Issue の一括エスカレーション | ロール: admin, committee |  |
 | `issue.update` | Issue の更新 | ロール: admin, committee<br>対象の assignee / owner / steward |  |
 | `lineage.write` | リネージの登録・取込 | ロール: admin, custodian, owner, steward |  |
+| `mdm.compose` | Golden Record の生成と内容ハッシュの検証 | ドメイン内ロール: steward<br>対象の custodian |  |
+| `mdm.match` | ソースレコードのマッチング | ドメイン内ロール: steward<br>対象の custodian |  |
+| `mdm.read` | MDM のメタデータの参照 (ABAC で絞り込む。値は返さない) | 認証済みの全員 |  |
+| `mdm.review.decide` | 裁定 (merge / not_match / split) と属性値の指定 | 対象の owner / steward | ✓ |
+| `mdm.review.escalate` | 裁定キューの期限超過の処理 | ロール: admin, committee |  |
+| `mdm.rule.approve` | Golden Record 生成規則の承認 (§8.2) | 対象の owner | ✓ |
+| `mdm.rule.write` | エンティティ定義の再読込 (公開) | ロール: admin, committee | ✓ |
 | `policy.evaluate_all` | 全資産の自動監査と Issue 化 | ロール: admin, committee |  |
 | `policy.reload` | ポリシーの再読込 (公開) | ロール: admin, committee | ✓ |
 | `privacy.consent.check` | 目的内利用の判定と同意履歴の参照 | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |
@@ -157,6 +166,8 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `privacy.purpose.write` | Purpose カタログの登録・更新 | ロール: admin, committee |  |
 | `quality.rule_write` | 品質ルールの追加・削除 | ドメイン内ロール: owner, steward<br>対象の owner / steward |  |
 | `quality.run` | 品質検査の実行 (パイプラインからの送信を含む) | ドメイン内ロール: custodian, owner, steward<br>対象の custodian / owner / steward |  |
+| `refdata.publish` | Reference Data の版の公開 | ロール: committee<br>対象の owner | ✓ |
+| `refdata.write` | Reference Data の下書きの作成 | ドメイン内ロール: owner, steward |  |
 
 これ以外の参照系 API(資産・Issue・KPI・ポリシー・リネージなど)は、認証済みの全員が使えます。資産を含む結果は、次の ABAC で絞り込みます。
 
@@ -241,11 +252,113 @@ stateDiagram-v2
 
 `contains_pii` を自動で false にできるのは PRV-003 を満たす `anonymized` だけです。仮名化されたデータは常に true で、基準を割ると true に戻ります。PII カラムがある間は、手作業でも false にできません。PRV-005 は、既存資産の Certification を止めないよう medium にしています。
 
+## Master Data Management(§8)
+
+### Control Plane と Data Plane の境界(§18.2)
+
+| 対象 | 置き場所 | 内容 |
+|---|---|---|
+| Golden Record の属性値、時点ごとの値の履歴 | **Data Plane(MDM Hub)** | Control Plane には永続化しない |
+| 比較対象の候補の絞り込み(blocking) | **Data Plane(MDM Hub)** | 候補の値を `match` の `candidates` で渡す |
+| マッチングと Survivorship のルール | Control Plane | `policies/mdm/*.yaml`。生成ロジックとして公開(`GET /mdm/entities`) |
+| 相互参照(xref) | Control Plane | ソースのキーは HMAC の `source_ref` でのみ保持 |
+| 属性ごとの由来 | Control Plane | 勝ったソースと適用したルール。値は持たない |
+| 版の情報 | Control Plane | 版番号、有効期間、内容ハッシュ、構成する `source_ref`、変更の理由 |
+| 裁定キュー | Control Plane | 候補の参照、総合スコア、属性ごとの比較結果だけ |
+| Reference Data の値 | Control Plane(唯一の例外) | reference 資産で、public / internal かつ `contains_pii=false` の場合だけ。違反は 422 |
+
+マッチングと生成は品質エンジンと同じくステートレスです。受け取った値は評価後に破棄し、DB・ログ・監査には残しません。値を返すのは `compose` の応答だけで、Data Plane がそれを保存します。
+
+### エンティティ定義
+
+`policies/mdm/*.yaml` で、属性、ソースの信頼度、マッチング(第1段: 完全一致キー、第2段: 類似度の重み付き合計。閾値は `auto_merge` と `review`)、Survivorship(`source_priority` / `most_recent` / `most_complete` / `most_frequent`)を定義します(例: [policies/mdm/party.yaml](policies/mdm/party.yaml))。閾値の大小関係、未定義の属性の参照、ルール種別、全属性の Survivorship はロード時に検証します。
+
+- 各定義は Catalog の master 資産と対応付けます。資産が未登録なら MDM の操作は 409 です(Metadata First)。
+- `identifier_type` を持つ属性は、Phase 8 の `subject_ref` と対応付けます(人を表すエンティティの消去の対象特定に使います)。
+- 反映(`POST /mdm/entities/reload`)は admin / committee が行い、生成規則の承認(`POST /mdm/entities/{type}/approve`)は対象資産の Owner が行います(§8.2)。承認はルール本文のハッシュに紐付くので、ルールを変更すると再承認が必要です。
+
+### match → compose → verify
+
+```mermaid
+sequenceDiagram
+    participant Hub as MDM Hub (Data Plane)
+    participant CP as Control Plane
+    participant St as Steward / Owner
+
+    Hub->>CP: POST /mdm/party/match (record, candidates の値)
+    Note over CP: 完全一致 → 類似度で判定し、値は破棄
+    alt 新規 / 既存に紐付く
+        CP-->>Hub: decision=new|linked, golden_id, source_ref
+    else 閾値の間
+        CP-->>Hub: decision=review, review_ids (比較結果のみ)
+        St->>Hub: 属性値を直接参照
+        St->>CP: POST /mdm/party/reviews/{id}/decision
+        Hub->>CP: POST /mdm/party/match (再実行で golden_id を取得)
+    end
+    Hub->>CP: POST /mdm/party/golden-records/{id}/compose (構成ソースの値)
+    Note over CP: Survivorship で値を決定。由来・内容ハッシュ・版だけを保存
+    CP-->>Hub: attributes (値), provenance, content_hash, version
+    Note over Hub: 値を保存する
+    Hub->>CP: POST /mdm/party/golden-records/{id}/verify (保持している値)
+    Note over CP: 内容ハッシュと照合し、値は破棄
+    CP-->>Hub: match=true|false
+```
+
+### API(`/api/v1/mdm`)
+
+| API | 内容 |
+|---|---|
+| `GET /entities[/{type}]`, `POST /entities/reload`, `POST /entities/{type}/approve` | エンティティ定義の参照、反映、Owner の承認 |
+| `POST /{type}/match` | 行き先の判定(新規 / 既存に紐付く / 裁定)。値は応答にも含めない |
+| `POST /{type}/golden-records/{id}/compose` | Survivorship で値を決めて返す。`overrides`(属性 → source_system)は裁定の権限が必要 |
+| `GET /{type}/golden-records[/{id}]`, `.../versions` | 版の情報。`?as_of=` でその時点の版を返す。値は含まない |
+| `POST /{type}/golden-records/{id}/verify` | Data Plane の値と内容ハッシュの照合 |
+| `POST /{type}/golden-records/{id}/split` | 誤マージの分割(自動マージを含む) |
+| `GET /{type}/reviews[/{id}]`, `POST /{type}/reviews/{id}/decision` | 裁定キューと裁定(`merge` / `not_match` / `split`) |
+| `POST /reviews/escalate-overdue` | 期限超過の Issue 起票(定期実行する想定) |
+| `GET /xref?source_system=&key=`, `POST /xref/lookup` | キーを HMAC に変換して golden_id を引く。`GET` はキーが URL に載るので、プロキシのログなどに残る環境では `POST` を使ってください |
+
+### 裁定キューの状態遷移
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: match (auto_merge と review の間)
+    pending --> merged: merge
+    pending --> not_match: not_match (同じペアは再起票しない)
+    pending --> superseded: 別の候補に統合 / 消去
+    merged --> split: split (誤マージの分割)
+    not_match --> [*]
+    superseded --> [*]
+    split --> [*]
+```
+
+- 裁定は対象マスタ資産の Steward / Owner だけが行えます。Steward は属性値を Data Plane から直接参照します。Control Plane の API は値を返しません。
+- 裁定待ちの間は新規の Golden Record を作りません。全候補が `not_match` になると新規を作ります。
+- `split` は版の履歴を保ったまま xref を付け替え、Data Plane に再構成を求めます(`recompose_required`)。分割前の構成は `?as_of=` で照会できます。
+- 期限(`EDGF_MDM_REVIEW_SLA_DAYS`、既定 7 日)を過ぎると Issue を起票し、Issue の期限も過ぎるとエスカレーションします。
+
+### 内容ハッシュ
+
+`SHA-256(正規化した JSON)` で計算します。JSON には Golden Record ごとのソルトを含めます。値の種類が少ない PII は、素の SHA-256 だと辞書攻撃で逆算できるためです。Right to Erasure の完了時に、xref と版の情報を tombstone にしてソルトと `subject_ref` の対応を破棄します。内容ハッシュと `source_ref` は消去の証跡として残りますが、値と突き合わせることはできなくなります。消去済みのソースを再度取り込もうとすると 409 になります。
+
+## Reference Data(§8)
+
+API は `/api/v1/reference-data` です。
+
+| API | 内容 |
+|---|---|
+| `POST /sets`, `GET /sets[/{id}]` | Reference Data Set(Catalog の reference 資産と対応付ける) |
+| `POST /sets/{id}/versions`, `PUT /sets/{id}/versions/{n}/codes` | 下書きの作成と編集 |
+| `POST /sets/{id}/versions/{n}/publish` | 公開(対象資産の Owner または Committee)。公開後は変更できない(409)。Lineage の下流資産の Owner に Issue で通知する |
+| `GET /sets/{id}/latest`, `/versions/{n}`, `/as-of?at=`, `/diff?from_version=&to_version=` | 最新の公開版、版指定、時点指定、差分(追加・廃止・ラベル変更) |
+
+コード値は `code`, `label`, `valid_from`, `valid_to`, `standard`(外部標準の出典), `standard_version` を持ちます。品質ルールの `allowed_values` / `referential` からは `params.reference_set: <id>[@version]` で参照できます。版を省略すると最新の公開版のうち有効なコードで評価します。既存の `reference_values` / `values` の指定もそのまま使えます。
+
 ## API の共通仕様
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
   `{"type": "urn:edgf:problem:<slug>", "title", "status", "detail", "instance", "request_id", ...}`。
-  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
+  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `mdm-asset-missing`, `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
 - **ページネーション**: 一覧 API はすべて `limit`(1〜1000、既定 100。品質実行履歴のみ既定 20)と `offset` を受け付けます。後方互換のため本文は配列のままで、総件数は `X-Total-Count`、前後ページは `Link`(`rel="next"`/`"prev"`)ヘッダで返します。
 - **request_id**: `X-Request-ID` を受け取れば引き継ぎ(英数字と `._:-`、128 文字以内)、なければ採番してレスポンスヘッダとすべてのログ行に付けます。監査イベントにも記録し、ハッシュの対象に含めます(`GET /audit/events?request_id=...` で突き合わせできます)。
 - **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
@@ -265,6 +378,7 @@ stateDiagram-v2
 | `alembic` | 必須 | SQLAlchemy 公式のマイグレーションツール(MIT)。§19 Integrity/Maintainability のスキーマ版管理のため |
 | `opentelemetry-sdk` / `-exporter-otlp-proto-http` / `-instrumentation-fastapi` | 任意(`otel`) | ベンダー中立のトレーシング標準(Apache-2.0)。§19 Observability。送信先は OTLP なので特定の製品に依存しない |
 | `PyJWT[crypto]` | 必須 | JWT の検証と JWKS の取得・キャッシュ(MIT。暗号処理は `cryptography`)。依存が少なく、JWKS のキャッシュと未知の `kid` での再取得(鍵ローテーション)を標準で備え、特定の IdP SDK を使わずに OIDC 準拠の検証ができるため |
+| (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています |
 | `pytest-cov` | 開発 | カバレッジ計測(services/ 85% 以上を目標) |
 
 ## 既知の制約と次フェーズ
@@ -281,4 +395,9 @@ stateDiagram-v2
 - 監査ガードはキーとパターンによる検査です。形式に特徴の無い識別子(顧客 ID など)は検出できないので、生の識別子を payload に渡さない実装とテスト(全テーブルの走査)で担保しています
 - `POST /consents/check` は高頻度の呼び出しを想定し、監査ログに記録しません。Purpose の `retention_days` はカタログ上の情報で、保持期限の自動執行とは連動していません(Phase 12 で対応)
 - ベクトル資産への消去の伝播は Phase 10 で対応します
-- 未着手: Golden Record/MDM(§8)、AI資産(Model/Dataset Card、§14)、Catalog UI、スケジューラとの連携(`/issues/escalate-overdue`、`/policies/evaluate`、`/privacy/erasure-requests/escalate-overdue` の定期実行)
+- **MDM Hub の参照実装はありません**。候補の絞り込み、値の保存と履歴、再構成の実行、利用システムへの配信(§8 Synchronization、逆流更新の変更申請を含む)は Data Plane の責務で、本リポジトリには含みません
+- Golden Record どうしのマージ(ソースを経由しない統合)は未実装です。裁定と自動マージはソース単位です
+- 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください
+- `split` の直後は、どのソースの識別子か判定できないので、`subject_ref` の対応を両方の Golden Record に残します(再構成で正しくなります。消去の対象から漏らさないための措置です)
+- Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
+- 未着手: AI資産(Model/Dataset Card、§14)、Catalog UI、スケジューラとの連携(`/issues/escalate-overdue`、`/policies/evaluate`、`/privacy/erasure-requests/escalate-overdue`、`/mdm/reviews/escalate-overdue` の定期実行)
