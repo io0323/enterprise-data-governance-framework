@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
 from edgf.deps import get_actor, get_asset_or_404
 from edgf.models import DataAsset, PolicyException, utcnow
+from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import ExceptionDecision, ExceptionIn, ExceptionOut
 from edgf.services import audit, issues
 from edgf.services.policy import PolicyLoadError, evaluate_all, evaluate_asset, get_policies
@@ -20,8 +21,8 @@ MAX_EXCEPTION_DAYS = 365  # 恒久例外禁止 (§13)
 
 
 @router.get("")
-def list_policies():
-    return [p.as_dict() for p in get_policies()]
+def list_policies(request: Request, response: Response, page: Page = Depends(page_params())):
+    return paginate_list([p.as_dict() for p in get_policies()], page, request, response)
 
 
 @router.post("/reload")
@@ -82,11 +83,12 @@ def request_exception(body: ExceptionIn, db: Session = Depends(get_session), act
 
 
 @router.get("/exceptions", response_model=list[ExceptionOut])
-def list_exceptions(status: str | None = None, db: Session = Depends(get_session)):
-    stmt = select(PolicyException).order_by(PolicyException.created_at.desc())
+def list_exceptions(request: Request, response: Response, status: str | None = None,
+                    page: Page = Depends(page_params()), db: Session = Depends(get_session)):
+    stmt = select(PolicyException).order_by(PolicyException.created_at.desc(), PolicyException.id)
     if status:
         stmt = stmt.where(PolicyException.status == status)
-    return db.scalars(stmt).all()
+    return paginate(db, stmt, page, request, response)
 
 
 @router.post("/exceptions/{exception_id}/decision", response_model=ExceptionOut)

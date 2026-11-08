@@ -6,17 +6,27 @@ os.environ["EDGF_DATABASE_URL"] = "sqlite://"
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
+from edgf import migrate
 from edgf.db import Base, engine
 from edgf.main import create_app
 
 
+def reset_db() -> None:
+    Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+
 @pytest.fixture()
 def client():
-    Base.metadata.drop_all(engine)
+    # スキーマは本番と同じ Alembic マイグレーションで構築する (create_all は使わない)
+    reset_db()
+    migrate.upgrade(engine)
     with TestClient(create_app()) as c:
         yield c
-    Base.metadata.drop_all(engine)
+    reset_db()
 
 
 def H(actor: str = "alice") -> dict:

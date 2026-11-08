@@ -1,0 +1,47 @@
+"""§19 Availability: liveness (/health) と readiness (/ready) の分離.
+
+- /health: プロセスが応答できるか (依存先を見ない。再起動判定用)
+- /ready : トラフィックを受けられるか (DB 疎通・スキーマが最新・ポリシー構文が有効)。不可なら 503
+"""
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter
+from sqlalchemy import text
+
+from edgf import __version__, db, migrate
+from edgf.errors import ProblemError
+from edgf.services.policy import get_policies
+
+router = APIRouter(tags=["ops"])
+log = logging.getLogger("edgf.ops")
+
+
+@router.get("/health")
+def health():
+    return {"status": "ok", "version": __version__}
+
+
+@router.get("/ready")
+def ready():
+    checks: dict[str, str] = {}
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+            current, head = migrate.current_revision(conn), migrate.head_revision()
+            checks["schema"] = "ok" if current == head else f"outdated (current={current}, head={head})"
+    except Exception as e:  # noqa: BLE001 - 依存先の障害種別を問わず not ready とする
+        log.warning("readiness check failed: database", extra={"fields": {"error": type(e).__name__}})
+        checks["database"] = "unavailable"
+        checks.setdefault("schema", "unknown")
+    try:
+        get_policies()
+        checks["policies"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        log.warning("readiness check failed: policies", extra={"fields": {"error": str(e)}})
+        checks["policies"] = "invalid"
+    if any(v != "ok" for v in checks.values()):
+        raise ProblemError(503, "依存先が利用できないため、リクエストを受け付けられません", type_="not-ready", checks=checks)
+    return {"status": "ready", "version": __version__, "checks": checks}

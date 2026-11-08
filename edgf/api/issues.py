@@ -1,7 +1,7 @@
 """§16 Issue / Escalation API."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from edgf.db import get_session
 from edgf.deps import get_actor
 from edgf.enums import IssueStatus
 from edgf.models import DataAsset, Issue, utcnow
+from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import IssueIn, IssueOut, IssueUpdate
 from edgf.services import audit, issues
 
@@ -35,13 +36,14 @@ def create_issue(body: IssueIn, db: Session = Depends(get_session), actor: str =
 
 
 @router.get("", response_model=list[IssueOut])
-def list_issues(status: str | None = None, asset_id: str | None = None, kind: str | None = None,
-                escalation_level: str | None = None, db: Session = Depends(get_session)):
-    stmt = select(Issue).order_by(Issue.created_at.desc())
+def list_issues(request: Request, response: Response, status: str | None = None, asset_id: str | None = None,
+                kind: str | None = None, escalation_level: str | None = None,
+                page: Page = Depends(page_params()), db: Session = Depends(get_session)):
+    stmt = select(Issue).order_by(Issue.created_at.desc(), Issue.id)
     for col, val in (("status", status), ("asset_id", asset_id), ("kind", kind), ("escalation_level", escalation_level)):
         if val:
             stmt = stmt.where(getattr(Issue, col) == val)
-    return db.scalars(stmt).all()
+    return paginate(db, stmt, page, request, response)
 
 
 @router.post("/escalate-overdue", response_model=list[IssueOut])

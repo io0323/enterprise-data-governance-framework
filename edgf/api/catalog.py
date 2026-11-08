@@ -1,16 +1,19 @@
 """§6 Metadata / §7 Data Catalog / §4 Ownership / §10 Lifecycle API."""
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import String, cast, or_, select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
 from edgf.deps import get_actor, get_asset_or_404
 from edgf.enums import LIFECYCLE_TRANSITIONS, Certification, LifecycleState
+from edgf.errors import ProblemError
 from edgf.models import DataAsset, Domain, GlossaryTerm, utcnow
+from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AssetCreate, AssetOut, AssetUpdate, CertificationChange, DomainIn, DomainOut,
                           LegalHoldChange, LifecycleChange, OwnershipChange)
 from edgf.services import audit
@@ -32,11 +35,22 @@ def create_domain(body: DomainIn, db: Session = Depends(get_session), actor: str
 
 
 @router.get("/domains", response_model=list[DomainOut])
-def list_domains(db: Session = Depends(get_session)):
-    return db.scalars(select(Domain).order_by(Domain.name)).all()
+def list_domains(request: Request, response: Response, page: Page = Depends(page_params()),
+                 db: Session = Depends(get_session)):
+    return paginate(db, select(Domain).order_by(Domain.name), page, request, response)
 
 
 # ---------------- Assets ----------------
+_LIKE_ESCAPE = "!"
+
+
+def _contains(value: str) -> str:
+    """LIKE のメタ文字をエスケープした部分一致パターン。"""
+    for ch in (_LIKE_ESCAPE, "%", "_"):
+        value = value.replace(ch, _LIKE_ESCAPE + ch)
+    return f"%{value}%"
+
+
 def _validate_domain(db: Session, domain: str | None) -> None:
     if domain and not db.get(Domain, domain):
         raise HTTPException(422, f"unknown domain: {domain}")
@@ -60,20 +74,26 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), actor:
 
 @router.get("/assets", response_model=list[AssetOut])
 def search_assets(
+    request: Request, response: Response,
     q: str | None = Query(None, description="名前/説明/タグ/用語の横断検索"),
     domain: str | None = None, data_class: str | None = None, sensitivity: str | None = None,
     owner: str | None = None, certification: str | None = None, lifecycle_state: str | None = None,
     is_cde: bool | None = None, orphan: bool | None = Query(None, description="Owner未割当 (Unknown Owner) のみ"),
-    include_deleted: bool = False, limit: int = Query(100, le=1000), offset: int = 0,
+    include_deleted: bool = False, page: Page = Depends(page_params()),
     db: Session = Depends(get_session),
 ):
     stmt = select(DataAsset)
     if q:
-        like = f"%{q}%"
+        like = _contains(q)
         term_assets = select(DataAsset.id).join(DataAsset.terms).where(
-            or_(GlossaryTerm.name.ilike(like), GlossaryTerm.definition.ilike(like)))
-        stmt = stmt.where(or_(DataAsset.name.ilike(like), DataAsset.qualified_name.ilike(like),
-                              DataAsset.description.ilike(like), DataAsset.id.in_(term_assets)))
+            or_(GlossaryTerm.name.ilike(like, escape=_LIKE_ESCAPE), GlossaryTerm.definition.ilike(like, escape=_LIKE_ESCAPE)))
+        # tags は JSON 配列。要素の完全一致 (大文字小文字無視) を、保存時と同じ JSON 表現の部分一致で DB 側判定する
+        tag_like = _contains(json.dumps(q))
+        stmt = stmt.where(or_(DataAsset.name.ilike(like, escape=_LIKE_ESCAPE),
+                              DataAsset.qualified_name.ilike(like, escape=_LIKE_ESCAPE),
+                              DataAsset.description.ilike(like, escape=_LIKE_ESCAPE),
+                              DataAsset.id.in_(term_assets),
+                              cast(DataAsset.tags, String).ilike(tag_like, escape=_LIKE_ESCAPE)))
     for col, val in (("domain", domain), ("data_class", data_class), ("sensitivity", sensitivity),
                      ("owner", owner), ("certification", certification), ("lifecycle_state", lifecycle_state),
                      ("is_cde", is_cde)):
@@ -83,22 +103,19 @@ def search_assets(
         stmt = stmt.where(or_(DataAsset.owner.is_(None), DataAsset.owner == ""))
     if not include_deleted and lifecycle_state is None:
         stmt = stmt.where(DataAsset.lifecycle_state != LifecycleState.DELETED.value)
-    results = db.scalars(stmt.order_by(DataAsset.qualified_name).offset(offset).limit(limit)).all()
-    if q:  # tags は JSON のため DB 非依存にアプリ側で補完
-        tag_hits = [a for a in db.scalars(select(DataAsset)).all()
-                    if q.lower() in [t.lower() for t in (a.tags or [])] and a not in results]
-        results = list(results) + tag_hits
-    return results
+    return paginate(db, stmt.order_by(DataAsset.qualified_name), page, request, response)
 
 
 @router.get("/assets/retention-due", response_model=list[AssetOut])
-def retention_due(db: Session = Depends(get_session)):
+def retention_due(request: Request, response: Response, page: Page = Depends(page_params()),
+                  db: Session = Depends(get_session)):
     """§10.2 保持期限到達資産 (Legal Hold中は除外)。"""
     now = utcnow()
     assets = db.scalars(select(DataAsset).where(
         DataAsset.retention_days.is_not(None), DataAsset.legal_hold.is_(False),
-        DataAsset.lifecycle_state != LifecycleState.DELETED.value)).all()
-    return [a for a in assets if a.created_at + timedelta(days=a.retention_days) <= now]
+        DataAsset.lifecycle_state != LifecycleState.DELETED.value).order_by(DataAsset.qualified_name)).all()
+    due = [a for a in assets if a.created_at + timedelta(days=a.retention_days) <= now]
+    return paginate_list(due, page, request, response)
 
 
 @router.get("/assets/by-name/{qualified_name}", response_model=AssetOut)
@@ -197,7 +214,8 @@ def change_certification(asset_id: str, body: CertificationChange, db: Session =
             raise HTTPException(403, "CertificationはOwnerまたはStewardのみ実行できます")
         blockers = certification_blockers(db, asset)
         if blockers:
-            raise HTTPException(409, {"message": "certification blocked", "blockers": blockers})
+            raise ProblemError(409, "Certification の前提条件を満たしていません", type_="certification-blocked",
+                               blockers=blockers)
     asset.certification = body.certification.value
     db.flush()
     audit.record(db, actor, "asset.certification", "asset", asset.id, body.model_dump(mode="json"))
