@@ -102,6 +102,29 @@ class ConsentStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class ErasureStatus(str, Enum):
+    """§12 Right to Erasure の状態遷移"""
+    RECEIVED = "received"
+    SCOPED = "scoped"
+    APPROVED = "approved"
+    DISPATCHED = "dispatched"
+    COMPLETED = "completed"
+    PARTIALLY_COMPLETED = "partially_completed"
+    VERIFIED = "verified"
+    CLOSED = "closed"
+    REJECTED = "rejected"
+
+
+class ErasureTaskStatus(str, Enum):
+    PLANNED = "planned"              # スコープ済み。承認と発行を待っている
+    PENDING = "pending"              # 発行済み。Data Plane の応答待ち
+    ACKNOWLEDGED = "acknowledged"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WITHHELD = "withheld"            # Legal Hold などにより削除しない (§10.2)
+    CANCELLED = "cancelled"          # 要求の却下による取消
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

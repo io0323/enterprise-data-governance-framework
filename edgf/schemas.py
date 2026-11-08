@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from edgf.enums import (Certification, ConsentStatus, DataClass, EscalationLevel, IssueStatus, LegalBasis, LifecycleState,
+from edgf.enums import (Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
+                        IssueStatus, LegalBasis, LifecycleState,
                         PiiCategory, QualityDimension, Sensitivity, Severity)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
@@ -331,3 +332,79 @@ class ConsentRecorded(ConsentOut):
 
 class ConsentCheckIn(SubjectIdentifier):
     purpose_id: str
+
+
+class ErasureRequestIn(SubjectIdentifier):
+    reason: str = Field(default="", max_length=1000, description="受付の根拠 (チケット番号など。個人情報を含めないこと)")
+
+
+class ErasureRejectIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000, description="却下の理由 (法的義務による保持など)")
+
+
+class ErasureTaskCompleteIn(BaseModel):
+    outcome: Literal["completed", "failed"] = "completed"
+    records_deleted: int = Field(default=0, ge=0)
+    evidence_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$",
+                                      description="Data Plane 側の削除証跡の SHA-256 (完了時は必須)")
+    note: str = Field(default="", max_length=500, description="個人情報を含めないこと")
+
+    @model_validator(mode="after")
+    def _evidence_required(self) -> ErasureTaskCompleteIn:
+        if self.outcome == "completed" and not self.evidence_hash:
+            raise ValueError("outcome=completed には evidence_hash が必要です")
+        return self
+
+
+class ErasureTaskOut(ORM):
+    id: str
+    request_id: str
+    asset_id: str
+    qualified_name: str
+    origin: str
+    depth: int
+    columns: list[str]
+    status: ErasureTaskStatus
+    withheld_reason: str | None
+    approved_by: str | None
+    approved_at: datetime | None
+    acked_at: datetime | None
+    completed_by: str | None
+    completed_at: datetime | None
+    records_deleted: int | None
+    evidence_hash: str | None
+    note: str
+
+
+class ErasureWorkItem(ErasureTaskOut):
+    """Data Plane に渡すタスク。subject_ref を自分の識別子の HMAC と突き合わせて対象レコードを特定する。"""
+    subject_ref: str
+    identifier_type: str
+    due_at: datetime
+
+
+class ErasureRequestOut(ORM):
+    id: str
+    subject_ref: str
+    identifier_type: str
+    status: ErasureStatus
+    reason: str
+    requested_by: str
+    created_at: datetime
+    due_at: datetime
+    scoped_at: datetime | None
+    approved_at: datetime | None
+    dispatched_at: datetime | None
+    finished_at: datetime | None
+    verified_at: datetime | None
+    verified_by: str | None
+    closed_at: datetime | None
+    decided_by: str | None
+    decision_reason: str | None
+    unregistered_downstream: list[str]
+    warnings: list[str]
+
+
+class ErasureRequestDetail(ErasureRequestOut):
+    tasks: list[ErasureTaskOut] = Field(default_factory=list)
+    hidden_task_count: int = Field(default=0, description="閲覧権限が無く表示していないタスク数 (ABAC)")

@@ -60,6 +60,8 @@ class Settings:
     claim_domains: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_DOMAINS", "domains"))
     # §12 subject_ref (HMAC-SHA256) の秘密鍵。production では必須 (edgf/services/subject_ref.py)
     subject_key: str = field(default_factory=lambda: os.getenv("EDGF_SUBJECT_KEY", ""))
+    # §12 Right to Erasure の対応期限 (日)
+    erasure_sla_days: int = field(default_factory=lambda: int(os.getenv("EDGF_ERASURE_SLA_DAYS", "30")))
     # IdP 側のロール/グループ名 → edgf ロール (例: "dg-committee=committee,dg-admins=admin")
     role_map: tuple[tuple[str, str], ...] = field(default_factory=lambda: _env_pairs("EDGF_ROLE_MAP"))
 

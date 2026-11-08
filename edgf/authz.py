@@ -104,6 +104,20 @@ PERMISSIONS: Mapping[str, Rule] = {
                                   description="同意の取得・撤回の記録 (ドメインは Purpose の所属で判定)"),
     "privacy.consent.check": rule(roles=(ADMIN, COMMITTEE, CONSENT_COLLECTOR), domain_roles=(STEWARD,),
                                   description="目的内利用の判定と同意履歴の参照"),
+    "privacy.erasure.request": rule(roles=(ADMIN, COMMITTEE),
+                                    description="消去要求の受付・対象特定・削除指示の発行・期限超過の処理"),
+    "privacy.erasure.read": rule(roles=(ADMIN, COMMITTEE), relations=("owner",), description="消去要求の参照"),
+    "privacy.erasure.approve": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                                    description="消去の対象範囲の承認 (Owner は自分の資産の分のみ)"),
+    "privacy.erasure.reject": rule(roles=(COMMITTEE,), approval=True, description="消去要求の却下 (理由必須)"),
+    "privacy.erasure.verify": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                                   description="消去の完了確認とクローズ"),
+    "privacy.erasure.certificate": rule(roles=(ADMIN, COMMITTEE), description="消去証明の発行"),
+    "privacy.erasure.task_read": rule(roles=(ADMIN, COMMITTEE), relations=("custodian",),
+                                      description="消去タスクの取得 (Custodian は自分の資産の分のみ)"),
+    # 物理削除の実行と報告 (§4.2 ライフサイクル実行 R)。承認ではないため Custodian を含む
+    "privacy.erasure.task_ack": rule(relations=("custodian",), description="消去タスクの受領"),
+    "privacy.erasure.task_complete": rule(relations=("custodian",), description="消去タスクの完了報告"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

@@ -204,6 +204,55 @@ class Consent(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class ErasureRequest(Base):
+    """§12 Right to Erasure: 消去要求。データ主体は subject_ref でのみ識別する (§18.2)。"""
+    __tablename__ = "erasure_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    subject_ref: Mapped[str] = mapped_column(String(64), index=True)
+    identifier_type: Mapped[str] = mapped_column(String(50))
+    status: Mapped[str] = mapped_column(String(30), default="received", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    requested_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    scoped_at: Mapped[datetime | None] = mapped_column(DateTime)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    verified_by: Mapped[str | None] = mapped_column(String(200))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    unregistered_downstream: Mapped[list] = mapped_column(JSON, default=list)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class ErasureTask(Base):
+    """対象資産ごとの削除指示。Data Plane (資産の Custodian) が pull して応答する。"""
+    __tablename__ = "erasure_tasks"
+    __table_args__ = (UniqueConstraint("request_id", "asset_id", name="uq_erasure_task_request_asset"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    request_id: Mapped[str] = mapped_column(ForeignKey("erasure_requests.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    qualified_name: Mapped[str] = mapped_column(String(300))
+    origin: Mapped[str] = mapped_column(String(20))  # identifier_match / lineage
+    depth: Mapped[int] = mapped_column(Integer, default=0)
+    columns: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
+    withheld_reason: Mapped[str | None] = mapped_column(Text)
+    approved_by: Mapped[str | None] = mapped_column(String(200))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    acked_by: Mapped[str | None] = mapped_column(String(200))
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_by: Mapped[str | None] = mapped_column(String(200))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completion_request_id: Mapped[str | None] = mapped_column(String(128))
+    records_deleted: Mapped[int | None] = mapped_column(Integer)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64))  # Data Plane が算出した証跡のハッシュ
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"
