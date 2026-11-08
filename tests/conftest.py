@@ -3,6 +3,9 @@ from __future__ import annotations
 import os
 
 os.environ["EDGF_DATABASE_URL"] = "sqlite://"
+# 既存テストは dev モード (X-Actor ヘッダ) で実行する。JWT 経路は tests/test_auth.py で検証する
+os.environ["EDGF_AUTH_MODE"] = "dev"
+os.environ.setdefault("EDGF_ENV", "test")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,13 +27,17 @@ def client():
     # スキーマは本番と同じ Alembic マイグレーションで構築する (create_all は使わない)
     reset_db()
     migrate.upgrade(engine)
-    with TestClient(create_app()) as c:
+    # 既定ヘッダ = MVP 時代の「誰でも全操作可」に相当する dev 操作者 (個別リクエストの H(...) で上書き)
+    with TestClient(create_app(), headers=H()) as c:
         yield c
     reset_db()
 
 
-def H(actor: str = "alice") -> dict:
-    return {"X-Actor": actor}
+ALL_ROLES = "admin,committee,owner,steward,custodian"
+
+
+def H(actor: str = "alice", roles: str = ALL_ROLES, domains: str = "*") -> dict:
+    return {"X-Actor": actor, "X-Roles": roles, "X-Domains": domains}
 
 
 @pytest.fixture()

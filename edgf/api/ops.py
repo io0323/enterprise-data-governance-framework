@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from sqlalchemy import text
 
 from edgf import __version__, db, migrate
@@ -19,8 +19,9 @@ log = logging.getLogger("edgf.ops")
 
 
 @router.get("/health")
-def health():
-    return {"status": "ok", "version": __version__}
+def health(request: Request):
+    # auth_mode を返し、dev モードでの稼働を外形監視で検知できるようにする
+    return {"status": "ok", "version": __version__, "auth_mode": request.app.state.auth_mode}
 
 
 @router.get("/ready")

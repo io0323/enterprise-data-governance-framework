@@ -9,7 +9,8 @@ from sqlalchemy import String, cast, or_, select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
-from edgf.deps import get_actor, get_asset_or_404
+from edgf.auth import Principal
+from edgf.deps import get_asset_or_404, get_principal
 from edgf.enums import LIFECYCLE_TRANSITIONS, Certification, LifecycleState
 from edgf.errors import ProblemError
 from edgf.models import DataAsset, Domain, GlossaryTerm, utcnow
@@ -24,13 +25,13 @@ router = APIRouter(tags=["catalog"])
 
 # ---------------- Domains (§15) ----------------
 @router.post("/domains", response_model=DomainOut, status_code=201)
-def create_domain(body: DomainIn, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def create_domain(body: DomainIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     if db.get(Domain, body.name):
         raise HTTPException(409, "domain already exists")
     d = Domain(**body.model_dump())
     db.add(d)
     db.flush()
-    audit.record(db, actor, "domain.create", "domain", d.name, body.model_dump())
+    audit.record(db, principal.audit_actor, "domain.create", "domain", d.name, body.model_dump())
     return d
 
 
@@ -57,7 +58,7 @@ def _validate_domain(db: Session, domain: str | None) -> None:
 
 
 @router.post("/assets", response_model=AssetOut, status_code=201)
-def register_asset(body: AssetCreate, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def register_asset(body: AssetCreate, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """Discovery/登録。Metadata First: 分類・機密度は必須 (§6.3)。"""
     if db.scalar(select(DataAsset).where(DataAsset.qualified_name == body.qualified_name)):
         raise HTTPException(409, f"already registered: {body.qualified_name}")
@@ -68,7 +69,7 @@ def register_asset(body: AssetCreate, db: Session = Depends(get_session), actor:
     asset = DataAsset(**data)
     db.add(asset)
     db.flush()
-    audit.record(db, actor, "asset.register", "asset", asset.id, {"qualified_name": asset.qualified_name})
+    audit.record(db, principal.audit_actor, "asset.register", "asset", asset.id, {"qualified_name": asset.qualified_name})
     return asset
 
 
@@ -132,7 +133,7 @@ def get_asset(asset_id: str, db: Session = Depends(get_session)):
 
 
 @router.patch("/assets/{asset_id}", response_model=AssetOut)
-def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     asset = get_asset_or_404(db, asset_id)
     changes = body.model_dump(exclude_unset=True, by_alias=False, mode="json")
     if "domain" in changes:
@@ -144,24 +145,24 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
         asset.certification = Certification.DRAFT.value
         changes["certification_reset"] = True
     db.flush()
-    audit.record(db, actor, "asset.update", "asset", asset.id, changes)
+    audit.record(db, principal.audit_actor, "asset.update", "asset", asset.id, changes)
     return asset
 
 
 @router.put("/assets/{asset_id}/ownership", response_model=AssetOut)
-def change_ownership(asset_id: str, body: OwnershipChange, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def change_ownership(asset_id: str, body: OwnershipChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """§4 Owner/Steward/Custodian の割当。Ownerは単一 (共同Owner禁止)。"""
     asset = get_asset_or_404(db, asset_id)
     before = {"owner": asset.owner, "steward": asset.steward, "custodian": asset.custodian}
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(asset, k, v)
     db.flush()
-    audit.record(db, actor, "asset.ownership_change", "asset", asset.id, {"before": before, "after": body.model_dump(exclude_unset=True)})
+    audit.record(db, principal.audit_actor, "asset.ownership_change", "asset", asset.id, {"before": before, "after": body.model_dump(exclude_unset=True)})
     return asset
 
 
 @router.post("/assets/{asset_id}/lifecycle", response_model=AssetOut)
-def change_lifecycle(asset_id: str, body: LifecycleChange, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def change_lifecycle(asset_id: str, body: LifecycleChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     asset = get_asset_or_404(db, asset_id)
     current = LifecycleState(asset.lifecycle_state)
     if body.target_state not in LIFECYCLE_TRANSITIONS[current]:
@@ -177,21 +178,21 @@ def change_lifecycle(asset_id: str, body: LifecycleChange, db: Session = Depends
     db.flush()
     # 物理削除は Data Plane が実行する。Control Plane は削除指示と証跡を記録する。
     action = "lifecycle.delete_requested" if body.target_state == LifecycleState.DELETED else "lifecycle.change"
-    audit.record(db, actor, action, "asset", asset.id, {"from": current.value, "to": body.target_state.value, "reason": body.reason})
+    audit.record(db, principal.audit_actor, action, "asset", asset.id, {"from": current.value, "to": body.target_state.value, "reason": body.reason})
     return asset
 
 
 @router.post("/assets/{asset_id}/legal-hold", response_model=AssetOut)
-def set_legal_hold(asset_id: str, body: LegalHoldChange, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def set_legal_hold(asset_id: str, body: LegalHoldChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     asset = get_asset_or_404(db, asset_id)
     asset.legal_hold = body.legal_hold
     db.flush()
-    audit.record(db, actor, "asset.legal_hold", "asset", asset.id, body.model_dump())
+    audit.record(db, principal.audit_actor, "asset.legal_hold", "asset", asset.id, body.model_dump())
     return asset
 
 
 @router.post("/assets/{asset_id}/refreshed", response_model=AssetOut)
-def mark_refreshed(asset_id: str, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def mark_refreshed(asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """Data Plane からの更新通知 (Operational Metadata / Freshness)。"""
     asset = get_asset_or_404(db, asset_id)
     asset.last_refreshed_at = utcnow()
@@ -207,10 +208,10 @@ def check_certification(asset_id: str, db: Session = Depends(get_session)):
 
 
 @router.post("/assets/{asset_id}/certification", response_model=AssetOut)
-def change_certification(asset_id: str, body: CertificationChange, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def change_certification(asset_id: str, body: CertificationChange, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     asset = get_asset_or_404(db, asset_id)
     if body.certification == Certification.CERTIFIED:
-        if actor not in (asset.owner, asset.steward):
+        if principal.subject not in (asset.owner, asset.steward):
             raise HTTPException(403, "CertificationはOwnerまたはStewardのみ実行できます")
         blockers = certification_blockers(db, asset)
         if blockers:
@@ -218,5 +219,5 @@ def change_certification(asset_id: str, body: CertificationChange, db: Session =
                                blockers=blockers)
     asset.certification = body.certification.value
     db.flush()
-    audit.record(db, actor, "asset.certification", "asset", asset.id, body.model_dump(mode="json"))
+    audit.record(db, principal.audit_actor, "asset.certification", "asset", asset.id, body.model_dump(mode="json"))
     return asset

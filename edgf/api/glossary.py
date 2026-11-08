@@ -6,7 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
-from edgf.deps import get_actor, get_asset_or_404
+from edgf.auth import Principal
+from edgf.deps import get_asset_or_404, get_principal
 from edgf.models import GlossaryTerm
 from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import TermIn, TermOut
@@ -28,13 +29,13 @@ def _get(db: Session, term_id: str) -> GlossaryTerm:
 
 
 @router.post("/terms", response_model=TermOut, status_code=201)
-def create_term(body: TermIn, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def create_term(body: TermIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     if db.scalar(select(GlossaryTerm).where(GlossaryTerm.name == body.name)):
         raise HTTPException(409, "term already exists (用語は唯一の定義を持つ)")
     t = GlossaryTerm(**body.model_dump())
     db.add(t)
     db.flush()
-    audit.record(db, actor, "glossary.create", "term", t.id, body.model_dump())
+    audit.record(db, principal.audit_actor, "glossary.create", "term", t.id, body.model_dump())
     return _out(t)
 
 
@@ -53,23 +54,23 @@ def get_term(term_id: str, db: Session = Depends(get_session)):
 
 
 @router.put("/terms/{term_id}/assets/{asset_id}", response_model=TermOut)
-def link_asset(term_id: str, asset_id: str, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def link_asset(term_id: str, asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """用語 → データ資産マッピング (§6.2 必須)。"""
     t = _get(db, term_id)
     a = get_asset_or_404(db, asset_id)
     if a not in t.assets:
         t.assets.append(a)
         db.flush()
-        audit.record(db, actor, "glossary.link", "term", t.id, {"asset_id": a.id})
+        audit.record(db, principal.audit_actor, "glossary.link", "term", t.id, {"asset_id": a.id})
     return _out(t)
 
 
 @router.delete("/terms/{term_id}/assets/{asset_id}", response_model=TermOut)
-def unlink_asset(term_id: str, asset_id: str, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def unlink_asset(term_id: str, asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     t = _get(db, term_id)
     a = get_asset_or_404(db, asset_id)
     if a in t.assets:
         t.assets.remove(a)
         db.flush()
-        audit.record(db, actor, "glossary.unlink", "term", t.id, {"asset_id": a.id})
+        audit.record(db, principal.audit_actor, "glossary.unlink", "term", t.id, {"asset_id": a.id})
     return _out(t)

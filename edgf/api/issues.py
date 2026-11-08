@@ -6,7 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
-from edgf.deps import get_actor
+from edgf.auth import Principal
+from edgf.deps import get_principal
 from edgf.enums import IssueStatus
 from edgf.models import DataAsset, Issue, utcnow
 from edgf.pagination import Page, page_params, paginate
@@ -24,11 +25,11 @@ def _get(db: Session, issue_id: str) -> Issue:
 
 
 @router.post("", response_model=IssueOut, status_code=201)
-def create_issue(body: IssueIn, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def create_issue(body: IssueIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     asset = db.get(DataAsset, body.asset_id) if body.asset_id else None
     if body.asset_id and asset is None:
         raise HTTPException(404, "asset not found")
-    issue = issues.open_issue(db, actor, asset=asset, kind=body.kind, title=body.title,
+    issue = issues.open_issue(db, principal.audit_actor, asset=asset, kind=body.kind, title=body.title,
                               description=body.description, severity=body.severity.value)
     if body.assignee:
         issue.assignee = body.assignee
@@ -47,13 +48,13 @@ def list_issues(request: Request, response: Response, status: str | None = None,
 
 
 @router.post("/escalate-overdue", response_model=list[IssueOut])
-def escalate_overdue(db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def escalate_overdue(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """スケジューラから定期実行する想定 (SLA超過Issueの自動エスカレーション)。"""
-    return issues.escalate_overdue(db, actor)
+    return issues.escalate_overdue(db, principal.audit_actor)
 
 
 @router.patch("/{issue_id}", response_model=IssueOut)
-def update_issue(issue_id: str, body: IssueUpdate, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def update_issue(issue_id: str, body: IssueUpdate, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     issue = _get(db, issue_id)
     if body.assignee is not None:
         issue.assignee = body.assignee
@@ -64,14 +65,14 @@ def update_issue(issue_id: str, body: IssueUpdate, db: Session = Depends(get_ses
         if body.status in (IssueStatus.OPEN, IssueStatus.IN_PROGRESS):
             issue.resolved_at = None
     db.flush()
-    audit.record(db, actor, "issue.update", "issue", issue.id, body.model_dump(exclude_unset=True, mode="json"))
+    audit.record(db, principal.audit_actor, "issue.update", "issue", issue.id, body.model_dump(exclude_unset=True, mode="json"))
     return issue
 
 
 @router.post("/{issue_id}/escalate", response_model=IssueOut)
-def escalate_issue(issue_id: str, reason: str = "", db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def escalate_issue(issue_id: str, reason: str = "", db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     issue = _get(db, issue_id)
     try:
-        return issues.escalate(db, actor, issue, reason)
+        return issues.escalate(db, principal.audit_actor, issue, reason)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e

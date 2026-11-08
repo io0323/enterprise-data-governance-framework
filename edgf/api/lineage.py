@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from edgf.db import get_session
-from edgf.deps import get_actor
+from edgf.auth import Principal
+from edgf.deps import get_principal
 from edgf.schemas import LineageEdgeIn, OpenLineageEvent
 from edgf.services import audit, lineage
 
@@ -13,17 +14,17 @@ router = APIRouter(prefix="/lineage", tags=["lineage"])
 
 
 @router.post("/edges", status_code=201)
-def add_edge(body: LineageEdgeIn, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def add_edge(body: LineageEdgeIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     try:
         e = lineage.upsert_edge(db, body.source, body.target, body.job, body.transformation)
     except ValueError as ex:
         raise HTTPException(422, str(ex)) from ex
-    audit.record(db, actor, "lineage.edge", "lineage", f"{e.source}->{e.target}", body.model_dump())
+    audit.record(db, principal.audit_actor, "lineage.edge", "lineage", f"{e.source}->{e.target}", body.model_dump())
     return {"id": e.id, "source": e.source, "target": e.target, "job": e.job}
 
 
 @router.post("/openlineage", status_code=202)
-def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_session), actor: str = Depends(get_actor)):
+def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """OpenLineage RunEvent を受信し inputs×outputs のエッジを生成 (COMPLETE のみ確定)。
 
     データセット識別子は OpenLineage の dataset name を qualified_name として扱う。
@@ -37,7 +38,7 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
             if i.name != o.name:
                 lineage.upsert_edge(db, i.name, o.name, job, run_id=event.run.runId)
                 count += 1
-    audit.record(db, actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count})
+    audit.record(db, principal.audit_actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count})
     return {"accepted": True, "edges": count}
 
 
