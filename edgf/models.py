@@ -167,5 +167,7 @@ class AuditEvent(Base):
     entity_type: Mapped[str] = mapped_column(String(50))
     entity_id: Mapped[str] = mapped_column(String(300), index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    # §19 Auditability: ログ・トレースとの突合キー (ハッシュ対象。Phase 6 以前のイベントは NULL)
+    request_id: Mapped[str | None] = mapped_column(String(128), index=True)
     prev_hash: Mapped[str] = mapped_column(String(64), unique=True)  # 並行書込みによるチェーン分岐をDB制約で防止
     hash: Mapped[str] = mapped_column(String(64), unique=True)

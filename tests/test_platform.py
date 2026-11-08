@@ -308,3 +308,24 @@ def test_auto_migrate_on_startup(monkeypatch):
     with TestClient(create_app()) as c:
         assert c.get("/ready").status_code == 200
     reset_db()
+
+
+# ---------------------------------------------------------------- Audit request_id (§19 Auditability)
+def test_audit_events_carry_request_id_in_hash(client):
+    client.post(f"{API}/domains", headers={**H(), "X-Request-ID": "req-audit-1"}, json={"name": "fin"})
+    ev = client.get(f"{API}/audit/events", params={"request_id": "req-audit-1"}).json()
+    assert [e["action"] for e in ev] == ["domain.create"]
+    assert client.get(f"{API}/audit/verify").json()["valid"]
+    with engine.begin() as conn:  # request_id の改ざんも検知できる
+        conn.execute(text("UPDATE audit_events SET request_id = 'forged' WHERE request_id = 'req-audit-1'"))
+    assert client.get(f"{API}/audit/verify").json()["valid"] is False
+
+
+def test_legacy_events_without_request_id_still_verify(client):
+    from edgf.services import audit
+    from edgf.db import SessionLocal
+    with SessionLocal() as s:  # リクエスト外 (request_id なし) の記録 = Phase 6 以前と同じハッシュ形式
+        audit.record(s, "system", "batch.run", "job", "j1", {"n": 1})
+        s.commit()
+    assert client.get(f"{API}/audit/events", params={"action": "batch.run"}).json()[0]["request_id"] is None
+    assert client.get(f"{API}/audit/verify").json()["valid"]
