@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,7 @@ from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import (CdmEntityOut, CdmImportIn, CdmVersionOut, ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
                           OutputPortIn, OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate,
                           SubscriptionDecisionIn, SubscriptionIn, SubscriptionMigrateIn, SubscriptionOut)
-from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_datsis, mesh_subscriptions
+from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_datsis, mesh_odcs, mesh_subscriptions
 from edgf.services.mesh import MeshStateError, MeshValidationError
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
@@ -235,6 +235,44 @@ def get_contract(contract_id: str, db: Session = Depends(get_session), principal
     _, port, _ = _context(db, contract)
     load_asset(db, principal, port.asset_id)
     return contract
+
+
+@router.post("/contracts/import", status_code=201)
+def import_contract(output_port_id: str = Query(description="取り込み先の Output Port"),
+                    document: str = Body(media_type="application/yaml", description="ODCS v3 の YAML"),
+                    db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """ODCS の文書を下書きの版として取り込む (公開には Product の Owner の承認が必要)。対応しないフィールドは warnings で返す。"""
+    port = _get_port(db, output_port_id)
+    product = db.get(DataProduct, port.product_id)
+    authz.require(db, principal, "mesh.contract.write", domain=product.domain, entity_type="output_port", entity_id=port.id)
+    parsed, attributes, warnings = _guard(mesh_odcs.parse_document, document, product=product)
+    contract = db.scalar(select(DataContract).where(DataContract.output_port_id == port.id)) \
+        or _guard(mesh_contracts.create_contract, db, port, name=attributes["name"], actor=principal.subject)
+    version = _guard(mesh_contracts.create_version, db, contract, db.get(DataAsset, port.asset_id), version=parsed.version,
+                     content=_content(parsed), actor=principal.subject)
+    for key, value in attributes.items():
+        if value is not None:
+            setattr(contract, key, value)
+    db.flush()
+    audit.record(db, principal.audit_actor, "mesh.contract.import", "contract_version", version.id,
+                 {"contract_id": contract.id, "version": version.version, "format": "odcs", "warning_count": len(warnings)})
+    return {"contract_id": contract.id, "version": ContractVersionOut.model_validate(version).model_dump(by_alias=True), "warnings": warnings}
+
+
+@router.get("/contracts/{contract_id}/export")
+def export_contract(contract_id: str, format: str = Query(default="odcs", pattern="^odcs$"), version: str | None = None,
+                    db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """ODCS の YAML で書き出す。版を省略すると最新の公開版。"""
+    contract = _get_contract(db, contract_id)
+    product, port, _ = _context(db, contract)
+    load_asset(db, principal, port.asset_id)
+    if version:
+        row = db.scalar(select(ContractVersion).where(ContractVersion.contract_id == contract.id, ContractVersion.version == version))
+    else:
+        row = mesh_contracts.latest_published(db, contract)
+    if row is None:
+        raise HTTPException(404, "書き出せる版がありません")
+    return Response(mesh_odcs.to_yaml(mesh_odcs.export_document(contract, row, product)), media_type="application/yaml")
 
 
 @router.post("/contracts/{contract_id}/versions", response_model=ContractVersionOut, status_code=201)

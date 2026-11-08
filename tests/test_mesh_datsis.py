@@ -11,7 +11,7 @@ from edgf.config import settings
 from edgf.db import engine
 from edgf.services import policy
 from edgf.services.policy import PolicyLoadError, load_policies
-from tests.mesh_helpers import (ADMIN, API, COLUMNS, COMMITTEE, MESH, PO, STEWARD, U, add_port, cdm_asset, domain, import_cdm, port_asset, product,
+from tests.mesh_helpers import (ADMIN, API, COLUMNS, COMMITTEE, MESH, PO, STEWARD, U, add_port, cdm_asset, contract_body, domain, draft, import_cdm, port_asset, product,
                                 purpose, shippable, subscribe)
 
 
@@ -264,3 +264,11 @@ def test_product_lifecycle(ship):
     assert client.patch(url, headers=STEWARD, json={"description": "x"}).status_code == 409
     b = port_asset(client, "sales.late")
     assert client.post(f"{url}/ports", headers=STEWARD, json={"name": "late", "asset_id": b["id"], "port_type": "file"}).status_code == 409
+    cid = ship["contract"]["id"]
+    assert client.post(f"{MESH}/contracts/{cid}/versions", headers=STEWARD, json=contract_body("2.0.0")).status_code == 409
+    with engine.begin() as conn:  # 廃止の前に作られた下書きも公開できない
+        conn.execute(text("UPDATE data_products SET status = 'draft' WHERE id = :id"), {"id": pid})
+    pending = draft(client, cid, "2.0.0")
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE data_products SET status = 'retired' WHERE id = :id"), {"id": pid})
+    assert client.post(f"{MESH}/contract-versions/{pending['id']}/publish", headers=PO).status_code == 409

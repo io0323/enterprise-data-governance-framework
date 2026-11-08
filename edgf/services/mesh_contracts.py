@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from edgf import authz
 from edgf.auth import SENSITIVITY_LEVELS
 from edgf.config import settings
-from edgf.enums import ContractStatus, EscalationLevel
+from edgf.enums import ContractStatus, EscalationLevel, ProductStatus
 from edgf.errors import ProblemError
 from edgf.models import (ContractVersion, DataAsset, DataContract, DataProduct, OutputPort, PrivacyPurpose, QualityRule,
                          fit_identifier, to_naive_utc, utcnow)
@@ -39,7 +39,14 @@ def lock(db: Session, contract: DataContract) -> None:
     db.refresh(contract, with_for_update=True)
 
 
+def _require_open_product(db: Session, product_id: str) -> None:
+    status = db.get(DataProduct, product_id).status
+    if status == ProductStatus.RETIRED.value:
+        raise MeshStateError("retired の Data Product の Contract は変更できません")
+
+
 def create_contract(db: Session, port: OutputPort, *, name: str | None, actor: str) -> DataContract:
+    _require_open_product(db, port.product_id)
     if db.scalar(select(DataContract.id).where(DataContract.output_port_id == port.id)):
         raise MeshStateError("この Output Port の Contract は登録済みです")
     contract = DataContract(product_id=port.product_id, output_port_id=port.id, name=name or port.name,
@@ -50,9 +57,12 @@ def create_contract(db: Session, port: OutputPort, *, name: str | None, actor: s
 
 
 def _validate_content(db: Session, asset: DataAsset, content: Mapping[str, Any]) -> None:
-    for purpose in content.get("purposes") or []:
-        if db.get(PrivacyPurpose, purpose) is None:
-            raise MeshValidationError(f"unknown purpose: {purpose}")
+    for purpose_id in content.get("purposes") or []:
+        purpose = db.get(PrivacyPurpose, purpose_id)
+        if purpose is None:
+            raise MeshValidationError(f"unknown purpose: {purpose_id}")
+        if purpose.withdrawn_at:
+            raise MeshValidationError(f"目的 {purpose_id} は撤回されています")
     rule_ids = (content.get("quality_sla") or {}).get("rule_ids") or []
     if rule_ids:
         known = set(db.scalars(select(QualityRule.id).where(QualityRule.asset_id == asset.id)))
@@ -67,6 +77,7 @@ def _set_label(row: ContractVersion, label: str) -> None:
 
 
 def create_version(db: Session, contract: DataContract, asset: DataAsset, *, version: str, content: Mapping[str, Any], actor: str) -> ContractVersion:
+    _require_open_product(db, contract.product_id)
     _validate_content(db, asset, content)
     if db.scalar(select(ContractVersion.id).where(ContractVersion.contract_id == contract.id, ContractVersion.version == version)):
         raise MeshStateError(f"版 {version} は登録済みです")
@@ -177,6 +188,7 @@ def _check_publishable(db: Session, row: ContractVersion, baseline: ContractVers
 
 def publish(db: Session, actor: str, contract: DataContract, row: ContractVersion, product: DataProduct, port: OutputPort,
             asset: DataAsset, publisher: str) -> dict[str, Any]:
+    _require_open_product(db, contract.product_id)
     baseline = latest_published(db, contract)
     changes, _ = _check_publishable(db, row, baseline, asset)
     now = utcnow()

@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import text
 
 from edgf.db import engine
-from tests.mesh_helpers import (ADMIN, API, COLUMNS, COMMITTEE, MESH, PO, STEWARD, U, draft, mark_published, publish, published, purpose,
+from tests.mesh_helpers import (ADMIN, API, COLUMNS, COMMITTEE, MESH, PO, STEWARD, U, contract_body, draft, mark_published, publish, published, purpose,
                                 setup_contract, subscribe)
 
 
@@ -328,6 +328,8 @@ def test_withdrawing_purpose_suspends_subscriptions(world):
     assert len(_issues(client, "alice")) == 1
     assert client.post(url, headers=COMMITTEE, json={"reason": "r"}).status_code == 409
     assert client.post(f"{API}/privacy/purposes/none/withdraw", headers=COMMITTEE, json={"reason": "r"}).status_code == 404
+    # 撤回した目的は Contract の利用条件にも指定できない
+    assert client.post(f"{MESH}/contracts/{world['cid']}/versions", headers=STEWARD, json=contract_body("1.1.0", purposes=["analytics"])).status_code == 422
     # 撤回後は新しい利用登録を受け付けない。別の目的に変えれば再開できる
     subscribe(client, "carol", world["port_id"], code=422)
     r = client.post(f"{MESH}/subscriptions/{s['id']}/migrate", headers=U("alice"), json={"major": 1})
