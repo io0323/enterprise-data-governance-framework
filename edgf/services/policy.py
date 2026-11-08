@@ -1,0 +1,145 @@
+"""§13 / §15 Policy as Code engine.
+
+YAML で宣言された Global / Domain Policy を資産メタデータに対して評価する。
+OPA 等の外部ポリシーエンジンへ置換可能なよう、評価結果は単純な dict で返す。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from edgf.config import settings
+from edgf.models import DataAsset, PolicyException, QualityRule, utcnow, term_asset
+
+CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
+               "min_quality_score", "has_upstream_lineage", "glossary_linked"}
+
+
+class PolicyLoadError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Policy:
+    id: str
+    name: str
+    severity: str
+    check: dict
+    scope: str = "global"
+    domain: str | None = None
+    when: dict = field(default_factory=dict)
+    design_ref: str = ""
+
+    def applies_to(self, asset: DataAsset) -> bool:
+        if self.scope == "domain" and asset.domain != self.domain:
+            return False
+        for key, expected in self.when.items():
+            actual = getattr(asset, key, None)
+            if isinstance(expected, list):
+                if actual not in expected:
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    def as_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "severity": self.severity, "scope": self.scope,
+                "domain": self.domain, "when": self.when, "check": self.check, "design_ref": self.design_ref}
+
+
+def load_policies(policy_dir: Path | None = None) -> list[Policy]:
+    base = Path(policy_dir or settings.policy_dir)
+    files = sorted(base.glob("*.yaml")) + sorted((base / "domains").glob("*.yaml"))
+    policies: dict[str, Policy] = {}
+    for f in files:
+        doc = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        scope = doc.get("scope", "global")
+        domain = doc.get("domain")
+        if scope == "domain" and not domain:
+            raise PolicyLoadError(f"{f.name}: domain scope requires 'domain'")
+        for p in doc.get("policies", []):
+            pid = p["id"]
+            if pid in policies:
+                # Federated Governance: ドメインは Global Policy を上書き(緩和)できない
+                raise PolicyLoadError(f"{f.name}: duplicate policy id {pid} (override is not allowed)")
+            if p["check"]["type"] not in CHECK_TYPES:
+                raise PolicyLoadError(f"{f.name}: unknown check type {p['check']['type']}")
+            policies[pid] = Policy(id=pid, name=p["name"], severity=p.get("severity", "medium"), check=p["check"],
+                                   scope=scope, domain=domain, when=p.get("when", {}), design_ref=p.get("design_ref", ""))
+    return list(policies.values())
+
+
+_cache: list[Policy] | None = None
+
+
+def get_policies(reload: bool = False) -> list[Policy]:
+    global _cache
+    if _cache is None or reload:
+        _cache = load_policies()
+    return _cache
+
+
+def _run_check(db: Session, asset: DataAsset, check: dict) -> tuple[bool, str]:
+    t = check["type"]
+    if t == "required_fields":
+        missing = [f for f in check["fields"] if getattr(asset, f, None) in (None, "", [])]
+        return not missing, f"未設定: {missing}" if missing else "ok"
+    if t == "field_in":
+        v = getattr(asset, check["field"], None)
+        return v in check["values"], f"{check['field']}={v} は {check['values']} のいずれでもありません" if v not in check["values"] else "ok"
+    if t == "required_controls":
+        missing = [c for c in check["controls"] if c not in (asset.controls or [])]
+        return not missing, f"未実装統制: {missing}" if missing else "ok"
+    if t == "min_quality_rules":
+        n = db.scalar(select(func.count(QualityRule.id)).where(QualityRule.asset_id == asset.id)) or 0
+        return n >= check["count"], f"品質ルール {n}件 < {check['count']}" if n < check["count"] else "ok"
+    if t == "min_quality_score":
+        from edgf.services.quality import latest_run
+        run = latest_run(db, asset.id)
+        ok = run is not None and run.score >= check["score"]
+        return ok, "ok" if ok else f"Quality Score {run.score if run else None} < {check['score']}"
+    if t == "has_upstream_lineage":
+        from edgf.services.lineage import has_upstream
+        ok = has_upstream(db, asset.qualified_name)
+        return ok, "ok" if ok else "上流リネージが未登録です"
+    if t == "glossary_linked":
+        n = db.scalar(select(func.count()).select_from(term_asset).where(term_asset.c.asset_id == asset.id)) or 0
+        return n > 0, "ok" if n else "Glossary用語が未紐付けです"
+    raise PolicyLoadError(f"unknown check type {t}")
+
+
+def _active_exceptions(db: Session, asset_id: str) -> set[str]:
+    now = utcnow()
+    return set(db.scalars(select(PolicyException.policy_id).where(
+        PolicyException.asset_id == asset_id, PolicyException.status == "approved", PolicyException.expires_at > now)))
+
+
+def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None = None) -> list[dict[str, Any]]:
+    excepted = _active_exceptions(db, asset.id)
+    results = []
+    for p in policies or get_policies():
+        if not p.applies_to(asset):
+            continue
+        ok, msg = _run_check(db, asset, p.check)
+        status = "pass" if ok else ("excepted" if p.id in excepted else "fail")
+        results.append({"policy_id": p.id, "name": p.name, "severity": p.severity, "scope": p.scope,
+                        "status": status, "message": msg, "design_ref": p.design_ref})
+    return results
+
+
+def evaluate_all(db: Session) -> dict:
+    assets = db.scalars(select(DataAsset).where(DataAsset.lifecycle_state != "deleted")).all()
+    per_asset, applicable, compliant = [], 0, 0
+    for a in assets:
+        res = evaluate_asset(db, a)
+        applicable += len(res)
+        compliant += sum(1 for r in res if r["status"] in ("pass", "excepted"))
+        per_asset.append({"asset_id": a.id, "qualified_name": a.qualified_name, "domain": a.domain,
+                          "violations": [r for r in res if r["status"] == "fail"], "results": res})
+    return {"compliance_rate": round(compliant / applicable, 6) if applicable else 1.0,
+            "applicable_checks": applicable, "compliant_checks": compliant, "assets": per_asset}

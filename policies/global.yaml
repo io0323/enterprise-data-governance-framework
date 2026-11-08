@@ -1,0 +1,79 @@
+# Global Policy (§15 Federated Governance)
+# Data Governance Committee が承認・管理する全ドメイン共通ポリシー。
+# ドメインポリシーは追加のみ可能で、Global Policy の緩和・上書きは不可。
+version: 1
+scope: global
+policies:
+  - id: GOV-001
+    name: Owner/Steward必須
+    design_ref: "§4 Data Ownership"
+    severity: critical
+    check: {type: required_fields, fields: [owner, steward]}
+
+  - id: GOV-002
+    name: 最小Business Metadata
+    design_ref: "§6.3 Metadata First"
+    severity: high
+    check: {type: required_fields, fields: [description, domain]}
+
+  - id: SEC-001
+    name: 暗号化必須
+    design_ref: "§11 Encryption"
+    severity: critical
+    check: {type: required_controls, controls: [encryption_at_rest, encryption_in_transit]}
+
+  - id: SEC-002
+    name: 高機密データのマスキング
+    design_ref: "§11 Masking"
+    severity: high
+    when: {sensitivity: [confidential, restricted]}
+    check: {type: required_controls, controls: [masking]}
+
+  - id: PRV-001
+    name: PIIは機密度Confidential以上
+    design_ref: "§12 PII"
+    severity: critical
+    when: {contains_pii: true}
+    check: {type: field_in, field: sensitivity, values: [confidential, restricted]}
+
+  - id: PRV-002
+    name: PIIは保持期間必須
+    design_ref: "§10.2 / §12 Retention"
+    severity: high
+    when: {contains_pii: true}
+    check: {type: required_fields, fields: [retention_days]}
+
+  - id: QLT-001
+    name: CDEは品質ルール必須
+    design_ref: "§5.2 Critical Data Element"
+    severity: high
+    when: {is_cde: true}
+    check: {type: min_quality_rules, count: 1}
+
+  - id: QLT-002
+    name: CDEは鮮度SLA必須
+    design_ref: "§5 Timeliness"
+    severity: medium
+    when: {is_cde: true}
+    check: {type: required_fields, fields: [freshness_sla_hours]}
+
+  - id: LIN-001
+    name: 派生データはリネージ必須
+    design_ref: "§9 Data Lineage"
+    severity: high
+    when: {data_class: [analytical, ai]}
+    check: {type: has_upstream_lineage}
+
+  - id: AI-001
+    name: AI学習データの承認
+    design_ref: "§14 Training Data"
+    severity: critical
+    when: {data_class: [ai]}
+    check: {type: required_controls, controls: [training_approval, license_verified]}
+
+  - id: CAT-001
+    name: Glossary用語との紐付け
+    design_ref: "§6.2 Glossary"
+    severity: low
+    when: {is_cde: true}
+    check: {type: glossary_linked}

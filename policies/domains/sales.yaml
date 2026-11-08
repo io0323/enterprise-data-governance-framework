@@ -1,0 +1,11 @@
+# Domain Policy 例: sales ドメイン独自の追加統制 (Global Policy の上乗せのみ)
+version: 1
+scope: domain
+domain: sales
+policies:
+  - id: SALES-001
+    name: 売上CDEは認証必須
+    design_ref: "§15 Domain Ownership"
+    severity: medium
+    when: {is_cde: true, lifecycle_state: [active]}
+    check: {type: field_in, field: certification, values: [certified]}
