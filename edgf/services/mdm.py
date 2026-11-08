@@ -550,3 +550,41 @@ def verify(db: Session, golden: GoldenRecord, attributes: Mapping[str, Any], num
 
 def lookup_xrefs(db: Session, source_ref: str) -> Sequence[MdmXref]:
     return db.scalars(select(MdmXref).where(MdmXref.source_ref == source_ref).order_by(MdmXref.entity_type)).all()
+
+
+# ---------------------------------------------------------------- Right to Erasure との統合 (§12)
+def goldens_for_subject(db: Session, subject_ref: str) -> dict[str, list[str]]:
+    """データ主体に対応する有効な Golden Record を資産ごとに返す。"""
+    rows = db.execute(select(GoldenRecord.asset_id, GoldenRecord.id)
+                      .join(MdmSubjectLink, MdmSubjectLink.golden_id == GoldenRecord.id)
+                      .where(MdmSubjectLink.subject_ref == subject_ref, GoldenRecord.status == ACTIVE)
+                      .order_by(GoldenRecord.id)).all()
+    result: dict[str, list[str]] = {}
+    for asset_id, golden_id in rows:
+        result.setdefault(asset_id, []).append(golden_id)
+    return result
+
+
+def tombstone(db: Session, golden_ids: Iterable[str], erasure_request_id: str) -> None:
+    """MDM Hub での消去の完了後に、xref と版の情報を消去済みにする。
+
+    内容ハッシュと source_ref は消去の証跡として残す。ソルトと subject_ref の対応は破棄する。
+    ソルトが無くなるので、残ったハッシュと値を突き合わせることはできなくなる。
+    """
+    now = utcnow()
+    for golden_id in golden_ids:
+        golden = db.get(GoldenRecord, golden_id)
+        if golden is None or golden.status == TOMBSTONED:
+            continue
+        golden.status, golden.tombstoned_at, golden.tombstoned_by_request = TOMBSTONED, now, erasure_request_id
+        golden.hash_salt, golden.recompose_required = None, False
+        for xref in db.scalars(select(MdmXref).where(MdmXref.golden_id == golden_id)):
+            xref.tombstoned_at = now
+        for version in db.scalars(select(GoldenVersion).where(GoldenVersion.golden_id == golden_id)):
+            version.tombstoned = True
+            version.valid_to = version.valid_to or now
+        for link in db.scalars(select(MdmSubjectLink).where(MdmSubjectLink.golden_id == golden_id)):
+            db.delete(link)
+        for review in db.scalars(select(MdmReview).where(MdmReview.golden_id == golden_id, MdmReview.status == PENDING)):
+            review.status, review.decided_by, review.decided_at = SUPERSEDED, "erasure", now
+    db.flush()

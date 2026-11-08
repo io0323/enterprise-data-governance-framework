@@ -18,7 +18,7 @@ from edgf.models import DataAsset, PolicyException, QualityRule, utcnow, term_as
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
-               "anonymization_k", "pseudonymization_controls", "pii_columns_documented"}
+               "anonymization_k", "pseudonymization_controls", "pii_columns_documented", "mdm_entity_defined"}
 
 
 class PolicyLoadError(Exception):
@@ -88,6 +88,9 @@ def get_policies(reload: bool = False) -> list[Policy]:
 def _run_check(db: Session, asset: DataAsset, check: dict) -> tuple[bool | None, str]:
     """(合否, メッセージ) を返す。None は対象外で、評価結果に含めない。"""
     t = check["type"]
+    if t == "mdm_entity_defined":
+        from edgf.services.mdm_rules import check_entity_defined
+        return check_entity_defined(db, asset)
     if t in ("anonymization_k", "pseudonymization_controls", "pii_columns_documented"):
         from edgf.services import privacy
         return {"anonymization_k": privacy.check_anonymization_k,

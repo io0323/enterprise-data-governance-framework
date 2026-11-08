@@ -62,6 +62,13 @@ policies:
     when: {contains_pii: true}
     check: {type: pii_columns_documented}
 
+  - id: MDM-001
+    name: マスタ資産はエンティティ定義とSurvivorshipルールが必須
+    design_ref: "§8 Master Data Management"
+    severity: high
+    when: {data_class: [master]}
+    check: {type: mdm_entity_defined}
+
   - id: QLT-001
     name: CDEは品質ルール必須
     design_ref: "§5.2 Critical Data Element"

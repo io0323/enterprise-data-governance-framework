@@ -22,7 +22,7 @@ from edgf.config import settings
 from edgf.enums import ESCALATION_ORDER, ErasureStatus, ErasureTaskStatus
 from edgf.models import DataAsset, ErasureRequest, ErasureTask, Issue, utcnow
 from edgf.observability import request_id_var
-from edgf.services import issues, lineage
+from edgf.services import issues, lineage, mdm
 from edgf.services.privacy import effective_pii_columns, pii_columns
 
 S, T = ErasureStatus, ErasureTaskStatus
@@ -67,7 +67,10 @@ def _identifier_columns(asset: DataAsset, identifier_type: str) -> list[str]:
 
 
 def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
-    """対象を特定する。identifier_type が一致するカラムを持つ資産を起点に、Lineage 下流の PII 資産を加える。"""
+    """対象を特定する。identifier_type が一致するカラムを持つ資産を起点に、Lineage 下流の PII 資産を加える。
+
+    データ主体に対応する Golden Record があれば、その master 資産 (MDM Hub) も起点に加える。
+    """
     _require_status(req, S.RECEIVED.value, S.SCOPED.value)
     for old in tasks_of(db, req):  # 再スコープ: 承認前の計画を作り直す
         db.delete(old)
@@ -77,6 +80,12 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
     targets: dict[str, tuple[str, int]] = {
         qn: ("identifier_match", 0) for qn, a in assets.items()
         if a.lifecycle_state != DELETED and a.contains_pii and _identifier_columns(a, req.identifier_type)}
+    goldens_by_name: dict[str, list[str]] = {}
+    for asset_id, golden_ids in mdm.goldens_for_subject(db, req.subject_ref).items():
+        asset = db.get(DataAsset, asset_id)
+        if asset.lifecycle_state != DELETED:
+            goldens_by_name[asset.qualified_name] = golden_ids
+            targets.setdefault(asset.qualified_name, ("mdm_golden", 0))
     unregistered: set[str] = set()
     for start in list(targets):
         for edge in lineage.traverse(db, start, "downstream", MAX_LINEAGE_DEPTH):
@@ -96,7 +105,8 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
         identifier_cols = _identifier_columns(asset, req.identifier_type)
         columns = identifier_cols or [c["name"] for c in pii_columns(asset.schema_)]
         db.add(ErasureTask(request_id=req.id, asset_id=asset.id, qualified_name=qn, origin=origin, depth=depth,
-                           columns=columns, status=T.WITHHELD.value if held else T.PLANNED.value,
+                           columns=columns, golden_ids=goldens_by_name.get(qn, []),
+                           status=T.WITHHELD.value if held else T.PLANNED.value,
                            withheld_reason=LEGAL_HOLD_REASON if held else None))
         if not asset.custodian and not held:
             no_custodian.append(qn)
@@ -184,6 +194,8 @@ def complete(db: Session, task: ErasureTask, asset: DataAsset, *, actor: str, ou
     if asset.legal_hold and outcome == "completed":
         # ack 後に Legal Hold が設定された。実際に起きた削除は証跡として記録し、確認者に知らせる
         req.warnings = [*(req.warnings or []), f"{task.qualified_name}: Legal Hold 設定後に削除の完了報告がありました"]
+    if outcome == "completed" and task.golden_ids:
+        mdm.tombstone(db, task.golden_ids, req.id)
     db.flush()
     _finalize_if_done(db, req)
     db.flush()
@@ -211,7 +223,7 @@ def certificate(db: Session, req: ErasureRequest) -> dict[str, Any]:
         "verified_at": req.verified_at, "verified_by": req.verified_by,
         "unregistered_downstream": req.unregistered_downstream or [],
         "tasks": [{"task_id": t.id, "asset_id": t.asset_id, "qualified_name": t.qualified_name, "origin": t.origin,
-                   "depth": t.depth, "status": t.status, "records_deleted": t.records_deleted,
+                   "depth": t.depth, "golden_ids": t.golden_ids, "status": t.status, "records_deleted": t.records_deleted,
                    "evidence_hash": t.evidence_hash, "withheld_reason": t.withheld_reason, "note": t.note,
                    "approved_by": t.approved_by, "completed_by": t.completed_by, "completed_at": t.completed_at,
                    "request_id": t.completion_request_id} for t in tasks_of(db, req)],

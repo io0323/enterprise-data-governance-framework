@@ -242,6 +242,7 @@ class ErasureTask(Base):
     origin: Mapped[str] = mapped_column(String(20))  # identifier_match / lineage
     depth: Mapped[int] = mapped_column(Integer, default=0)
     columns: Mapped[list] = mapped_column(JSON, default=list)
+    golden_ids: Mapped[list] = mapped_column(JSON, default=list)  # MDM Hub 向け: 消去する Golden Record
     status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
     withheld_reason: Mapped[str | None] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(String(200))

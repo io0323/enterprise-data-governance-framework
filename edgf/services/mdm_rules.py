@@ -176,6 +176,16 @@ def get_entities(reload: bool = False) -> dict[str, Entity]:
     return _cache
 
 
+def check_entity_defined(db: Session, asset: DataAsset) -> tuple[bool, str]:
+    """MDM-001。定義の読み込み時に全属性の Survivorship を検証しているので、定義があればルールも揃っている。"""
+    entity = next((e for e in get_entities().values() if e.asset == asset.qualified_name), None)
+    if entity is None:
+        return False, "エンティティ定義 (policies/mdm) がありません (§8)"
+    if approval_of(db, entity) is None:
+        return False, f"エンティティ {entity.entity_type} の生成規則を Owner が承認していません (§8.2)"
+    return True, "ok"
+
+
 def find_asset(db: Session, entity: Entity) -> DataAsset | None:
     """対応する master 資産。未登録、または data_class が master でなければ None。"""
     asset = db.scalar(select(DataAsset).where(DataAsset.qualified_name == entity.asset))

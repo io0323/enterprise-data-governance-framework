@@ -371,6 +371,7 @@ class ErasureTaskOut(ORM):
     origin: str
     depth: int
     columns: list[str]
+    golden_ids: list[str] = Field(default_factory=list, description="MDM Hub 向け: 消去する Golden Record")
     status: ErasureTaskStatus
     withheld_reason: str | None
     approved_by: str | None
