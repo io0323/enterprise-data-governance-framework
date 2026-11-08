@@ -95,6 +95,16 @@ class LegalBasis(str, Enum):
     LEGITIMATE_INTEREST = "legitimate_interest"
 
 
+class PrivacyTechnique(str, Enum):
+    """§12 / §11 保護手法。pseudonymized は個人データのまま、anonymized は基準を満たす場合だけ統制外"""
+    NONE = "none"
+    MASKED = "masked"
+    TOKENIZED = "tokenized"
+    PSEUDONYMIZED = "pseudonymized"
+    ANONYMIZED = "anonymized"
+    AGGREGATED = "aggregated"
+
+
 class ConsentStatus(str, Enum):
     """§12 Consent"""
     GRANTED = "granted"

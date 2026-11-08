@@ -23,7 +23,7 @@ from edgf.enums import ESCALATION_ORDER, ErasureStatus, ErasureTaskStatus
 from edgf.models import DataAsset, ErasureRequest, ErasureTask, Issue, utcnow
 from edgf.observability import request_id_var
 from edgf.services import issues, lineage
-from edgf.services.privacy import pii_columns
+from edgf.services.privacy import effective_pii_columns, pii_columns
 
 S, T = ErasureStatus, ErasureTaskStatus
 OPEN_STATES = (S.RECEIVED.value, S.SCOPED.value, S.APPROVED.value, S.DISPATCHED.value)
@@ -63,7 +63,7 @@ def create(db: Session, *, subject_ref: str, identifier_type: str, reason: str, 
 
 
 def _identifier_columns(asset: DataAsset, identifier_type: str) -> list[str]:
-    return [c["name"] for c in pii_columns(asset.schema_) if c.get("identifier_type") == identifier_type]
+    return [c["name"] for c in effective_pii_columns(asset.schema_) if c.get("identifier_type") == identifier_type]
 
 
 def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:

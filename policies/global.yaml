@@ -43,6 +43,25 @@ policies:
     when: {contains_pii: true}
     check: {type: required_fields, fields: [retention_days]}
 
+  - id: PRV-003
+    name: 匿名化はk-匿名性の基準を満たすこと
+    design_ref: "§12 Anonymization"
+    severity: critical
+    check: {type: anonymization_k}
+
+  - id: PRV-004
+    name: 仮名化は鍵の分離保管が必須で個人データのまま扱う
+    design_ref: "§12 Pseudonymization"
+    severity: critical
+    check: {type: pseudonymization_controls}
+
+  - id: PRV-005
+    name: PIIカラムは処理目的と法的根拠が必須
+    design_ref: "§12 PII"
+    severity: medium  # 既存資産の Certification を止めないよう medium とする (是正は Issue で追跡)
+    when: {contains_pii: true}
+    check: {type: pii_columns_documented}
+
   - id: QLT-001
     name: CDEは品質ルール必須
     design_ref: "§5.2 Critical Data Element"

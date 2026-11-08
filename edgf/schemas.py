@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from edgf.enums import (Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         IssueStatus, LegalBasis, LifecycleState,
-                        PiiCategory, QualityDimension, Sensitivity, Severity)
+                        PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 
@@ -40,6 +40,8 @@ class ColumnSpec(BaseModel):
                                         description="データ主体の識別子の種別 (例: customer_id, email)。消去の対象特定に使う")
     processing_purposes: list[str] = Field(default_factory=list, description="処理目的 (Purpose カタログの ID)")
     legal_basis: LegalBasis | None = None
+    privacy_technique: PrivacyTechnique | None = Field(default=None, description="カラム単位の保護手法 (§12)")
+    privacy_params: dict[str, Any] = Field(default_factory=dict, description="k / key_vault_ref など")
 
     @model_validator(mode="after")
     def _infer_pii(self) -> ColumnSpec:
@@ -64,6 +66,8 @@ class AssetBase(BaseModel):
     schema_: list[ColumnSpec] = Field(default_factory=list, alias="schema")
     tags: list[str] = Field(default_factory=list)
     controls: list[str] = Field(default_factory=list)
+    privacy_technique: PrivacyTechnique = PrivacyTechnique.NONE
+    privacy_params: dict[str, Any] = Field(default_factory=dict, description="k (k-匿名性) / key_vault_ref (仮名化キーの分離保管先)")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -89,6 +93,8 @@ class AssetUpdate(BaseModel):
     schema_: list[ColumnSpec] | None = Field(default=None, alias="schema")
     tags: list[str] | None = None
     controls: list[str] | None = None
+    privacy_technique: PrivacyTechnique | None = None
+    privacy_params: dict[str, Any] | None = None
 
 
 class AssetOut(ORM, AssetBase):

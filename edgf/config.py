@@ -62,6 +62,8 @@ class Settings:
     subject_key: str = field(default_factory=lambda: os.getenv("EDGF_SUBJECT_KEY", ""))
     # §12 Right to Erasure の対応期限 (日)
     erasure_sla_days: int = field(default_factory=lambda: int(os.getenv("EDGF_ERASURE_SLA_DAYS", "30")))
+    # §12 Anonymization: anonymized と宣言するために必要な k-匿名性の下限 (PRV-003)
+    min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # IdP 側のロール/グループ名 → edgf ロール (例: "dg-committee=committee,dg-admins=admin")
     role_map: tuple[tuple[str, str], ...] = field(default_factory=lambda: _env_pairs("EDGF_ROLE_MAP"))
 
