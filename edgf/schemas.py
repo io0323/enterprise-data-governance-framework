@@ -450,3 +450,32 @@ class MdmMatchOut(BaseModel):
 class MdmComposeIn(BaseModel):
     records: list[MdmSourceRecord] = Field(min_length=1, max_length=1000)
     overrides: dict[str, str] = Field(default_factory=dict, description="属性 → source_system。指定には裁定の権限が必要")
+
+
+class MdmReviewOut(ORM):
+    """裁定キューの項目。属性値は含まない。Steward は値を Data Plane から直接参照する。"""
+    id: str
+    entity_type: str
+    asset_id: str
+    source_ref: str
+    source_system: str
+    golden_id: str
+    score: float
+    comparisons: dict[str, Any]
+    status: str
+    created_at: datetime
+    due_at: datetime
+    decided_by: str | None
+    decided_at: datetime | None
+    reason: str
+    new_golden_id: str | None
+
+
+class MdmReviewDecision(BaseModel):
+    decision: Literal["merge", "not_match", "split"]
+    reason: str = Field(default="", max_length=1000, description="個人情報を含めないこと")
+
+
+class MdmSplitIn(BaseModel):
+    source_refs: list[str] = Field(min_length=1, description="別の Golden Record に分割するソース")
+    reason: str = Field(min_length=1, max_length=1000, description="個人情報を含めないこと")

@@ -128,6 +128,7 @@ PERMISSIONS: Mapping[str, Rule] = {
                         description="Golden Record の生成と内容ハッシュの検証"),
     "mdm.review.decide": rule(relations=("owner", "steward"), approval=True,
                               description="裁定 (merge / not_match / split) と属性値の指定"),
+    "mdm.review.escalate": rule(roles=(ADMIN, COMMITTEE), description="裁定キューの期限超過の処理"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

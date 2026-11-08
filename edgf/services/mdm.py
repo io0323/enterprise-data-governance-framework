@@ -14,18 +14,22 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from edgf.models import DataAsset, GoldenRecord, GoldenVersion, MdmSubjectLink, MdmXref, utcnow
+from edgf.config import settings
+from edgf.enums import ESCALATION_ORDER
+from edgf.models import DataAsset, GoldenRecord, GoldenVersion, Issue, MdmReview, MdmSubjectLink, MdmXref, utcnow
+from edgf.services import issues
 from edgf.services.mdm_rules import Entity
 from edgf.services.subject_ref import to_subject_ref
 
 ACTIVE, TOMBSTONED = "active", "tombstoned"
+PENDING, MERGED, NOT_MATCH, SPLIT, SUPERSEDED = "pending", "merged", "not_match", "split", "superseded"
 
 
 class MdmStateError(ValueError):
@@ -333,6 +337,12 @@ def match(db: Session, entity: Entity, asset: DataAsset, record: SourceRecord,
         if golden is None or golden.status != ACTIVE:
             raise MdmInputError("candidates に有効でない Golden Record が含まれています")
 
+    # not_match と裁定されたペアは比較しない (再起票しない)
+    rejected = set(db.scalars(select(MdmReview.golden_id).where(MdmReview.entity_type == entity.entity_type,
+                                                                MdmReview.source_ref == record.source_ref,
+                                                                MdmReview.status == NOT_MATCH)))
+    candidates = [c for c in candidates if c[0] not in rejected]
+
     # 第1段: 完全一致キー
     for golden_id, attributes in candidates:
         if exact_key_match(entity, record.attributes, attributes):
@@ -344,10 +354,15 @@ def match(db: Session, entity: Entity, asset: DataAsset, record: SourceRecord,
     if scored and scored[0][1] >= entity.auto_merge:
         return _link_existing(db, entity, scored[0][0], record, actor, "similarity", scored[0][1])
     band = [s for s in scored if s[1] >= entity.review]
-    if band:
+    refs = subject_refs_of(entity, record.attributes)
+    for golden_id, score, results in band:
+        _enqueue(db, entity, asset, record, golden_id, score, results, refs)
+    pending = _pending_reviews(db, entity.entity_type, record.source_ref)
+    if pending:  # 裁定が終わるまで新規の Golden Record は作らない
         return {"decision": "review", "golden_id": None, "source_ref": record.source_ref, "stage": "similarity",
-                "score": band[0][1], "recompose_required": False, "review_ids": [],
-                "candidates": [{"golden_id": g, "score": score, "comparisons": results} for g, score, results in band]}
+                "score": max(p.score for p in pending), "recompose_required": False,
+                "review_ids": [p.id for p in pending],
+                "candidates": [{"golden_id": p.golden_id, "score": p.score, "comparisons": p.comparisons} for p in pending]}
 
     golden = create_golden(db, entity, asset, actor)
     link_source(db, entity, golden, record.source_ref, record.source_system, "new", actor)
@@ -362,9 +377,132 @@ def _link_existing(db: Session, entity: Entity, golden_id: str, record: SourceRe
     add_subject_links(db, golden.id, subject_refs_of(entity, record.attributes))
     if golden.current_version:
         append_version(db, golden, "merge", actor)  # 値は Data Plane での再構成で確定する
+    _supersede(db, entity.entity_type, record.source_ref, actor)
     return _result("linked", record, golden, stage=stage, score=score)
 
 
 def _result(decision: str, record: SourceRecord, golden: GoldenRecord, *, stage: str, score: float | None) -> dict[str, Any]:
     return {"decision": decision, "golden_id": golden.id, "source_ref": record.source_ref, "stage": stage, "score": score,
             "recompose_required": golden.recompose_required, "review_ids": [], "candidates": []}
+
+
+# ---------------------------------------------------------------- 裁定キュー
+def _pending_reviews(db: Session, entity_type: str, source_ref: str) -> list[MdmReview]:
+    return list(db.scalars(select(MdmReview).where(MdmReview.entity_type == entity_type, MdmReview.source_ref == source_ref,
+                                                   MdmReview.status == PENDING).order_by(MdmReview.score.desc(), MdmReview.id)))
+
+
+def _enqueue(db: Session, entity: Entity, asset: DataAsset, record: SourceRecord, golden_id: str, score: float,
+             comparisons: dict[str, Any], subject_refs: list[tuple[str, str]]) -> MdmReview:
+    existing = db.scalar(select(MdmReview).where(MdmReview.entity_type == entity.entity_type,
+                                                 MdmReview.source_ref == record.source_ref, MdmReview.golden_id == golden_id))
+    if existing is not None:
+        return existing
+    review = MdmReview(entity_type=entity.entity_type, asset_id=asset.id, source_ref=record.source_ref,
+                       source_system=record.source_system, golden_id=golden_id, score=score, comparisons=comparisons,
+                       subject_refs=[list(r) for r in subject_refs], status=PENDING,
+                       due_at=utcnow() + timedelta(days=settings.mdm_review_sla_days))
+    db.add(review)
+    db.flush()
+    return review
+
+
+def _supersede(db: Session, entity_type: str, source_ref: str, actor: str) -> None:
+    for other in _pending_reviews(db, entity_type, source_ref):
+        other.status, other.decided_by, other.decided_at = SUPERSEDED, actor, utcnow()
+    db.flush()
+
+
+def _close(review: MdmReview, status: str, actor: str, reason: str) -> None:
+    review.status, review.decided_by, review.decided_at, review.reason = status, actor, utcnow(), reason
+
+
+def decide_merge(db: Session, entity: Entity, review: MdmReview, actor: str, reason: str) -> None:
+    if review.status != PENDING:
+        raise MdmStateError(f"裁定の状態が {review.status} のため merge できません")
+    golden = db.get(GoldenRecord, review.golden_id)
+    if golden.status != ACTIVE:
+        raise MdmStateError("消去済みの Golden Record にはマージできません")
+    link_source(db, entity, golden, review.source_ref, review.source_system, "steward_merge", actor)
+    add_subject_links(db, golden.id, review.subject_refs)
+    if golden.current_version:
+        append_version(db, golden, "merge", actor)
+    _close(review, MERGED, actor, reason)
+    db.flush()  # autoflush なし: 次のクエリがこの裁定を pending として拾わないようにする
+    _supersede(db, entity.entity_type, review.source_ref, actor)
+
+
+def decide_not_match(db: Session, entity: Entity, asset: DataAsset, review: MdmReview, actor: str, reason: str) -> None:
+    """同じペアは以後起票しない。他に裁定待ちが無ければ、このソースを新しい Golden Record にする。"""
+    if review.status != PENDING:
+        raise MdmStateError(f"裁定の状態が {review.status} のため not_match にできません")
+    _close(review, NOT_MATCH, actor, reason)
+    db.flush()
+    if not _pending_reviews(db, entity.entity_type, review.source_ref):
+        golden = create_golden(db, entity, asset, actor)
+        link_source(db, entity, golden, review.source_ref, review.source_system, "new", actor)
+        add_subject_links(db, golden.id, review.subject_refs)
+        review.new_golden_id = golden.id
+    db.flush()
+
+
+def split_sources(db: Session, entity: Entity, asset: DataAsset, golden: GoldenRecord, source_refs: Sequence[str],
+                  actor: str) -> GoldenRecord:
+    """誤マージの分割。xref を新しい Golden Record へ付け替え、双方に再構成を求める。
+
+    過去の版は書き換えないので、as-of で分割前の構成を照会できる。
+    """
+    if golden.status != ACTIVE:
+        raise MdmStateError("消去済みの Golden Record は分割できません")
+    current = set(active_source_refs(db, golden.id))
+    moving = set(source_refs)
+    if not moving or moving - current:
+        raise MdmInputError("この Golden Record に紐付いていないソースが指定されています")
+    if moving == current:
+        raise MdmInputError("すべてのソースを分割することはできません")
+    new = create_golden(db, entity, asset, actor)
+    now = utcnow()
+    for xref in db.scalars(select(MdmXref).where(MdmXref.golden_id == golden.id, MdmXref.source_ref.in_(moving))):
+        xref.golden_id, xref.link_type, xref.linked_by, xref.linked_at = new.id, "split", actor, now
+    db.flush()
+    # どのソースの識別子かは値が無いと判定できない。再構成までは両方に残し、消去の対象から漏らさない
+    links = db.scalars(select(MdmSubjectLink).where(MdmSubjectLink.golden_id == golden.id)).all()
+    add_subject_links(db, new.id, [(link.identifier_type, link.subject_ref) for link in links])
+    if golden.current_version:
+        append_version(db, golden, "split", actor)
+    append_version(db, new, "split", actor)
+    golden.recompose_required = new.recompose_required = True
+    db.flush()
+    return new
+
+
+def decide_split(db: Session, entity: Entity, asset: DataAsset, review: MdmReview, actor: str, reason: str) -> GoldenRecord:
+    if review.status != MERGED:
+        raise MdmStateError("split できるのは merge 済みの裁定だけです")
+    new = split_sources(db, entity, asset, db.get(GoldenRecord, review.golden_id), [review.source_ref], actor)
+    _close(review, SPLIT, actor, reason)
+    review.new_golden_id = new.id
+    db.flush()
+    return new
+
+
+def escalate_overdue_reviews(db: Session, actor: str) -> dict[str, Any]:
+    """期限超過の裁定を既存の Issue の仕組みで起票する。Issue の期限も過ぎていればエスカレーションする。"""
+    now = utcnow()
+    overdue = db.scalars(select(MdmReview).where(MdmReview.status == PENDING, MdmReview.due_at < now)).all()
+    opened, escalated = [], []
+    for review in overdue:
+        ref = f"mdm-review:{review.id}"
+        asset = db.get(DataAsset, review.asset_id)
+        issue = issues.open_issue(db, actor, asset=asset, kind="mdm", severity="medium", source_ref=ref,
+                                  title=f"[MDM] {asset.qualified_name}: 裁定 {review.id} が期限を超過しています",
+                                  description="重複候補の裁定を行ってください (§8 Deduplication)。")
+        if issue:
+            opened.append(issue.id)
+        stale = db.scalars(select(Issue).where(Issue.source_ref == ref, Issue.status.in_(issues.OPEN_STATES), Issue.due_at < now,
+                                               Issue.escalation_level != ESCALATION_ORDER[-1].value)).all()
+        for item in stale:
+            issues.escalate(db, actor, item, "mdm review overdue")
+            escalated.append(item.id)
+    db.flush()
+    return {"overdue_reviews": [r.id for r in overdue], "issues_opened": opened, "issues_escalated": escalated}

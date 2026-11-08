@@ -12,8 +12,11 @@ from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
-from edgf.models import DataAsset, MdmRuleApproval
-from edgf.schemas import MdmComposeIn, MdmMatchIn, MdmMatchOut, MdmSourceRecord
+from sqlalchemy import select
+
+from edgf.models import DataAsset, MdmReview, MdmRuleApproval
+from edgf.pagination import paginate
+from edgf.schemas import MdmComposeIn, MdmMatchIn, MdmMatchOut, MdmReviewDecision, MdmReviewOut, MdmSourceRecord, MdmSplitIn
 from edgf.pagination import Page, page_params, paginate_list
 from edgf.services import audit, mdm, mdm_rules
 from edgf.services.mdm import MdmInputError, MdmStateError, SourceRecord
@@ -150,3 +153,74 @@ def compose_golden(entity_type: str, golden_id: str, body: MdmComposeIn, db: Ses
         "version": result["version"], "content_hash": result["content_hash"], "reason": result["reason"],
         "changed": result["changed"], "source_count": len(records)})
     return result
+
+
+# ---------------- Steward の裁定キュー (9c): 比較結果だけを扱う ----------------
+@router.post("/reviews/escalate-overdue")
+def escalate_overdue_reviews(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """期限超過の裁定を Issue 化する。スケジューラから定期実行する想定 (Phase 12)。"""
+    authz.require(db, principal, "mdm.review.escalate", entity_type="mdm", entity_id="*")
+    result = mdm.escalate_overdue_reviews(db, principal.audit_actor)
+    audit.record(db, principal.audit_actor, "mdm.review_escalate_overdue", "mdm", "*", result)
+    return result
+
+
+@router.get("/{entity_type}/reviews", response_model=list[MdmReviewOut])
+def list_reviews(entity_type: str, request: Request, response: Response, status: str | None = None,
+                 page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                 principal: Principal = Depends(get_principal)):
+    entity = _entity(entity_type)
+    load_asset(db, principal, _master_asset(db, entity).id, "mdm.read")
+    stmt = select(MdmReview).where(MdmReview.entity_type == entity.entity_type) \
+        .order_by(MdmReview.due_at, MdmReview.id)
+    if status:
+        stmt = stmt.where(MdmReview.status == status)
+    return paginate(db, stmt, page, request, response)
+
+
+def _review(db: Session, entity: Entity, review_id: str) -> MdmReview:
+    review = db.get(MdmReview, review_id)
+    if review is None or review.entity_type != entity.entity_type:
+        raise HTTPException(404, f"review not found: {review_id}")
+    return review
+
+
+@router.get("/{entity_type}/reviews/{review_id}", response_model=MdmReviewOut)
+def get_review(entity_type: str, review_id: str, db: Session = Depends(get_session),
+               principal: Principal = Depends(get_principal)):
+    entity = _entity(entity_type)
+    load_asset(db, principal, _master_asset(db, entity).id, "mdm.read")
+    return _review(db, entity, review_id)
+
+
+@router.post("/{entity_type}/reviews/{review_id}/decision", response_model=MdmReviewOut)
+def decide_review(entity_type: str, review_id: str, body: MdmReviewDecision, db: Session = Depends(get_session),
+                  principal: Principal = Depends(get_principal)):
+    """裁定: merge / not_match (以後は同じペアを起票しない) / split (merge 済みの誤マージを分割)。"""
+    entity = _entity(entity_type)
+    asset = load_asset(db, principal, _master_asset(db, entity).id, "mdm.review.decide")
+    review = _review(db, entity, review_id)
+    actor = principal.subject
+    if body.decision == "merge":
+        _guarded(mdm.decide_merge, db, entity, review, actor, body.reason)
+    elif body.decision == "not_match":
+        _guarded(mdm.decide_not_match, db, entity, asset, review, actor, body.reason)
+    else:
+        _guarded(mdm.decide_split, db, entity, asset, review, actor, body.reason)
+    audit.record(db, principal.audit_actor, f"mdm.review_{body.decision}", "mdm_review", review.id, {
+        "golden_id": review.golden_id, "new_golden_id": review.new_golden_id, "score": review.score, "reason": body.reason})
+    return review
+
+
+@router.post("/{entity_type}/golden-records/{golden_id}/split")
+def split_golden(entity_type: str, golden_id: str, body: MdmSplitIn, db: Session = Depends(get_session),
+                 principal: Principal = Depends(get_principal)):
+    """誤マージの分割 (自動マージを含む)。版の履歴を保ったまま xref を付け替え、Data Plane に再構成を求める。"""
+    entity = _entity(entity_type)
+    asset = load_asset(db, principal, _master_asset(db, entity).id, "mdm.review.decide")
+    golden = _golden(db, entity, golden_id)
+    new = _guarded(mdm.split_sources, db, entity, asset, golden, body.source_refs, principal.subject)
+    audit.record(db, principal.audit_actor, "mdm.split", "golden", golden.id, {
+        "new_golden_id": new.id, "moved": len(body.source_refs), "reason": body.reason})
+    return {"golden_id": golden.id, "new_golden_id": new.id, "moved": sorted(set(body.source_refs)),
+            "recompose_required": [golden.id, new.id]}

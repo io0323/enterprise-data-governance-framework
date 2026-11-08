@@ -315,6 +315,31 @@ class GoldenVersion(Base):
     tombstoned: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class MdmReview(Base):
+    """Steward の裁定キュー。候補の参照と比較結果だけを持ち、属性値は持たない (§18.2)。
+
+    (entity_type, source_ref, golden_id) で一意。not_match のペアは行が残るので再起票されない。
+    """
+    __tablename__ = "mdm_reviews"
+    __table_args__ = (UniqueConstraint("entity_type", "source_ref", "golden_id", name="uq_mdm_review_pair"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    entity_type: Mapped[str] = mapped_column(String(50))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"))
+    source_ref: Mapped[str] = mapped_column(String(64), index=True)
+    source_system: Mapped[str] = mapped_column(String(100))
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"))
+    score: Mapped[float] = mapped_column(Float)
+    comparisons: Mapped[dict] = mapped_column(JSON, default=dict)  # 属性ごとの match / similar / mismatch
+    subject_refs: Mapped[list] = mapped_column(JSON, default=list)  # 裁定後に subject_ref と対応付けるため (HMAC のみ)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    new_golden_id: Mapped[str | None] = mapped_column(String(36))  # not_match / split で生まれた Golden Record
+
+
 class MdmSubjectLink(Base):
     """人を表す Golden Record と Phase 8 の subject_ref の対応 (消去の対象特定に使う)。"""
     __tablename__ = "mdm_subject_links"
