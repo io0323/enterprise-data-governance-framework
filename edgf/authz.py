@@ -122,6 +122,12 @@ PERMISSIONS: Mapping[str, Rule] = {
     "mdm.read": rule(authenticated=True, description="MDM のメタデータの参照 (ABAC で絞り込む。値は返さない)"),
     "mdm.rule.write": rule(roles=(ADMIN, COMMITTEE), approval=True, description="エンティティ定義の再読込 (公開)"),
     "mdm.rule.approve": rule(relations=("owner",), approval=True, description="Golden Record 生成規則の承認 (§8.2)"),
+    # Data Plane からの呼び出しを想定した実行行為 (承認ではないため Custodian を含む)
+    "mdm.match": rule(domain_roles=(STEWARD,), relations=("custodian",), description="ソースレコードのマッチング"),
+    "mdm.compose": rule(domain_roles=(STEWARD,), relations=("custodian",),
+                        description="Golden Record の生成と内容ハッシュの検証"),
+    "mdm.review.decide": rule(relations=("owner", "steward"), approval=True,
+                              description="裁定 (merge / not_match / split) と属性値の指定"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

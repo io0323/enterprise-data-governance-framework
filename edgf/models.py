@@ -267,6 +267,62 @@ class MdmRuleApproval(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class GoldenRecord(Base):
+    """§8 Golden Record の識別子と状態。属性値は Data Plane (MDM Hub) が保持する (§18.2)。"""
+    __tablename__ = "golden_records"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    entity_type: Mapped[str] = mapped_column(String(50), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)  # Metadata First
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active / tombstoned
+    recompose_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    current_version: Mapped[int] = mapped_column(Integer, default=0)
+    hash_salt: Mapped[str | None] = mapped_column(String(32))  # 消去時に破棄する (content_hash の辞書攻撃を防ぐ)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    tombstoned_by_request: Mapped[str | None] = mapped_column(String(36))
+
+
+class MdmXref(Base):
+    """ソースレコードと Golden Record の相互参照。キーは HMAC の source_ref でのみ保持する。"""
+    __tablename__ = "mdm_xrefs"
+    __table_args__ = (UniqueConstraint("entity_type", "source_ref", name="uq_mdm_xref_source"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(50))
+    source_ref: Mapped[str] = mapped_column(String(64), index=True)
+    source_system: Mapped[str] = mapped_column(String(100))
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), index=True)
+    link_type: Mapped[str] = mapped_column(String(20))  # new / auto_merge / steward_merge / split
+    linked_by: Mapped[str] = mapped_column(String(200))
+    linked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class GoldenVersion(Base):
+    """§8 Versioning: 版の情報。値は持たず、内容ハッシュと属性ごとの由来を持つ。追記のみ。"""
+    __tablename__ = "golden_versions"
+    __table_args__ = (UniqueConstraint("golden_id", "version", name="uq_golden_version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    valid_from: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime)
+    content_hash: Mapped[str | None] = mapped_column(String(64))  # merge / split 直後は再構成待ちのため NULL
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(String(20))  # compose / merge / split / steward_override
+    created_by: Mapped[str] = mapped_column(String(200))
+    tombstoned: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class MdmSubjectLink(Base):
+    """人を表す Golden Record と Phase 8 の subject_ref の対応 (消去の対象特定に使う)。"""
+    __tablename__ = "mdm_subject_links"
+    golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), primary_key=True)
+    subject_ref: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    identifier_type: Mapped[str] = mapped_column(String(50))
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

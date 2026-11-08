@@ -13,8 +13,10 @@ from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
 from edgf.models import DataAsset, MdmRuleApproval
+from edgf.schemas import MdmComposeIn, MdmMatchIn, MdmMatchOut, MdmSourceRecord
 from edgf.pagination import Page, page_params, paginate_list
-from edgf.services import audit, mdm_rules
+from edgf.services import audit, mdm, mdm_rules
+from edgf.services.mdm import MdmInputError, MdmStateError, SourceRecord
 from edgf.services.mdm_rules import Entity, MdmRuleError
 
 router = APIRouter(prefix="/mdm", tags=["mdm"])
@@ -92,3 +94,59 @@ def approve_entity_rules(entity_type: str, db: Session = Depends(get_session), p
         audit.record(db, principal.audit_actor, "mdm.rule_approve", "asset", asset.id,
                      {"entity_type": entity.entity_type, "rule_hash": entity.rule_hash})
     return _entity_view(db, entity, asset)
+
+
+# ---------------- マッチングと生成 (9b): 値は保持しない ----------------
+def _guarded(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except MdmStateError as e:
+        raise HTTPException(409, str(e)) from e
+    except MdmInputError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+def _record(entity: Entity, r: MdmSourceRecord) -> SourceRecord:
+    return _guarded(mdm.prepare_record, entity, r.source_system, r.key.get_secret_value(), r.attributes, r.updated_at)
+
+
+def _golden(db: Session, entity: Entity, golden_id: str):
+    golden = mdm.get_active_golden(db, entity, golden_id)
+    if golden is None:
+        raise HTTPException(404, f"golden record not found: {golden_id}")
+    return golden
+
+
+@router.post("/{entity_type}/match", response_model=MdmMatchOut)
+def match_record(entity_type: str, body: MdmMatchIn, db: Session = Depends(get_session),
+                 principal: Principal = Depends(get_principal)):
+    """ソースレコードの行き先 (新規 / 既存に紐付く / 裁定) を判定する。値は応答にも監査にも含めない。"""
+    entity = _entity(entity_type)
+    asset = load_asset(db, principal, _master_asset(db, entity).id, "mdm.match")
+    record = _record(entity, body.record)
+    candidates = [(c.golden_id, c.attributes) for c in body.candidates]
+    result = _guarded(mdm.match, db, entity, asset, record, candidates, principal.audit_actor)
+    audit.record(db, principal.audit_actor, "mdm.match", "mdm", result["golden_id"] or asset.id, {
+        "entity_type": entity.entity_type, "source_system": record.source_system, "decision": result["decision"],
+        "stage": result["stage"], "score": result["score"], "review_ids": result["review_ids"]})
+    return result
+
+
+@router.post("/{entity_type}/golden-records/{golden_id}/compose")
+def compose_golden(entity_type: str, golden_id: str, body: MdmComposeIn, db: Session = Depends(get_session),
+                   principal: Principal = Depends(get_principal)):
+    """構成ソースの値から Survivorship で Golden Record を生成して返す。
+
+    値はこの応答で返すだけで、永続化するのは属性ごとの由来・内容ハッシュ・版だけ。Data Plane が値を保存する。
+    """
+    entity = _entity(entity_type)
+    # 属性値の指定 (steward_override) は実行ではなく裁定なので、対象資産の Steward / Owner が行う
+    action = "mdm.review.decide" if body.overrides else "mdm.compose"
+    load_asset(db, principal, _master_asset(db, entity).id, action)
+    golden = _golden(db, entity, golden_id)
+    records = [_record(entity, r) for r in body.records]
+    result = _guarded(mdm.compose, db, entity, golden, records, principal.audit_actor, body.overrides)
+    audit.record(db, principal.audit_actor, "mdm.compose", "golden", golden.id, {
+        "version": result["version"], "content_hash": result["content_hash"], "reason": result["reason"],
+        "changed": result["changed"], "source_count": len(records)})
+    return result

@@ -414,3 +414,39 @@ class ErasureRequestOut(ORM):
 class ErasureRequestDetail(ErasureRequestOut):
     tasks: list[ErasureTaskOut] = Field(default_factory=list)
     hidden_task_count: int = Field(default=0, description="閲覧権限が無く表示していないタスク数 (ABAC)")
+
+
+# ---------- MDM ----------
+class MdmSourceRecord(BaseModel):
+    """ソースレコード。値は評価に使うだけで保持しない (§18.2)。"""
+    source_system: str = Field(min_length=1, max_length=100)
+    key: SecretStr = Field(min_length=1, max_length=512, description="ソース側のキー (HMAC に変換して破棄)")
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime | None = None
+
+
+class MdmCandidate(BaseModel):
+    golden_id: str
+    attributes: dict[str, Any] = Field(default_factory=dict, description="MDM Hub が保持する現在の値 (評価後に破棄)")
+
+
+class MdmMatchIn(BaseModel):
+    record: MdmSourceRecord
+    candidates: list[MdmCandidate] = Field(default_factory=list, max_length=500,
+                                           description="比較対象の Golden Record。絞り込みは MDM Hub の責務")
+
+
+class MdmMatchOut(BaseModel):
+    decision: Literal["new", "linked", "review"]
+    golden_id: str | None
+    source_ref: str
+    stage: str
+    score: float | None
+    recompose_required: bool
+    review_ids: list[str] = Field(default_factory=list)
+    candidates: list[dict[str, Any]] = Field(default_factory=list, description="比較結果 (値は含まない)")
+
+
+class MdmComposeIn(BaseModel):
+    records: list[MdmSourceRecord] = Field(min_length=1, max_length=1000)
+    overrides: dict[str, str] = Field(default_factory=dict, description="属性 → source_system。指定には裁定の権限が必要")
