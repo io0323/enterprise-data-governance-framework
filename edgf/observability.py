@@ -114,10 +114,12 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
-            self.log.info("request completed", extra={"fields": {
-                "method": scope.get("method"), "path": scope.get("path"), "status": status,
-                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
-            }})
+            fields = {"method": scope.get("method"), "path": scope.get("path"), "status": status,
+                      "duration_ms": round((time.perf_counter() - started) * 1000, 2)}
+            actor = scope.get("state", {}).get("actor")  # edgf.deps.get_principal が設定
+            if actor:
+                fields["actor"] = actor
+            self.log.info("request completed", extra={"fields": fields})
             request_id_var.reset(token)
 
 

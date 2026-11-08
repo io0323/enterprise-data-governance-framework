@@ -14,6 +14,16 @@ services:
     build: .
     environment:
       EDGF_DATABASE_URL: postgresql+psycopg://edgf:${EDGF_DB_PASSWORD:-edgf-local-only}@db:5432/edgf
+      # 認証の既定は jwt (OIDC)。未設定なら API は起動時に停止する (fail fast)。
+      # ローカル開発: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+      EDGF_ENV: ${EDGF_ENV:-production}
+      EDGF_AUTH_MODE: jwt
+      EDGF_OIDC_ISSUER: ${EDGF_OIDC_ISSUER:-}
+      EDGF_OIDC_AUDIENCE: ${EDGF_OIDC_AUDIENCE:-}
+      EDGF_OIDC_JWKS_URL: ${EDGF_OIDC_JWKS_URL:-}
+      EDGF_CLAIM_SUBJECT: ${EDGF_CLAIM_SUBJECT:-sub}
+      EDGF_CLAIM_ROLES: ${EDGF_CLAIM_ROLES:-roles}
+      EDGF_ROLE_MAP: ${EDGF_ROLE_MAP:-}
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}

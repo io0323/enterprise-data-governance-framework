@@ -54,4 +54,5 @@ def test_ownership_change_audited(client, sales_asset):
     r = client.put(f"{API}/assets/{aid}/ownership", headers=H("committee"), json={"owner": "owner2"})
     assert r.json()["owner"] == "owner2" and r.json()["steward"] == "steward1"
     ev = client.get(f"{API}/audit/events", params={"action": "asset.ownership_change"}).json()[0]
-    assert ev["payload"]["before"]["owner"] == "owner1" and ev["actor"] == "committee"
+    # dev モードの操作は JWT 由来と区別するため "dev:" 接頭辞で記録される (Phase 7)
+    assert ev["payload"]["before"]["owner"] == "owner1" and ev["actor"] == "dev:committee"

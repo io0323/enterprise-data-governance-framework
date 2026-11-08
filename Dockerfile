@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# 既定は本番相当: OIDC の JWT 検証。dev モードは docker-compose.dev.yml でのみ有効化する
+ENV EDGF_ENV=production EDGF_AUTH_MODE=jwt
 COPY pyproject.toml alembic.ini ./
 COPY edgf ./edgf
 COPY policies ./policies

@@ -12,6 +12,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_list(name: str, default: str = "") -> tuple[str, ...]:
+    return tuple(x.strip() for x in os.getenv(name, default).split(",") if x.strip())
+
+
+def _env_pairs(name: str) -> tuple[tuple[str, str], ...]:
+    pairs = []
+    for item in _env_list(name):
+        k, sep, v = item.partition("=")
+        if sep and k.strip() and v.strip():
+            pairs.append((k.strip(), v.strip()))
+    return tuple(pairs)
+
+
 @dataclass(frozen=True)
 class Settings:
     # SQLite by default; set postgresql+psycopg://... for production (Cloud Agnostic).
@@ -28,6 +41,25 @@ class Settings:
     service_name: str = field(default_factory=lambda: os.getenv("OTEL_SERVICE_NAME", "edgf"))
     # §19 Maintainability: 起動時に alembic upgrade head を実行する (開発用。本番はデプロイ手順で明示実行)
     auto_migrate: bool = field(default_factory=lambda: _env_bool("EDGF_AUTO_MIGRATE"))
+
+    # §4 / §11 認証 (edgf/auth.py)。jwt = OIDC JWT 検証 (既定) / dev = X-Actor ヘッダ (移行期間・開発専用)
+    env: str = field(default_factory=lambda: os.getenv("EDGF_ENV", "development").strip().lower())
+    auth_mode: str = field(default_factory=lambda: os.getenv("EDGF_AUTH_MODE", "jwt").strip().lower())
+    oidc_issuer: str = field(default_factory=lambda: os.getenv("EDGF_OIDC_ISSUER", ""))
+    oidc_audience: str = field(default_factory=lambda: os.getenv("EDGF_OIDC_AUDIENCE", ""))
+    oidc_jwks_url: str = field(default_factory=lambda: os.getenv("EDGF_OIDC_JWKS_URL", ""))
+    oidc_algorithms: tuple[str, ...] = field(default_factory=lambda: _env_list("EDGF_OIDC_ALGORITHMS", "RS256"))
+    jwt_leeway_seconds: int = field(default_factory=lambda: int(os.getenv("EDGF_JWT_LEEWAY_SECONDS", "30")))
+    jwks_cache_seconds: int = field(default_factory=lambda: int(os.getenv("EDGF_JWKS_CACHE_SECONDS", "300")))
+    jwks_refresh_cooldown_seconds: float = field(
+        default_factory=lambda: float(os.getenv("EDGF_JWKS_REFRESH_COOLDOWN_SECONDS", "30")))
+    # IdP 製品に依存しないよう claim 名は設定で対応付ける (ドット区切りでネスト指定可: realm_access.roles)
+    claim_subject: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_SUBJECT", "sub"))
+    claim_roles: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_ROLES", "roles"))
+    claim_clearance: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_CLEARANCE", "clearance"))
+    claim_domains: str = field(default_factory=lambda: os.getenv("EDGF_CLAIM_DOMAINS", "domains"))
+    # IdP 側のロール/グループ名 → edgf ロール (例: "dg-committee=committee,dg-admins=admin")
+    role_map: tuple[tuple[str, str], ...] = field(default_factory=lambda: _env_pairs("EDGF_ROLE_MAP"))
 
 
 settings = Settings()

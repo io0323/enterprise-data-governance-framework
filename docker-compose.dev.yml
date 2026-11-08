@@ -1,0 +1,9 @@
+# 開発専用 override (dev モード = X-Actor ヘッダ認証)。本番では絶対に使用しないこと。
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#   ./scripts/demo.sh
+# EDGF_ENV=production と組み合わせると API は起動を拒否する (edgf/auth.py)。
+services:
+  api:
+    environment:
+      EDGF_ENV: development
+      EDGF_AUTH_MODE: dev
