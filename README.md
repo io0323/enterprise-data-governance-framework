@@ -22,6 +22,7 @@
 | §12 / §10 | PII Inventory(カラム単位)・Consent Registry・Right to Erasure ワークフロー・匿名化/仮名化の管理(PRV-003〜005) | `/privacy/...` |
 | §8 | Golden Record(値は持たず、xref・由来・版の情報のみ)、2 段階のマッチング、Survivorship、裁定キュー、as-of、Reference Data の版管理 | `/mdm/...`, `/reference-data/...` |
 | §14 | AI 資産(Dataset / Model Card、版の情報)、学習利用の承認、AI Lineage、統制属性の継承、RAG の判定、消去の伝播と是正、インシデント | `/ai/...` |
+| §15 | Data Product、Output Port、Data Contract(互換性の判定、メジャー版の更新)、利用登録、CDM の取り込みと準拠の検証、出荷基準(DATSIS)、ODCS の取り込みと書き出し | `/mesh/...` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
 ## 起動
@@ -62,6 +63,7 @@ docker compose up --build             # 既定: jwt モード (EDGF_OIDC_* が�
 | `EDGF_MDM_REVIEW_SLA_DAYS` | `7` | MDM の裁定キューの対応期限(日) |
 | `EDGF_MIN_K_ANONYMITY` | `5` | `anonymized` と宣言するために必要な k-匿名性の下限(PRV-003)。継承の解除の基準にもなる |
 | `EDGF_AI_REMEDIATION_SLA_DAYS` | `30` | ModelRemediation の判断と実施の期限(日) |
+| `EDGF_CONTRACT_DEPRECATION_DAYS` | `90` | 新しいメジャー版の公開後、旧版を併存させる期間(日) |
 
 ### スキーマ変更(Alembic)
 
@@ -238,6 +240,7 @@ normalized_value = NFKC 正規化 + 前後の空白除去(identifier_type が em
 |---|---|
 | `GET /inventory`, `GET /inventory/summary` | PII 資産・カラムの一覧と、カテゴリ・目的・法的根拠ごとの集計(ABAC + ドメイン範囲) |
 | `POST /purposes`, `GET /purposes[/{id}]`, `PATCH /purposes/{id}` | Purpose カタログ(目的 ID、説明、既定の法的根拠、保持期間、所属ドメイン) |
+| `POST /purposes/{id}/withdraw` | 目的そのものの撤回(理由必須)。新しい同意と利用登録を止め、その目的の利用登録を suspended にする。主体ごとの同意の撤回とは別です |
 | `POST /consents` | 同意の取得・撤回の記録(追記のみ)。撤回時は、同意に基づいて処理している資産の Owner に Issue を起票(資産 × 目的で重複なし) |
 | `POST /consents/check` | 目的内利用の判定。法的根拠が consent 以外の目的は同意不要として理由を返す |
 | `GET /consents?subject_ref=...` | 同意の履歴(`subject_ref` は必須) |
@@ -247,7 +250,7 @@ normalized_value = NFKC 正規化 + 前後の空白除去(identifier_type が em
 | `POST /erasure-requests/escalate-overdue` | 期限超過の Issue 起票とエスカレーション(定期実行する想定) |
 | `GET /erasure-tasks?status=pending`, `POST /erasure-tasks/{id}/ack`, `.../complete` | Data Plane 向けの pull 型タスク。応答は対象資産の Custodian のみ |
 
-カラムの PII メタデータは `DataAsset.schema` の各要素で指定します(`pii_category`, `identifier_type`, `processing_purposes`, `legal_basis`, `privacy_technique`, `privacy_params`)。すべて任意で、既存の `pii` フラグと互換です。
+カラムの `nullable` は任意で、指定すると Data Contract とのずれの検出に使います。カラムの PII メタデータは `DataAsset.schema` の各要素で指定します(`pii_category`, `identifier_type`, `processing_purposes`, `legal_basis`, `privacy_technique`, `privacy_params`)。すべて任意で、既存の `pii` フラグと互換です。
 
 ### Right to Erasure の状態遷移
 
@@ -507,11 +510,178 @@ stateDiagram-v2
 
 KPI(`/kpi`)に `ai_training_approved_rate`(superseded を除く版のうち approved の比率)、`ai_remediation_pending_count`(期限切れの accept を含む)、`ai_card_complete_rate`、`ai_inheritance_violation_count`、`ai_asset_count` を追加しました。成熟度の判定(§20)には使いません。
 
+## Data Mesh 連携(§15)
+
+### 役割分担
+
+Mesh が実行し、Governance が統制します(§15.1)。
+
+| 対象 | 担当 | 内容 |
+|---|---|---|
+| 配信基盤、ストレージ、セルフサービス基盤、パイプラインの実行 | **Data Mesh / Data Plane** | 本リポジトリでは実装しない |
+| Data Product、Output Port | Control Plane | 統治のための定義だけ。Output Port は Catalog 資産への参照(1 対 1)とアドレス URI を持つ |
+| Data Contract | Control Plane | スキーマ、品質と鮮度の SLA、機密度、利用条件の版。値やサンプルは持たない |
+| 利用登録 | Control Plane | 誰がどの目的で使っているかの記録。**閲覧権限は与えない**(ABAC と AccessGrant はこれまで通り) |
+| CDM の定義 | 外部で定義、Control Plane は写しだけ | JSON Schema の一部として版を取り込み、準拠を検証する。作成・編集・設計の機能は持たない |
+| Global / Domain Policy | Control Plane | 出荷基準(DATSIS)。Domain Policy は基準を追加できるが緩められない |
+
+Product の `owner` は単一で、そのドメインの Data Owner(ドメインの Owner、またはそのドメインの資産の Owner)である必要があります。Output Port の資産は Product と同じドメインに属します。提供形態は `table` / `api` / `stream` / `file` です。
+
+### Contract のライフサイクル
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: 版の作成 / ODCS の取り込み
+    draft --> published: 公開(Product の Owner)
+    note right of draft
+        足りない版の上げ方は 409
+        CDM に準拠しなければ 409
+    end note
+    published --> deprecated: 新しいメジャー版の公開
+    deprecated --> retired: 期間の満了 かつ 有効な利用登録なし
+    retired --> [*]
+```
+
+公開した版は変更できません。同じメジャー版の中では新しい版が古い版を置き換え、古い版は `published` のまま履歴として残ります。
+
+### メジャー版の更新
+
+```mermaid
+sequenceDiagram
+    participant CI as Data Plane の CI
+    participant CP as Control Plane
+    participant PO as Product の Owner
+    participant Sub as 利用者と下流の Owner
+    participant Com as Committee
+
+    CI->>CP: POST /mesh/contracts/{id}/check (案)
+    CP-->>CI: 破壊的な変更、必要な版の上げ方、影響する下流と利用者
+    PO->>CP: POST /mesh/contract-versions/{id}/publish (2.0.0)
+    Note over CP: 旧版を deprecated にし、満了日時を設定する
+    CP->>Sub: Issue で通知、利用条件から外れた登録は suspended
+    Sub->>CP: POST /mesh/subscriptions/{id}/migrate
+    opt 期間を短縮する場合
+        Com->>CP: POST .../majors/1/expedite-retire (理由必須)
+    end
+    PO->>CP: POST .../majors/1/retire
+    Note over CP: 期間中、または有効な利用登録が残っていれば 409
+```
+
+Committee が短縮できるのは期間だけです。有効な利用登録(`pending` / `active`)が残っていれば、短縮しても retire できません。
+
+### 互換性の判定表
+
+利用者から見た判定です。定義は [mesh_compat.py](edgf/services/mesh_compat.py) の `COMPAT_RULES` と `TYPE_WIDENING` にあります。足りない版の上げ方で公開しようとすると 409(`contract-version-bump-required`)になり、拒否の証跡を監査に残します。
+
+| 変更 | コード | 必要な版の上げ方 |
+|---|---|---|
+| カラムの削除 | `column_removed` | major |
+| カラムの名前の変更(`renamed_from` で明示。削除と追加が 1 件ずつで型が同じ場合も該当) | `column_renamed` | major |
+| 非 null のカラムの追加 | `column_added_required` | major |
+| 互換性の無い型の変更 | `type_incompatible` | major |
+| 非 null の保証の撤回(非 null → nullable) | `nullable_relaxed` | major |
+| 機密度の引き上げ | `sensitivity_raised` | major |
+| PII の追加 | `pii_added` | major |
+| 品質 SLA の引き下げ(最低スコア、ルールの削除) | `quality_sla_lowered` | major |
+| 鮮度 SLA の引き下げ | `freshness_sla_lowered` | major |
+| 利用条件の縮小 | `usage_narrowed` | major |
+| 準拠する CDM の変更または削除 | `conforms_to_changed` | major |
+| nullable なカラムの追加 | `column_added_nullable` | minor |
+| 型の拡大 | `type_widened` | minor |
+| 非 null の保証の追加 | `nullable_tightened` | minor |
+| 機密度の引き下げ | `sensitivity_lowered` | minor |
+| PII の削除 | `pii_removed` | minor |
+| 品質 SLA の引き上げ | `quality_sla_raised` | minor |
+| 鮮度 SLA の引き上げ | `freshness_sla_raised` | minor |
+| 利用条件の拡大 | `usage_widened` | minor |
+| 準拠する CDM の宣言の追加 | `conforms_to_added` | minor |
+| ID や Reference Data の参照の変更 | `column_reference_changed` | minor |
+| 説明の変更 | `description_changed` | patch |
+
+型の拡大は `tinyint → smallint → int → bigint → decimal`、`int → double`、`float → double`、`date → timestamp`、`char → varchar → string` と、長さや精度の拡大(`varchar(10) → varchar(20)`)です。`bigint → double` は桁落ちするので含めません。
+
+### スキーマのずれ
+
+Catalog の `schema` や機密度を更新すると、最新の公開版と比較します。ずれていても**更新は拒否せず**、Product の Owner 宛ての Issue(`mesh-drift:<contract_id>`)を起票します。説明の違いはずれに含めません。Catalog 側で `nullable` を宣言していないカラムは、nullable を比較しません。
+
+### 利用登録
+
+- `POST /mesh/subscriptions` は認証済みの全員が使えます。実効機密度か Contract の機密度が confidential 以上なら Product の Owner の承認が必要で、それ以外はすぐに `active` になります。自分の申請は決裁できません(職務分離)。
+- 目的は Contract の利用条件に含まれている必要があります(利用条件が空なら、有効な Purpose なら何でも可)。
+- `suspended` になるのは、目的そのものの撤回(`POST /privacy/purposes/{id}/withdraw`)と、新しいメジャー版の利用条件から目的が外れたときです。**主体ごとの同意の撤回では止めません**(1 人の撤回で全利用者を止めないため)。`migrate` で別の目的か版に付け替えると再開できます。
+- 付け替えで機密度が上がる場合は、承認を取り直します。
+- 利用者宛ての Issue は資産に紐付けません。閲覧権限が無い資産に紐付けると、本人が Issue を読めないためです。タイトルには Product の名前だけを含めます。
+
+### CDM の取り込みと準拠の検証
+
+`POST /mesh/cdm/imports`(Committee / admin)で、`data_class=metadata` の Catalog 資産に対応付けて版を取り込みます。取り込んだ版は変更できません。
+
+- **対応する JSON Schema**: `type: object`、`properties`(属性ごとの `type` と `format`。`type` は 1 つの型か、それと `null` の組)、`required`。`$ref` や `allOf` など検証の意味を変えるキーワードは 422 で拒否し、`maxLength` などの制約は警告を返して無視します。
+- **検証**: 対応付け(`cdm_mappings`: CDM の属性 → カラム)が正しいか、必須の属性があるか、null を許さない必須の属性のカラムが nullable でないか、型に互換性があるか。不合格なら公開を 409(`contract-not-conforming`)で拒否します。
+- **新しい版の取り込み**: そのエンティティに準拠している Contract の最新の公開版を再検証して結果を返し、不合格の Contract の Owner に Issue を起票します。Contract は宣言した版に準拠したままなので、状態は変えません。
+
+### 出荷基準(DATSIS)
+
+`target: product` のポリシーで判定します。すべて合格しないと Product を `published` にできません(409 `product-publish-blocked`)。判定は `GET /mesh/products/{id}/datsis` で確認できます。
+
+| ポリシー | 基準 | 内容 |
+|---|---|---|
+| MESH-001 | Discoverable | Output Port があり、資産が Catalog に登録済みで同じドメインにある。説明と Glossary の用語がある |
+| MESH-002 | Addressable | すべての Output Port にアドレス URI がある |
+| MESH-003 | Trustworthy | Contract が公開済みで deprecated でない。品質 SLA が宣言されて満たされている。資産が Certified である |
+| MESH-004 | Self-describing | Contract の全カラムと Product に説明があり、Owner がいる |
+| MESH-005 | Interoperable | `conforms_to` があれば準拠している。カラム名が命名の標準(`column_name_pattern`)に沿う。`identifier_type` が Catalog と一致する。`reference_set` が公開済みの Reference Data を指す |
+| MESH-006 | Secure | Output Port の資産が重大度 high / critical のポリシーに違反していない |
+
+Domain Policy は `target: product` で基準を追加できます(`required_fields` / `field_in`)。同じ ID での上書きはロード時に拒否し、MESH-001〜006 が定義から消えていても公開させません(fail-close)。ポリシー例外は Product の判定には適用しません。
+
+### ODCS の対応表
+
+Contract は [ODCS](https://bitol-io.github.io/open-data-contract-standard/latest/fundamentals) v3 の主要部分で取り込み(`POST /mesh/contracts/import?output_port_id=`、本文は YAML)、書き出します(`GET /mesh/contracts/{id}/export?format=odcs`)。取り込んだ版は常に下書きで、公開には Product の Owner の承認が必要です。書き出しの `apiVersion` は `v3.1.0` です。
+
+| ODCS | 内部のモデル | 備考 |
+|---|---|---|
+| `apiVersion`, `kind` | (検証のみ) | v3 系の `DataContract` だけを受け付ける |
+| `id`, `name` | Contract の `external_id`, `name` | 書き出しの `id` は `external_id`。無ければ Contract の ID |
+| `version` | 版 | セマンティックバージョンのみ |
+| `status` | 書き出しのみ | `draft` / `active` / `deprecated` / `retired`。取り込みでは無視して警告 |
+| `domain`, `dataProduct` | Product | Output Port の Product の値を使う。異なれば警告。`dataProduct` は v3.1.0 で非推奨ですが、対応付けのために書き出します |
+| `description.purpose` | 説明 | |
+| `schema[0].name`, `.properties[]` | Contract のスキーマ | Output Port と Contract は 1 対 1 なので 2 つ目以降は警告 |
+| `properties[].name`, `.description` | カラム | |
+| `properties[].physicalType`, `.logicalType` | `type` | 取り込みは `physicalType` を優先。`logicalType` は書き出し時に導出 |
+| `properties[].required` | `nullable` の否定 | |
+| `properties[].classification` | `pii` または機密度 | `pii` は PII。機密度の値は Contract の機密度に集約して警告 |
+| `properties[].customProperties` の `pii`, `edgf.identifier_type`, `edgf.reference_set` | カラムの属性 | ODCS に PII 専用の項目が無いため |
+| `schema[0].quality[].id` | 品質 SLA の `rule_ids` | 既存の品質ルールへの参照だけ |
+| `slaProperties[]` の `latency`(`ly`, `freshness`) | 鮮度 SLA | 単位は時間か日。書き出しは時間 |
+| `authoritativeDefinitions[]` の `type: cdm` | `conforms_to` | `url` は `urn:edgf:cdm:<entity>@<version>` |
+| `customProperties` の `edgf.sensitivity`, `edgf.purposes`, `edgf.quality_min_score`, `edgf.cdm_mappings` | 機密度、利用条件、最低スコア、CDM の対応付け | ODCS に対応する項目が無いため |
+
+**対応しないフィールド**(保存せず、項目名だけを `warnings` で返します): `servers`, `team`, `roles`, `support`, `price`, `tenant`, `tags`, `description.usage`, `description.limitations`, `schema[].description` ほかオブジェクトの属性、`properties[]` の `examples`, `primaryKey`, `unique`, `partitioned`, `quality` など、`availability` など鮮度以外の `slaProperties`、`type: cdm` 以外の `authoritativeDefinitions`、`edgf.*` 以外の `customProperties`。`examples` などにデータの値が含まれうるので、警告にも値は含めません。
+
+### API(`/api/v1/mesh`)
+
+| API | 内容 |
+|---|---|
+| `POST/GET /products`, `GET/PATCH /products/{id}` | Data Product |
+| `GET /products/{id}/datsis`, `POST .../publish` / `deprecate` / `retire` | 出荷基準の判定と状態遷移。retire は有効な利用登録が残っていれば 409 |
+| `POST /products/{id}/ports`, `GET/PATCH /ports/{id}` | Output Port。閲覧できない資産のポートは名前だけを返す |
+| `POST/GET /contracts`, `GET /contracts/{id}` | Data Contract(Output Port ごとに 1 つ) |
+| `POST/GET /contracts/{id}/versions`, `GET/PUT /contract-versions/{id}`, `POST .../publish` | 版。変更できるのは下書きだけ |
+| `POST /contracts/{id}/check` | Data Plane の CI からデプロイ前に呼ぶ判定(ステートレス。監査には記録しない)。変更の一覧、必要な版の上げ方、品質 SLA と CDM の検証結果、`impact`(`/lineage/{name}/impact` と同じ)、`subscribers` を返す |
+| `POST /contracts/{id}/majors/{major}/retire`, `.../expedite-retire` | 旧版の retire と期間の短縮 |
+| `POST /contracts/import`, `GET /contracts/{id}/export` | ODCS |
+| `POST/GET /subscriptions`, `GET /subscriptions/{id}`, `POST .../decision` / `migrate` / `cancel` | 利用登録 |
+| `POST /cdm/imports`, `GET /cdm/entities[/{name}]`, `.../versions[/{version}]` | CDM(読み取りは ABAC) |
+
+KPI(`/kpi`、ドメイン別は `/kpi/domains`)に `mesh_product_published_count`、`mesh_datsis_pass_rate`、`mesh_breaking_rejected_count`、`mesh_subscription_active_count`、`mesh_schema_drift_issue_count` を追加しました。成熟度の判定(§20)には使いません。
+
 ## API の共通仕様
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
   `{"type": "urn:edgf:problem:<slug>", "title", "status", "detail", "instance", "request_id", ...}`。
-  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `invalid-value`, `database-unavailable`, `audit-chain-contention`, `mdm-asset-missing`, `training-prerequisites-failed`(拡張 `blockers`), `model-approval-blocked`(拡張 `blockers`), `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
+  クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `invalid-value`, `database-unavailable`, `audit-chain-contention`, `mdm-asset-missing`, `training-prerequisites-failed`(拡張 `blockers`), `contract-version-bump-required`(拡張 `required_bump`, `actual_bump`, `changes`), `contract-not-conforming`(拡張 `violations`), `contract-retire-blocked`(拡張 `blockers`), `product-publish-blocked`(拡張 `blockers`), `model-approval-blocked`(拡張 `blockers`), `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
 - **ページネーション**: 一覧 API はすべて `limit`(1〜1000、既定 100。品質実行履歴のみ既定 20)と `offset` を受け付けます。後方互換のため本文は配列のままで、総件数は `X-Total-Count`、前後ページは `Link`(`rel="next"`/`"prev"`)ヘッダで返します。
 - **request_id**: `X-Request-ID` を受け取れば引き継ぎ(英数字と `._:-`、128 文字以内)、なければ採番してレスポンスヘッダとすべてのログ行に付けます。監査イベントにも記録し、ハッシュの対象に含めます(`GET /audit/events?request_id=...` で突き合わせできます)。
 - **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
@@ -531,7 +701,7 @@ KPI(`/kpi`)に `ai_training_approved_rate`(superseded を除く版のうち appr
 | `alembic` | 必須 | SQLAlchemy 公式のマイグレーションツール(MIT)。§19 Integrity/Maintainability のスキーマ版管理のため |
 | `opentelemetry-sdk` / `-exporter-otlp-proto-http` / `-instrumentation-fastapi` | 任意(`otel`) | ベンダー中立のトレーシング標準(Apache-2.0)。§19 Observability。送信先は OTLP なので特定の製品に依存しない |
 | `PyJWT[crypto]` | 必須 | JWT の検証と JWKS の取得・キャッシュ(MIT。暗号処理は `cryptography`)。依存が少なく、JWKS のキャッシュと未知の `kid` での再取得(鍵ローテーション)を標準で備え、特定の IdP SDK を使わずに OIDC 準拠の検証ができるため |
-| (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています。Phase 10 でも依存は追加していません |
+| (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています。Phase 10 と Phase 11 でも依存は追加していません(ODCS の YAML は既存の `pyyaml` で処理します) |
 | `pytest-cov` | 開発 | カバレッジ計測(services/ 95% 以上を CI で検査) |
 
 ## 既知の制約と次フェーズ
@@ -563,6 +733,14 @@ KPI(`/kpi`)に `ai_training_approved_rate`(superseded を除く版のうち appr
   - インメモリの SQLite は 1 接続を共有するので、並行書き込みのテストは PostgreSQL でだけ実行します
 - デッドロック(リクエスト内で行ロックと監査チェーンの先頭を逆順で取り合う場合)は再試行せず、片方を 503(`database-unavailable`)で失敗させます。クライアントの再試行で回復します
 - 同時実行で重複を防ぐ一意制約が無い検査があります。`POST /privacy/erasure-requests` の「同じ主体の未完了の要求」は、同時に受け付けると 2 件できる場合があります(業務上は重複して処理しても結果は同じです)
+- **Data Mesh の実行基盤はありません**。アドレス URI の到達性、Data Plane が実際に Contract を守っているかは検証しません。Contract と Catalog の比較、品質検査の結果との照合までです
+- スキーマのずれの Issue は、ずれが解消しても自動では閉じません。担当者が閉じてください。同じ Contract で未解決の Issue があれば重複して起票しません
+- 判定表のうち名前の変更の推定は、削除と追加が 1 件ずつで型が同じ場合だけです。それ以外は `renamed_from` で明示してください(明示が無くても削除と追加で破壊的と判定されるので、見逃しにはなりません)。`array<int>` のような複合型は表記が同じ場合だけ互換とみなします
+- 判定は型と制約の宣言だけを見ます。値の意味の変更(単位の変更など)は検出できません
+- 公開後に Output Port の資産を別のドメインへ移しても拒否しません(Catalog の更新は止めません)。MESH-001 が不合格になり、次の判定で分かります。公開済みの Product を自動で非公開にはしません。DATSIS の結果は `/kpi` と `GET /mesh/products/{id}/datsis` で確認してください
+- Product の Owner が自分で利用登録すると、自分では承認できないので `pending` のままです。Owner は自分の Product の利用登録を必要としない想定です
+- `POST /mesh/contracts/{id}/check` は呼び出しごとに Lineage を辿ります。性能は Phase 14 の負荷試験で確認します
+- 拒否した破壊的変更の件数は監査ログから集計するので、KPI の計算は監査ログの件数に比例します
 - **MDM Hub の参照実装はありません**。候補の絞り込み、値の保存と履歴、再構成の実行、利用システムへの配信(§8 Synchronization、逆流更新の変更申請を含む)は Data Plane の責務で、本リポジトリには含みません
 - Golden Record どうしのマージ(ソースを経由しない統合)は未実装です。裁定と自動マージはソース単位です
 - 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください

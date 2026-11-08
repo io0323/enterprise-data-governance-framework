@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -382,3 +383,10 @@ def test_concurrent_publish_cannot_skip_compatibility_check(ctx):
     rows = [v for v in client.get(f"{MESH}/contracts/{c['id']}/versions", headers=ADMIN).json() if v["status"] == "published"]
     assert 200 in codes and set(codes) <= {200, 409}
     assert len(rows) == 1 + codes.count(200)
+
+
+def test_readme_lists_every_compatibility_rule():
+    """判定表と README の食い違いを検出する。"""
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    for code, (bump, _) in COMPAT_RULES.items():
+        assert f"`{code}` | {bump.name.lower()} |" in readme, code
