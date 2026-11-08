@@ -242,7 +242,7 @@ def scope_erasure_request(request_id: str, db: Session = Depends(get_session), p
     audit.record(db, principal.audit_actor, "erasure.scope", "erasure", req.id, {
         "assets": [t.qualified_name for t in tasks],
         "withheld": [t.qualified_name for t in tasks if t.status == "withheld"],
-        "unregistered_downstream": req.unregistered_downstream})
+        "unregistered_downstream": req.unregistered_downstream, "ai_impact": req.ai_impact})
     return _detail(db, principal, req)
 
 
@@ -277,8 +277,10 @@ def dispatch_erasure_request(request_id: str, db: Session = Depends(get_session)
     """削除指示を発行する。発行後のタスクは Data Plane から GET /privacy/erasure-tasks で取得できる。"""
     req = _get_request(db, request_id)
     authz.require(db, principal, "privacy.erasure.request", entity_type="erasure", entity_id=req.id)
-    _state_guard(erasure.dispatch, db, req)
-    audit.record(db, principal.audit_actor, "erasure.dispatch", "erasure", req.id, {"status": req.status})
+    _state_guard(erasure.dispatch, db, req, principal.audit_actor)
+    audit.record(db, principal.audit_actor, "erasure.dispatch", "erasure", req.id, {
+        "status": req.status, "dataset_version_ids": req.ai_impact.get("dataset_version_ids", []),
+        "model_version_ids": req.ai_impact.get("model_version_ids", [])})
     return _detail(db, principal, req)
 
 

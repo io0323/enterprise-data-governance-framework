@@ -248,6 +248,8 @@ class ErasureRequest(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text)
     unregistered_downstream: Mapped[list] = mapped_column(JSON, default=list)
     warnings: Mapped[list] = mapped_column(JSON, default=list)
+    # §14 消去の影響を受ける AI 資産 (起点の資産名と、Dataset Version / Model Version の ID。主体の情報は含まない)
+    ai_impact: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class ErasureTask(Base):
@@ -262,6 +264,8 @@ class ErasureTask(Base):
     depth: Mapped[int] = mapped_column(Integer, default=0)
     columns: Mapped[list] = mapped_column(JSON, default=list)
     golden_ids: Mapped[list] = mapped_column(JSON, default=list)  # MDM Hub 向け: 消去する Golden Record
+    ai_kind: Mapped[str | None] = mapped_column(String(20))  # §14 AI 資産のタスクの種別
+    dataset_version_ids: Mapped[list] = mapped_column(JSON, default=list)  # 学習データの該当版
     status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
     withheld_reason: Mapped[str | None] = mapped_column(Text)
     approved_by: Mapped[str | None] = mapped_column(String(200))
@@ -542,6 +546,44 @@ class TrainingApprovalDecision(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     comment: Mapped[str] = mapped_column(Text, default="")
     approval: Mapped[TrainingApproval] = relationship(back_populates="decisions")
+
+
+class ModelRemediation(Base):
+    """§12 / §14 消去の影響を受けたモデル版の是正。モデルの重みは自動では変えず、Committee が判断する。"""
+    __tablename__ = "model_remediations"
+    __table_args__ = (UniqueConstraint("model_version_id", "erasure_request_id", name="uq_model_remediation"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    model_version_id: Mapped[str] = mapped_column(ForeignKey("model_versions.id"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    erasure_request_id: Mapped[str] = mapped_column(ForeignKey("erasure_requests.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    accept_until: Mapped[datetime | None] = mapped_column(DateTime)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_by: Mapped[str | None] = mapped_column(String(200))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    replacement_model_version_id: Mapped[str | None] = mapped_column(ForeignKey("model_versions.id"))
+    evidence_hash: Mapped[str | None] = mapped_column(String(64))  # Unlearning の証跡 (Data Plane が算出)
+
+
+class AiIncident(Base):
+    """§14 AI Lineage: データ汚染・リコール。起点は資産または Dataset Version。"""
+    __tablename__ = "ai_incidents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(20))
+    severity: Mapped[str] = mapped_column(String(10), default="high")
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    origin_asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    origin_dataset_version_id: Mapped[str | None] = mapped_column(ForeignKey("dataset_versions.id"))
+    affected_model_version_ids: Mapped[list] = mapped_column(JSON, default=list)
+    suspended_model_version_ids: Mapped[list] = mapped_column(JSON, default=list)
+    issue_ids: Mapped[list] = mapped_column(JSON, default=list)
+    reported_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AuditEvent(Base):

@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
-                        PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus)
+                        PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus,
+                        RemediationStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -386,6 +387,8 @@ class ErasureTaskOut(ORM):
     depth: int
     columns: list[str]
     golden_ids: list[str] = Field(default_factory=list, description="MDM Hub 向け: 消去する Golden Record")
+    ai_kind: AiKind | None = Field(default=None, description="§14 AI 資産のタスクの種別")
+    dataset_version_ids: list[str] = Field(default_factory=list, description="学習データの該当版")
     status: ErasureTaskStatus
     withheld_reason: str | None
     approved_by: str | None
@@ -425,6 +428,7 @@ class ErasureRequestOut(ORM):
     decision_reason: str | None
     unregistered_downstream: list[str]
     warnings: list[str]
+    ai_impact: dict[str, Any] = Field(default_factory=dict, description="§14 影響を受ける Dataset Version / Model Version")
 
 
 class ErasureRequestDetail(ErasureRequestOut):
@@ -766,3 +770,71 @@ class InheritanceOut(BaseModel):
     pii_from: list[str]
     released_by: list[str]
     unregistered_upstream: list[str]
+
+
+class RemediationDecisionIn(AiInput):
+    decision: Literal["retrain", "unlearn", "accept"]
+    reason: str = Field(default="", max_length=1000, description="accept のときは必須。個人情報を含めないこと")
+    accept_until: datetime | None = Field(default=None, description="accept のときは必須 (最大 365 日。恒久的な許容は不可)")
+
+    @model_validator(mode="after")
+    def _accept_rules(self) -> RemediationDecisionIn:
+        if self.decision == "accept" and (not self.reason.strip() or self.accept_until is None):
+            raise ValueError("accept には reason と accept_until が必要です")
+        if self.decision != "accept" and self.accept_until is not None:
+            raise ValueError("accept_until は accept のときだけ指定できます")
+        return self
+
+
+class RemediationCompleteIn(AiInput):
+    replacement_model_version_id: str | None = Field(default=None, max_length=36, description="retrain: 再学習した版")
+    evidence_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", description="unlearn: Data Plane が算出した証跡の SHA-256")
+
+
+class RemediationOut(ORM):
+    id: str
+    model_version_id: str
+    asset_id: str
+    erasure_request_id: str
+    status: RemediationStatus
+    reason: str
+    accept_until: datetime | None
+    due_at: datetime
+    created_at: datetime
+    decided_by: str | None
+    decided_at: datetime | None
+    completed_by: str | None
+    completed_at: datetime | None
+    replacement_model_version_id: str | None
+    evidence_hash: str | None
+
+
+class IncidentIn(AiInput):
+    kind: Literal["data_poisoning", "recall", "other"]
+    severity: Severity = Severity.HIGH
+    title: str = Field(min_length=1, max_length=200, description="個人情報やデータの値を含めないこと")
+    description: str = Field(default="", max_length=2000, description="個人情報やデータの値を含めないこと")
+    origin_asset_id: str | None = Field(default=None, max_length=36)
+    origin_dataset_version_id: str | None = Field(default=None, max_length=36)
+    suspend_model_version_ids: list[str] = Field(default_factory=list, max_length=100, description="停止するモデル版 (任意)")
+
+    @model_validator(mode="after")
+    def _one_origin(self) -> IncidentIn:
+        if bool(self.origin_asset_id) == bool(self.origin_dataset_version_id):
+            raise ValueError("origin_asset_id と origin_dataset_version_id のどちらか一方を指定してください")
+        return self
+
+
+class IncidentOut(ORM):
+    id: str
+    kind: str
+    severity: Severity
+    title: str
+    description: str
+    origin_asset_id: str
+    origin_dataset_version_id: str | None
+    affected_model_version_ids: list[str]
+    suspended_model_version_ids: list[str]
+    issue_ids: list[str]
+    reported_by: str
+    created_at: datetime

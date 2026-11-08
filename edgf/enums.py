@@ -167,6 +167,15 @@ class TrainingApprovalStatus(str, Enum):
     WITHDRAWN = "withdrawn"
 
 
+class RemediationStatus(str, Enum):
+    """§12 / §14 消去の影響を受けたモデル版の是正。許容には必ず期限がある"""
+    PENDING = "pending"      # Committee の判断待ち
+    RETRAIN = "retrain"      # 再学習を実施中
+    UNLEARN = "unlearn"      # Unlearning を実施中
+    ACCEPTED = "accepted"    # 期限付きで許容 (期限を過ぎると pending に戻る)
+    COMPLETED = "completed"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

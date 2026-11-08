@@ -12,12 +12,14 @@ from edgf import authz
 from edgf.auth import COMMITTEE, Principal
 from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
-from edgf.models import DataAsset, DatasetCard, DatasetVersion, ModelCard, ModelUsage, ModelVersion, TrainingApproval
+from edgf.models import (AiIncident, DataAsset, DatasetCard, DatasetVersion, ModelCard, ModelRemediation, ModelUsage,
+                         ModelVersion, TrainingApproval)
 from edgf.pagination import Page, page_params, paginate, paginate_list
-from edgf.schemas import (DatasetCardIn, InheritanceOut, DatasetCardOut, DatasetSourceOut, DatasetVersionIn, DatasetVersionOut, ModelCardIn,
+from edgf.schemas import (DatasetCardIn, IncidentIn, IncidentOut, InheritanceOut, RemediationCompleteIn, RemediationDecisionIn,
+                          RemediationOut, DatasetCardOut, DatasetSourceOut, DatasetVersionIn, DatasetVersionOut, ModelCardIn,
                           ModelCardOut, ModelSuspendIn, ModelUsageIn, ModelUsageOut, ModelVersionIn, ModelVersionOut, RagAuthorizeIn, TrainingApprovalIn, TrainingApprovalOut,
                           TrainingDecisionIn)
-from edgf.services import ai, ai_inherit, ai_lineage, ai_rag, ai_training, audit
+from edgf.services import ai, ai_inherit, ai_lineage, ai_rag, ai_remediation, ai_training, audit
 from edgf.services.ai import AiStateError, AiValidationError
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -358,3 +360,122 @@ def authorize_rag(body: RagAuthorizeIn, db: Session = Depends(get_session), prin
     return ai_rag.authorize(db, corpus, subject=body.user.subject, roles=body.user.roles,
                             clearance=body.user.clearance.value if body.user.clearance else None,
                             hit_asset_ids=body.hit_asset_ids)
+
+
+# ---------------- ModelRemediation (§12 / §14) ----------------
+def _load_remediation(db: Session, principal: Principal, remediation_id: str) -> ModelRemediation:
+    row = db.get(ModelRemediation, remediation_id)
+    if row is None:
+        raise HTTPException(404, f"model remediation not found: {remediation_id}")
+    load_asset(db, principal, row.asset_id)
+    return row
+
+
+@router.get("/remediations", response_model=list[RemediationOut])
+def list_remediations(request: Request, response: Response, status: str | None = None, asset_id: str | None = None,
+                      erasure_request_id: str | None = None, page: Page = Depends(page_params()),
+                      db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """閲覧できないモデルの分は件数を含めて除外する (ABAC)。"""
+    stmt = select(ModelRemediation).join(DataAsset, ModelRemediation.asset_id == DataAsset.id) \
+        .where(authz.readable_clause(principal)).order_by(ModelRemediation.due_at, ModelRemediation.id)
+    for column, value in ((ModelRemediation.status, status), (ModelRemediation.asset_id, asset_id),
+                          (ModelRemediation.erasure_request_id, erasure_request_id)):
+        if value is not None:
+            stmt = stmt.where(column == value)
+    return paginate(db, stmt, page, request, response)
+
+
+@router.post("/remediations/escalate-overdue")
+def escalate_overdue_remediations(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """期限超過を Issue 化する。accept の期限が切れたものは未決に戻す。スケジューラから定期実行する想定 (Phase 12)。"""
+    authz.require(db, principal, "ai.remediation.escalate", entity_type="model_remediation", entity_id="*")
+    result = ai_remediation.escalate_overdue(db, principal.audit_actor)
+    audit.record(db, principal.audit_actor, "ai.remediation.escalate_overdue", "model_remediation", "*", result)
+    return result
+
+
+@router.get("/remediations/{remediation_id}", response_model=RemediationOut)
+def get_remediation(remediation_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    return _load_remediation(db, principal, remediation_id)
+
+
+@router.post("/remediations/{remediation_id}/decision", response_model=RemediationOut)
+def decide_remediation(remediation_id: str, body: RemediationDecisionIn, db: Session = Depends(get_session),
+                       principal: Principal = Depends(get_principal)):
+    """Committee の判断。accept は理由と期限が必須で、期限は最大 365 日 (恒久的な許容は不可)。"""
+    row = db.get(ModelRemediation, remediation_id)
+    if row is None:
+        raise HTTPException(404, f"model remediation not found: {remediation_id}")
+    authz.require(db, principal, "ai.remediation.decide", entity_type="model_remediation", entity_id=row.id)
+    _guard(ai_remediation.decide, db, row, decision=body.decision, reason=body.reason, accept_until=body.accept_until,
+           actor=principal.subject)
+    audit.record(db, principal.audit_actor, "ai.remediation.decide", "model_remediation", row.id, {
+        "model_version_id": row.model_version_id, "erasure_request_id": row.erasure_request_id, "decision": body.decision,
+        "reason": row.reason, "accept_until": row.accept_until})
+    return row
+
+
+@router.post("/remediations/{remediation_id}/complete", response_model=RemediationOut)
+def complete_remediation(remediation_id: str, body: RemediationCompleteIn, db: Session = Depends(get_session),
+                         principal: Principal = Depends(get_principal)):
+    """再学習は置き換える版、Unlearning は Data Plane の証跡のハッシュを添えて完了を報告する。"""
+    row = db.get(ModelRemediation, remediation_id)
+    if row is None:
+        raise HTTPException(404, f"model remediation not found: {remediation_id}")
+    load_asset(db, principal, row.asset_id, "ai.remediation.complete")
+    _guard(ai_remediation.complete, db, row, replacement_id=body.replacement_model_version_id,
+           evidence_hash=body.evidence_hash, actor=principal.subject)
+    audit.record(db, principal.audit_actor, "ai.remediation.complete", "model_remediation", row.id, {
+        "model_version_id": row.model_version_id, "replacement_model_version_id": row.replacement_model_version_id,
+        "evidence_hash": row.evidence_hash})
+    return row
+
+
+# ---------------- インシデント (§14 AI Lineage: データ汚染・リコール) ----------------
+@router.post("/incidents", response_model=IncidentOut, status_code=201)
+def create_incident(body: IncidentIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """影響するモデル版を特定し、Owner と Committee 宛ての Issue を起票する。任意で対象のモデル版を停止する。"""
+    origin_version = None
+    if body.origin_dataset_version_id:
+        origin_version = db.get(DatasetVersion, body.origin_dataset_version_id)
+        if origin_version is None:
+            raise HTTPException(404, f"dataset version not found: {body.origin_dataset_version_id}")
+    origin = load_asset(db, principal, origin_version.asset_id if origin_version else body.origin_asset_id, "ai.incident.create")
+    impact = ai_lineage.affected_by_dataset_version(db, origin_version) if origin_version \
+        else ai_lineage.affected_by_assets(db, [origin.qualified_name])
+    affected = {m.id: m for m in impact.model_versions}
+    to_suspend = []
+    for model_version_id in dict.fromkeys(body.suspend_model_version_ids):
+        version = affected.get(model_version_id)
+        if version is None:
+            raise HTTPException(422, f"影響を受けないモデル版は停止できません: {model_version_id}")
+        authz.require(db, principal, "ai.model.suspend", asset=db.get(DataAsset, version.asset_id),
+                      entity_type="model_version", entity_id=version.id)
+        to_suspend.append(version)
+    incident = _guard(ai_remediation.create_incident, db, principal.audit_actor, origin=origin, origin_version=origin_version,
+                      impact=impact, to_suspend=to_suspend, kind=body.kind, severity=body.severity.value, title=body.title,
+                      description=body.description, reported_by=principal.subject)
+    # 説明は監査に残さない (識別や値が混ざっても証跡は消せないため)。タイトルは監査のガードを通す
+    audit.record(db, principal.audit_actor, "ai.incident.create", "ai_incident", incident.id, {
+        "kind": incident.kind, "title": incident.title, "severity": incident.severity, "origin_asset_id": origin.id,
+        "origin_dataset_version_id": incident.origin_dataset_version_id,
+        "affected_model_version_ids": incident.affected_model_version_ids,
+        "suspended_model_version_ids": incident.suspended_model_version_ids, "issue_ids": incident.issue_ids})
+    return incident
+
+
+@router.get("/incidents", response_model=list[IncidentOut])
+def list_incidents(request: Request, response: Response, page: Page = Depends(page_params()),
+                   db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    stmt = select(AiIncident).join(DataAsset, AiIncident.origin_asset_id == DataAsset.id) \
+        .where(authz.readable_clause(principal)).order_by(AiIncident.created_at.desc(), AiIncident.id)
+    return paginate(db, stmt, page, request, response)
+
+
+@router.get("/incidents/{incident_id}", response_model=IncidentOut)
+def get_incident(incident_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    incident = db.get(AiIncident, incident_id)
+    if incident is None:
+        raise HTTPException(404, f"incident not found: {incident_id}")
+    load_asset(db, principal, incident.origin_asset_id)
+    return incident

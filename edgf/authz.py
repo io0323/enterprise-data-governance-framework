@@ -144,6 +144,12 @@ PERMISSIONS: Mapping[str, Rule] = {
                                 description="学習利用の承認 (構成元の資産の Owner と Committee)"),
     "ai.model.approve": rule(relations=("owner",), approval=True, description="Model Version の承認と再開"),
     "ai.model.suspend": rule(roles=(COMMITTEE,), relations=("owner",), description="Model Version の停止と廃止"),
+    "ai.incident.create": rule(roles=(COMMITTEE,), domain_roles=(OWNER, STEWARD), description="データ汚染・リコールの起票"),
+    "ai.remediation.decide": rule(roles=(COMMITTEE,), approval=True,
+                                  description="消去の影響を受けたモデル版の是正の判断 (retrain / unlearn / accept)"),
+    # 判断された是正の実施報告 (判断ではないため Custodian を含む)
+    "ai.remediation.complete": rule(relations=("owner", "custodian"), description="是正の完了報告"),
+    "ai.remediation.escalate": rule(roles=(ADMIN, COMMITTEE), description="是正の期限超過の処理"),
     "ai.inheritance.recompute": rule(roles=(ADMIN, COMMITTEE), description="継承した統制属性の全件再計算"),
     # RAG サービスの実行主体が検索のたびに呼ぶ判定 (承認ではないため Custodian を含む)
     "ai.rag.authorize": rule(relations=("custodian",), description="RAG の検索結果を利用者の権限で絞り込む判定"),
