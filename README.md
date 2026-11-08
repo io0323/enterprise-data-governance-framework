@@ -176,6 +176,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `mesh.contract.expedite_retire` | 旧版の併存期間の短縮 (理由必須) | ロール: committee | ✓ |
 | `mesh.contract.publish` | Data Contract の版の公開と旧版の retire (対象 Product の Owner) | 対象の owner | ✓ |
 | `mesh.contract.write` | Data Contract の下書きの作成・更新 | ドメイン内ロール: owner, steward |  |
+| `mesh.product.publish` | Data Product の公開・非推奨・廃止 (対象 Product の Owner) | 対象の owner | ✓ |
 | `mesh.product.write` | Data Product と Output Port の登録・更新 | ドメイン内ロール: owner, steward |  |
 | `mesh.subscription.approve` | 利用登録の承認 (対象 Product の Owner) | 対象の owner | ✓ |
 | `mesh.subscription.read` | 全利用者の利用登録の参照 | ロール: admin, committee |  |

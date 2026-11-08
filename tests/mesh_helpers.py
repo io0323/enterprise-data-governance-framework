@@ -120,3 +120,21 @@ def import_cdm(client, asset_id, entity="party", version="1", schema=None, code=
         "entity": entity, "asset_id": asset_id, "version": version, "json_schema": PARTY_SCHEMA if schema is None else schema})
     assert r.status_code == code, r.text
     return r.json()
+
+
+def shippable(client, *, qn="sales.orders_pub", **version_kw) -> dict:
+    """DATSIS の全基準に合格する Data Product (公開前) を用意する。各テストはここから 1 基準だけ崩す。"""
+    t = term(client, f"用語-{qn}")
+    ctx = setup_contract(client, qn=qn)
+    pid = ctx["product"]["id"]
+    assert client.patch(f"{MESH}/products/{pid}", headers=STEWARD, json={"term_ids": [t]}).status_code == 200
+    qa = U("qa", "admin,owner,custodian", "*")
+    aid = ctx["asset"]["id"]
+    assert client.post(f"{API}/quality/assets/{aid}/rules", headers=qa, json={
+        "name": "nn", "dimension": "completeness", "rule_type": "not_null", "column": "order_id"}).status_code == 201
+    assert client.post(f"{API}/quality/assets/{aid}/runs", headers=qa, json={"records": [{"order_id": 1}]}).status_code == 201
+    assert client.post(f"{API}/assets/{aid}/lifecycle", headers=ADMIN, json={"target_state": "active"}).status_code == 200
+    r = client.post(f"{API}/assets/{aid}/certification", headers=U("asset-owner"), json={"certification": "certified"})
+    assert r.status_code == 200, r.text
+    version = published(client, ctx["contract"]["id"], **{"quality_sla": {"min_score": 0.9}, **version_kw})
+    return {**ctx, "version": version, "pid": pid, "aid": aid, "term": t}

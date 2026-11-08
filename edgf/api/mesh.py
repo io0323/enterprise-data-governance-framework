@@ -19,7 +19,7 @@ from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import (CdmEntityOut, CdmImportIn, CdmVersionOut, ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
                           OutputPortIn, OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate,
                           SubscriptionDecisionIn, SubscriptionIn, SubscriptionMigrateIn, SubscriptionOut)
-from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_subscriptions
+from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_datsis, mesh_subscriptions
 from edgf.services.mesh import MeshStateError, MeshValidationError
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
@@ -33,6 +33,12 @@ def _guard(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         raise HTTPException(422, str(e)) from e
     except MeshStateError as e:
         raise HTTPException(409, str(e)) from e
+
+
+def _require_owner(db: Session, principal: Principal, action: str, product: DataProduct, entity_type: str, entity_id: str) -> None:
+    """Product の Owner だけに許す操作 (Output Port の資産の Owner とは別の人でありうる)。"""
+    authz.require(db, principal, action, relations=("owner",) if product.owner == principal.subject else (),
+                  entity_type=entity_type, entity_id=entity_id)
 
 
 def _get_product(db: Session, product_id: str) -> DataProduct:
@@ -105,6 +111,45 @@ def update_product(product_id: str, body: ProductUpdate, db: Session = Depends(g
     return _product_out(db, principal, product)
 
 
+@router.get("/products/{product_id}/datsis")
+def get_datsis(product_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """出荷基準の判定結果。公開前に確認できる。"""
+    product = _get_product(db, product_id)
+    results, blockers = mesh_datsis.evaluate(db, product)
+    return {"product_id": product.id, "publishable": not blockers, "results": results, "blockers": blockers}
+
+
+@router.post("/products/{product_id}/publish", response_model=ProductOut)
+def publish_product(product_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """MESH-001〜006 (と Domain Policy の追加基準) がすべて合格しないと公開できない (Certification と同じゲート)。"""
+    product = _get_product(db, product_id)
+    _require_owner(db, principal, "mesh.product.publish", product, "data_product", product.id)
+    _guard(mesh_datsis.publish, db, product, principal.subject)
+    audit.record(db, principal.audit_actor, "mesh.product.publish", "data_product", product.id, {"status": product.status})
+    return _product_out(db, principal, product)
+
+
+@router.post("/products/{product_id}/deprecate", response_model=ProductOut)
+def deprecate_product(product_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """新しい利用登録を止め、利用者に知らせる。"""
+    product = _get_product(db, product_id)
+    _require_owner(db, principal, "mesh.product.publish", product, "data_product", product.id)
+    _guard(mesh_datsis.deprecate, db, product)
+    opened = mesh_subscriptions.notify_product_deprecated(db, principal.audit_actor, product)
+    audit.record(db, principal.audit_actor, "mesh.product.deprecate", "data_product", product.id, {"issues_opened": opened})
+    return _product_out(db, principal, product)
+
+
+@router.post("/products/{product_id}/retire", response_model=ProductOut)
+def retire_product(product_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """有効な利用登録が残っていれば 409。"""
+    product = _get_product(db, product_id)
+    _require_owner(db, principal, "mesh.product.publish", product, "data_product", product.id)
+    _guard(mesh_datsis.retire, db, product)
+    audit.record(db, principal.audit_actor, "mesh.product.retire", "data_product", product.id, {"status": product.status})
+    return _product_out(db, principal, product)
+
+
 # ---------------- Output Port ----------------
 @router.post("/products/{product_id}/ports", response_model=OutputPortOut, status_code=201)
 def add_port(product_id: str, body: OutputPortIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
@@ -148,12 +193,6 @@ def _get_contract(db: Session, contract_id: str) -> DataContract:
 def _context(db: Session, contract: DataContract) -> tuple[DataProduct, OutputPort, DataAsset]:
     port = db.get(OutputPort, contract.output_port_id)
     return db.get(DataProduct, contract.product_id), port, db.get(DataAsset, port.asset_id)
-
-
-def _require_owner(db: Session, principal: Principal, action: str, product: DataProduct, entity_type: str, entity_id: str) -> None:
-    """Product の Owner だけに許す操作 (Output Port の資産の Owner とは別の人でありうる)。"""
-    authz.require(db, principal, action, relations=("owner",) if product.owner == principal.subject else (),
-                  entity_type=entity_type, entity_id=entity_id)
 
 
 def _get_version(db: Session, version_id: str) -> tuple[ContractVersion, DataContract]:

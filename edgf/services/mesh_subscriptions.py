@@ -162,6 +162,21 @@ def suspend_for_narrowed_usage(db: Session, actor: str, contract: DataContract, 
     return [r.id for r in rows]
 
 
+def valid_for_product(db: Session, product_id: str) -> list[MeshSubscription]:
+    return list(db.scalars(select(MeshSubscription).where(MeshSubscription.product_id == product_id, MeshSubscription.status.in_(VALID))))
+
+
+def notify_product_deprecated(db: Session, actor: str, product: DataProduct) -> list[str]:
+    opened = []
+    for row in valid_for_product(db, product.id):
+        issue_id = _notify_subscriber(db, actor, row, f"mesh-product:{product.id}:{row.id}",
+                                      f"[PRODUCT] {product.name}: Data Product が非推奨になりました",
+                                      "代替の Data Product に移行し、利用登録を取り消してください (§15)。")
+        if issue_id:
+            opened.append(issue_id)
+    return opened
+
+
 def notify_new_major(db: Session, actor: str, contract: DataContract, version: ContractVersion, product: DataProduct, asset: DataAsset,
                      sunset: datetime) -> list[str]:
     """旧版の利用者と下流の Owner に、新しいメジャー版と併存期間の満了を知らせる。"""
