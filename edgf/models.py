@@ -5,9 +5,9 @@ Control Plane はデータ本体を保持せず、メタデータ・統制状態
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Table, Text,
+from sqlalchemy import (JSON, Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Table, Text,
                         UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -346,6 +346,47 @@ class MdmSubjectLink(Base):
     golden_id: Mapped[str] = mapped_column(ForeignKey("golden_records.id"), primary_key=True)
     subject_ref: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     identifier_type: Mapped[str] = mapped_column(String(50))
+
+
+class RefDataSet(Base):
+    """§8 Reference Data Set。Catalog の reference 資産と対応付ける (Metadata First)。"""
+    __tablename__ = "reference_data_sets"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RefDataVersion(Base):
+    """公開 (published) した版は変更できない。"""
+    __tablename__ = "reference_data_versions"
+    __table_args__ = (UniqueConstraint("set_id", "version", name="uq_reference_data_version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    set_id: Mapped[str] = mapped_column(ForeignKey("reference_data_sets.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    note: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class RefCode(Base):
+    """コード値。Control Plane が値を保持する唯一の例外 (public / internal かつ PII なしの資産に限る)。"""
+    __tablename__ = "reference_codes"
+    __table_args__ = (UniqueConstraint("version_id", "code", name="uq_reference_code"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("reference_data_versions.id"), index=True)
+    code: Mapped[str] = mapped_column(String(100))
+    label: Mapped[str] = mapped_column(String(300))
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    standard: Mapped[str | None] = mapped_column(String(100))  # 外部標準の出典 (例: ISO 3166-1)
+    standard_version: Mapped[str | None] = mapped_column(String(50))  # 例: 2026
 
 
 class AuditEvent(Base):

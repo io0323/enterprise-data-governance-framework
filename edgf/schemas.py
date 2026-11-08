@@ -1,7 +1,7 @@
 """API schemas (Pydantic v2)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -165,7 +165,8 @@ class TermOut(ORM, TermIn):
 class QualityRuleIn(BaseModel):
     name: str
     dimension: QualityDimension
-    rule_type: str = Field(description="not_null|unique|regex|range|allowed_values|freshness|referential|comparison|reference_match")
+    rule_type: str = Field(description="not_null|unique|regex|range|allowed_values|freshness|referential|comparison|reference_match。"
+                                       "allowed_values / referential は params.reference_set (<id>[@version]) で Reference Data を参照できる")
     column: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     threshold: float = Field(default=1.0, ge=0, le=1)
@@ -489,3 +490,34 @@ class MdmVerifyIn(BaseModel):
 class MdmXrefLookupIn(BaseModel):
     source_system: str = Field(min_length=1, max_length=100)
     key: SecretStr = Field(min_length=1, max_length=512, description="ソース側のキー (HMAC に変換して破棄)")
+
+
+# ---------- Reference Data ----------
+class RefDataSetIn(BaseModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,80}$", description="Set ID (例: iso3166-1)")
+    asset_id: str = Field(description="対応する reference 資産")
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+
+
+class RefDataSetOut(ORM):
+    id: str
+    asset_id: str
+    name: str
+    description: str
+    created_by: str
+    created_at: datetime
+
+
+class RefCodeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=100)
+    label: str = Field(min_length=1, max_length=300)
+    valid_from: date | None = None
+    valid_to: date | None = None
+    standard: str | None = Field(default=None, max_length=100, description="外部標準の出典 (例: ISO 3166-1)")
+    standard_version: str | None = Field(default=None, max_length=50, description="外部標準の版 (例: 2026)")
+
+
+class RefDataVersionIn(BaseModel):
+    codes: list[RefCodeIn] = Field(default_factory=list)
+    note: str = Field(default="", max_length=1000)

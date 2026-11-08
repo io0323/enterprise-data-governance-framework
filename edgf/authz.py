@@ -129,6 +129,9 @@ PERMISSIONS: Mapping[str, Rule] = {
     "mdm.review.decide": rule(relations=("owner", "steward"), approval=True,
                               description="裁定 (merge / not_match / split) と属性値の指定"),
     "mdm.review.escalate": rule(roles=(ADMIN, COMMITTEE), description="裁定キューの期限超過の処理"),
+    "refdata.write": rule(domain_roles=(OWNER, STEWARD), description="Reference Data の下書きの作成"),
+    "refdata.publish": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                            description="Reference Data の版の公開"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
