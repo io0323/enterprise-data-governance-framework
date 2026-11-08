@@ -153,6 +153,8 @@ PERMISSIONS: Mapping[str, Rule] = {
     "ai.inheritance.recompute": rule(roles=(ADMIN, COMMITTEE), description="継承した統制属性の全件再計算"),
     # RAG サービスの実行主体が検索のたびに呼ぶ判定 (承認ではないため Custodian を含む)
     "ai.rag.authorize": rule(relations=("custodian",), description="RAG の検索結果を利用者の権限で絞り込む判定"),
+    # Data Mesh 連携 (§15): Data Product の統治のための定義だけを扱う
+    "mesh.product.write": rule(domain_roles=(OWNER, STEWARD), description="Data Product と Output Port の登録・更新"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

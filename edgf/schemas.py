@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus,
-                        RemediationStatus)
+                        ProductStatus, RemediationStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -838,3 +838,74 @@ class IncidentOut(ORM):
     issue_ids: list[str]
     reported_by: str
     created_at: datetime
+
+
+# ---------- Data Mesh 連携 (§15) ----------
+# Control Plane が持つのは統治のための定義だけ。未定義の項目を黙って捨てず、検証エラーで知らせる
+class MeshInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ProductIn(MeshInput):
+    name: str = Field(min_length=1, max_length=200)
+    domain: str = Field(max_length=100)
+    owner: str = Field(min_length=1, max_length=200, description="単一。そのドメインの Data Owner であること")
+    description: str = Field(default="", max_length=4000)
+    term_ids: list[str] = Field(default_factory=list, max_length=200, description="Glossary の用語")
+
+
+class ProductUpdate(MeshInput):
+    owner: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    term_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class OutputPortIn(MeshInput):
+    name: str = Field(min_length=1, max_length=200)
+    asset_id: str = Field(max_length=36, description="Catalog 資産 (1 対 1。Product と同じドメイン)")
+    port_type: Literal["table", "api", "stream", "file"]
+    address_uri: ExternalUri | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> OutputPortIn:
+        check_external_uri(self.address_uri)
+        return self
+
+
+class OutputPortUpdate(MeshInput):
+    address_uri: ExternalUri | None = None
+    port_type: Literal["table", "api", "stream", "file"] | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> OutputPortUpdate:
+        check_external_uri(self.address_uri)
+        return self
+
+
+class OutputPortOut(BaseModel):
+    id: str
+    product_id: str
+    name: str
+    redacted: bool = Field(default=False, description="閲覧できない資産のポートは名前だけを返す (ABAC)")
+    asset_id: str | None = None
+    port_type: str | None = None
+    address_uri: str | None = None
+    contract_id: str | None = None
+
+
+class ProductOut(BaseModel):
+    id: str
+    name: str
+    domain: str
+    owner: str
+    description: str
+    status: ProductStatus
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    published_by: str | None
+    published_at: datetime | None
+    deprecated_at: datetime | None
+    retired_at: datetime | None
+    term_ids: list[str] = Field(default_factory=list)
+    ports: list[OutputPortOut] = Field(default_factory=list)

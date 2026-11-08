@@ -586,6 +586,49 @@ class AiIncident(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+product_term = Table(
+    "data_product_terms",
+    Base.metadata,
+    Column("product_id", String(36), ForeignKey("data_products.id", ondelete="CASCADE"), primary_key=True),
+    Column("term_id", String(36), ForeignKey("glossary_terms.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class DataProduct(Base):
+    """§15 Data Product の統治のための定義。配信基盤やパイプラインの実行は Data Mesh / Data Plane の責務。"""
+    __tablename__ = "data_products"
+    __table_args__ = (UniqueConstraint("domain", "name", name="uq_data_product_name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200))
+    domain: Mapped[str] = mapped_column(ForeignKey("domains.name"), index=True)
+    owner: Mapped[str] = mapped_column(String(200), index=True)  # 単一 (§4 共同 Owner 禁止)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deprecated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+    terms: Mapped[list[GlossaryTerm]] = relationship(secondary=product_term)
+    ports: Mapped[list[OutputPort]] = relationship(back_populates="product", order_by="OutputPort.name")
+
+
+class OutputPort(Base):
+    """Catalog 資産への参照とアドレス URI だけを持つ (配信そのものは Data Plane)。資産とは 1 対 1。"""
+    __tablename__ = "output_ports"
+    __table_args__ = (UniqueConstraint("product_id", "name", name="uq_output_port_name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    product_id: Mapped[str] = mapped_column(ForeignKey("data_products.id"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    address_uri: Mapped[str | None] = mapped_column(String(2000))
+    port_type: Mapped[str] = mapped_column(String(20))  # table / api / stream / file
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    product: Mapped[DataProduct] = relationship(back_populates="ports")
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

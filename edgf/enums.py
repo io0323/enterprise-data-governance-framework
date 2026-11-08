@@ -176,6 +176,14 @@ class RemediationStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class ProductStatus(str, Enum):
+    """§15 Data Product のライフサイクル"""
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

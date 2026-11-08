@@ -171,6 +171,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `mdm.review.escalate` | 裁定キューの期限超過の処理 | ロール: admin, committee |  |
 | `mdm.rule.approve` | Golden Record 生成規則の承認 (§8.2) | 対象の owner | ✓ |
 | `mdm.rule.write` | エンティティ定義の再読込 (公開) | ロール: admin, committee | ✓ |
+| `mesh.product.write` | Data Product と Output Port の登録・更新 | ドメイン内ロール: owner, steward |  |
 | `policy.evaluate_all` | 全資産の自動監査と Issue 化 | ロール: admin, committee |  |
 | `policy.reload` | ポリシーの再読込 (公開) | ロール: admin, committee | ✓ |
 | `privacy.consent.check` | 目的内利用の判定と同意履歴の参照 | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |
