@@ -8,6 +8,7 @@ Control Plane に残すのは、相互参照 (xref)、属性ごとの由来、�
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import unicodedata
@@ -506,3 +507,46 @@ def escalate_overdue_reviews(db: Session, actor: str) -> dict[str, Any]:
             escalated.append(item.id)
     db.flush()
     return {"overdue_reviews": [r.id for r in overdue], "issues_opened": opened, "issues_escalated": escalated}
+
+
+# ---------------------------------------------------------------- 版の照会 (値は含まない)
+def version_view(version: GoldenVersion) -> dict[str, Any]:
+    return {"version": version.version, "valid_from": version.valid_from, "valid_to": version.valid_to,
+            "content_hash": version.content_hash, "source_refs": version.source_refs,
+            "provenance": version.provenance, "reason": version.reason, "created_by": version.created_by,
+            "tombstoned": version.tombstoned}
+
+
+def golden_view(golden: GoldenRecord) -> dict[str, Any]:
+    """ソルトは返さない。"""
+    return {"id": golden.id, "entity_type": golden.entity_type, "asset_id": golden.asset_id, "status": golden.status,
+            "recompose_required": golden.recompose_required, "current_version": golden.current_version,
+            "created_at": golden.created_at, "tombstoned_at": golden.tombstoned_at}
+
+
+def version_at(db: Session, golden_id: str, at: datetime) -> GoldenVersion | None:
+    """その時点で有効だった版。valid_from <= at < valid_to。"""
+    return db.scalar(select(GoldenVersion).where(
+        GoldenVersion.golden_id == golden_id, GoldenVersion.valid_from <= at,
+        (GoldenVersion.valid_to.is_(None)) | (GoldenVersion.valid_to > at)).order_by(GoldenVersion.version.desc()).limit(1))
+
+
+def get_version(db: Session, golden_id: str, number: int) -> GoldenVersion | None:
+    return db.scalar(select(GoldenVersion).where(GoldenVersion.golden_id == golden_id, GoldenVersion.version == number))
+
+
+def verify(db: Session, golden: GoldenRecord, attributes: Mapping[str, Any], number: int | None) -> dict[str, Any]:
+    """Data Plane が持つ値がその版の内容ハッシュと一致するかを検証する。値は保持しない。"""
+    if golden.status == TOMBSTONED or golden.hash_salt is None:
+        raise MdmStateError("消去済みの Golden Record は検証できません")
+    version = get_version(db, golden.id, number) if number else current_version(db, golden)
+    if version is None:
+        raise MdmInputError("指定した版がありません")
+    if version.content_hash is None:
+        raise MdmStateError("この版は再構成待ちのため内容ハッシュがありません")
+    return {"golden_id": golden.id, "version": version.version, "content_hash": version.content_hash,
+            "match": hmac.compare_digest(content_hash(golden, attributes), version.content_hash)}
+
+
+def lookup_xrefs(db: Session, source_ref: str) -> Sequence[MdmXref]:
+    return db.scalars(select(MdmXref).where(MdmXref.source_ref == source_ref).order_by(MdmXref.entity_type)).all()

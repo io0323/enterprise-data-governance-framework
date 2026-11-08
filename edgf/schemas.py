@@ -479,3 +479,13 @@ class MdmReviewDecision(BaseModel):
 class MdmSplitIn(BaseModel):
     source_refs: list[str] = Field(min_length=1, description="別の Golden Record に分割するソース")
     reason: str = Field(min_length=1, max_length=1000, description="個人情報を含めないこと")
+
+
+class MdmVerifyIn(BaseModel):
+    attributes: dict[str, Any] = Field(description="Data Plane が保持している値 (検証後に破棄)")
+    version: int | None = Field(default=None, ge=1, description="省略時は現在の版")
+
+
+class MdmXrefLookupIn(BaseModel):
+    source_system: str = Field(min_length=1, max_length=100)
+    key: SecretStr = Field(min_length=1, max_length=512, description="ソース側のキー (HMAC に変換して破棄)")

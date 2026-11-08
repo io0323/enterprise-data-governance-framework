@@ -4,7 +4,9 @@ Golden Record の値は Data Plane (MDM Hub) の責務で、Control Plane には
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -14,9 +16,10 @@ from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
 from sqlalchemy import select
 
-from edgf.models import DataAsset, MdmReview, MdmRuleApproval
+from edgf.models import DataAsset, GoldenRecord, GoldenVersion, MdmReview, MdmRuleApproval
 from edgf.pagination import paginate
-from edgf.schemas import MdmComposeIn, MdmMatchIn, MdmMatchOut, MdmReviewDecision, MdmReviewOut, MdmSourceRecord, MdmSplitIn
+from edgf.schemas import (MdmComposeIn, MdmMatchIn, MdmMatchOut, MdmReviewDecision, MdmReviewOut, MdmSourceRecord,
+                          MdmSplitIn, MdmVerifyIn, MdmXrefLookupIn)
 from edgf.pagination import Page, page_params, paginate_list
 from edgf.services import audit, mdm, mdm_rules
 from edgf.services.mdm import MdmInputError, MdmStateError, SourceRecord
@@ -224,3 +227,95 @@ def split_golden(entity_type: str, golden_id: str, body: MdmSplitIn, db: Session
         "new_golden_id": new.id, "moved": len(body.source_refs), "reason": body.reason})
     return {"golden_id": golden.id, "new_golden_id": new.id, "moved": sorted(set(body.source_refs)),
             "recompose_required": [golden.id, new.id]}
+
+
+# ---------------- 版の管理と時点指定の照会 (9d): 値は返さない ----------------
+def _xref_results(db: Session, principal: Principal, source_system: str, key: str) -> list[dict]:
+    authz.require(db, principal, "mdm.read", entity_type="mdm", entity_id="xref")
+    try:
+        source_ref = mdm.make_source_ref(source_system, key)
+    except ValueError as e:
+        raise HTTPException(422, "key が空です") from e
+    results = []
+    for xref in mdm.lookup_xrefs(db, source_ref):
+        golden = db.get(GoldenRecord, xref.golden_id)
+        if authz.can_read(db, principal, db.get(DataAsset, golden.asset_id)):
+            results.append({"entity_type": xref.entity_type, "golden_id": xref.golden_id, "source_ref": xref.source_ref,
+                            "source_system": xref.source_system, "link_type": xref.link_type, "linked_at": xref.linked_at,
+                            "status": mdm.TOMBSTONED if xref.tombstoned_at else mdm.ACTIVE})
+    return results
+
+
+@router.get("/xref")
+def get_xref(request: Request, response: Response, source_system: str = Query(min_length=1, max_length=100),
+             key: str = Query(min_length=1, max_length=512), page: Page = Depends(page_params()),
+             db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """キーを HMAC に変換して、紐付く golden_id を引く (ABAC で絞り込む)。
+
+    キーが URL に載るので、プロキシのログなどに残る環境では POST /mdm/xref/lookup を使うこと。
+    """
+    return paginate_list(_xref_results(db, principal, source_system, key), page, request, response)
+
+
+@router.post("/xref/lookup")
+def lookup_xref(body: MdmXrefLookupIn, request: Request, response: Response, page: Page = Depends(page_params()),
+                db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """GET /mdm/xref と同じ。キーを URL に載せない。"""
+    return paginate_list(_xref_results(db, principal, body.source_system, body.key.get_secret_value()), page, request, response)
+
+
+@router.get("/{entity_type}/golden-records")
+def list_golden_records(entity_type: str, request: Request, response: Response, status: str | None = None,
+                        recompose_required: bool | None = None, page: Page = Depends(page_params()),
+                        db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    entity = _entity(entity_type)
+    load_asset(db, principal, _master_asset(db, entity).id, "mdm.read")
+    stmt = select(GoldenRecord).where(GoldenRecord.entity_type == entity.entity_type) \
+        .order_by(GoldenRecord.created_at, GoldenRecord.id)
+    if status:
+        stmt = stmt.where(GoldenRecord.status == status)
+    if recompose_required is not None:
+        stmt = stmt.where(GoldenRecord.recompose_required.is_(recompose_required))
+    return [mdm.golden_view(g) for g in paginate(db, stmt, page, request, response)]
+
+
+@router.get("/{entity_type}/golden-records/{golden_id}")
+def get_golden_record(entity_type: str, golden_id: str, as_of: datetime | None = Query(None, description="この時点の版の情報を返す"),
+                      db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """版の情報を返す。値は含まない (値は Data Plane が保持する)。"""
+    entity = _entity(entity_type)
+    load_asset(db, principal, _master_asset(db, entity).id, "mdm.read")
+    golden = _golden(db, entity, golden_id)
+    if as_of is not None:
+        at = as_of.astimezone(timezone.utc).replace(tzinfo=None) if as_of.tzinfo else as_of
+        version = mdm.version_at(db, golden.id, at)
+        if version is None:
+            raise HTTPException(404, "指定した時点の版はありません")
+    else:
+        version = mdm.current_version(db, golden)
+    sources = mdm.active_source_refs(db, golden.id)
+    return {**mdm.golden_view(golden), "source_refs": sources, "version": mdm.version_view(version) if version else None}
+
+
+@router.get("/{entity_type}/golden-records/{golden_id}/versions")
+def list_golden_versions(entity_type: str, golden_id: str, request: Request, response: Response,
+                         page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                         principal: Principal = Depends(get_principal)):
+    entity = _entity(entity_type)
+    load_asset(db, principal, _master_asset(db, entity).id, "mdm.read")
+    golden = _golden(db, entity, golden_id)
+    stmt = select(GoldenVersion).where(GoldenVersion.golden_id == golden.id).order_by(GoldenVersion.version)
+    return [mdm.version_view(v) for v in paginate(db, stmt, page, request, response)]
+
+
+@router.post("/{entity_type}/golden-records/{golden_id}/verify")
+def verify_golden(entity_type: str, golden_id: str, body: MdmVerifyIn, db: Session = Depends(get_session),
+                  principal: Principal = Depends(get_principal)):
+    """Data Plane が保持している値を、その版の内容ハッシュと照合する。値は検証後に破棄する。"""
+    entity = _entity(entity_type)
+    load_asset(db, principal, _master_asset(db, entity).id, "mdm.compose")
+    golden = _golden(db, entity, golden_id)
+    result = _guarded(mdm.verify, db, golden, body.attributes, body.version)
+    audit.record(db, principal.audit_actor, "mdm.verify", "golden", golden.id,
+                 {"version": result["version"], "match": result["match"]})
+    return result
