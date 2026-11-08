@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from edgf.enums import (Certification, DataClass, EscalationLevel, IssueStatus, LifecycleState,
-                        QualityDimension, Sensitivity, Severity)
+from edgf.enums import (Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
+                        IssueStatus, LegalBasis, LifecycleState,
+                        PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity)
+
+IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 
 
 class ORM(BaseModel):
@@ -31,6 +34,20 @@ class ColumnSpec(BaseModel):
     type: str = "string"
     description: str = ""
     pii: bool = False
+    # §12 PII Inventory (いずれも任意。既存の pii フラグと互換)
+    pii_category: PiiCategory | None = None
+    identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN,
+                                        description="データ主体の識別子の種別 (例: customer_id, email)。消去の対象特定に使う")
+    processing_purposes: list[str] = Field(default_factory=list, description="処理目的 (Purpose カタログの ID)")
+    legal_basis: LegalBasis | None = None
+    privacy_technique: PrivacyTechnique | None = Field(default=None, description="カラム単位の保護手法 (§12)")
+    privacy_params: dict[str, Any] = Field(default_factory=dict, description="k / key_vault_ref など")
+
+    @model_validator(mode="after")
+    def _infer_pii(self) -> ColumnSpec:
+        if self.pii_category is not None or self.identifier_type is not None:
+            self.pii = True  # カテゴリや識別子種別を持つカラムは PII
+        return self
 
 
 class AssetBase(BaseModel):
@@ -49,6 +66,8 @@ class AssetBase(BaseModel):
     schema_: list[ColumnSpec] = Field(default_factory=list, alias="schema")
     tags: list[str] = Field(default_factory=list)
     controls: list[str] = Field(default_factory=list)
+    privacy_technique: PrivacyTechnique = PrivacyTechnique.NONE
+    privacy_params: dict[str, Any] = Field(default_factory=dict, description="k (k-匿名性) / key_vault_ref (仮名化キーの分離保管先)")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -74,6 +93,8 @@ class AssetUpdate(BaseModel):
     schema_: list[ColumnSpec] | None = Field(default=None, alias="schema")
     tags: list[str] | None = None
     controls: list[str] | None = None
+    privacy_technique: PrivacyTechnique | None = None
+    privacy_params: dict[str, Any] | None = None
 
 
 class AssetOut(ORM, AssetBase):
@@ -260,3 +281,136 @@ class ExceptionOut(ORM):
     status: str
     expires_at: datetime
     created_at: datetime
+
+
+# ---------- Privacy ----------
+class SubjectIdentifier(BaseModel):
+    """データ主体の識別子。受け取った時点で subject_ref に変換して破棄する (レスポンスにもログにも出さない)。"""
+    identifier_type: str = Field(pattern=IDENTIFIER_TYPE_PATTERN, description="識別子の種別 (例: customer_id, email)")
+    identifier: SecretStr = Field(min_length=1, max_length=512, description="データ主体の識別子 (保存されません)")
+
+
+class PurposeIn(BaseModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,80}$", description="目的 ID (例: marketing)")
+    description: str = Field(min_length=1)
+    default_legal_basis: LegalBasis
+    retention_days: int | None = Field(default=None, ge=1)
+    domain: str | None = None
+
+
+class PurposeUpdate(BaseModel):
+    description: str | None = Field(default=None, min_length=1)
+    default_legal_basis: LegalBasis | None = None
+    retention_days: int | None = Field(default=None, ge=1)
+
+
+class PurposeOut(ORM):
+    id: str
+    description: str
+    default_legal_basis: LegalBasis
+    retention_days: int | None
+    domain: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsentIn(SubjectIdentifier):
+    purpose_id: str
+    status: ConsentStatus
+    source: str = Field(default="", max_length=200, description="取得元 (同意画面やシステムの ID。個人情報を含めないこと)")
+    expires_at: datetime | None = Field(default=None, description="同意の有効期限 (status=granted のときのみ)")
+
+
+class ConsentOut(ORM):
+    seq: int
+    subject_ref: str
+    purpose_id: str
+    status: ConsentStatus
+    source: str
+    recorded_by: str
+    recorded_at: datetime
+    expires_at: datetime | None
+
+
+class ConsentRecorded(ConsentOut):
+    issues_opened: list[str] = Field(default_factory=list)
+
+
+class ConsentCheckIn(SubjectIdentifier):
+    purpose_id: str
+
+
+class ErasureRequestIn(SubjectIdentifier):
+    reason: str = Field(default="", max_length=1000, description="受付の根拠 (チケット番号など。個人情報を含めないこと)")
+
+
+class ErasureRejectIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000, description="却下の理由 (法的義務による保持など)")
+
+
+class ErasureTaskCompleteIn(BaseModel):
+    outcome: Literal["completed", "failed"] = "completed"
+    records_deleted: int = Field(default=0, ge=0)
+    evidence_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$",
+                                      description="Data Plane 側の削除証跡の SHA-256 (完了時は必須)")
+    note: str = Field(default="", max_length=500, description="個人情報を含めないこと")
+
+    @model_validator(mode="after")
+    def _evidence_required(self) -> ErasureTaskCompleteIn:
+        if self.outcome == "completed" and not self.evidence_hash:
+            raise ValueError("outcome=completed には evidence_hash が必要です")
+        return self
+
+
+class ErasureTaskOut(ORM):
+    id: str
+    request_id: str
+    asset_id: str
+    qualified_name: str
+    origin: str
+    depth: int
+    columns: list[str]
+    status: ErasureTaskStatus
+    withheld_reason: str | None
+    approved_by: str | None
+    approved_at: datetime | None
+    acked_at: datetime | None
+    completed_by: str | None
+    completed_at: datetime | None
+    records_deleted: int | None
+    evidence_hash: str | None
+    note: str
+
+
+class ErasureWorkItem(ErasureTaskOut):
+    """Data Plane に渡すタスク。subject_ref を自分の識別子の HMAC と突き合わせて対象レコードを特定する。"""
+    subject_ref: str
+    identifier_type: str
+    due_at: datetime
+
+
+class ErasureRequestOut(ORM):
+    id: str
+    subject_ref: str
+    identifier_type: str
+    status: ErasureStatus
+    reason: str
+    requested_by: str
+    created_at: datetime
+    due_at: datetime
+    scoped_at: datetime | None
+    approved_at: datetime | None
+    dispatched_at: datetime | None
+    finished_at: datetime | None
+    verified_at: datetime | None
+    verified_by: str | None
+    closed_at: datetime | None
+    decided_by: str | None
+    decision_reason: str | None
+    unregistered_downstream: list[str]
+    warnings: list[str]
+
+
+class ErasureRequestDetail(ErasureRequestOut):
+    tasks: list[ErasureTaskOut] = Field(default_factory=list)
+    hidden_task_count: int = Field(default=0, description="閲覧権限が無く表示していないタスク数 (ABAC)")

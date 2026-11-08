@@ -75,6 +75,66 @@ class IssueStatus(str, Enum):
     CLOSED = "closed"
 
 
+class PiiCategory(str, Enum):
+    """§12 PII のカテゴリ"""
+    IDENTIFIER = "identifier"
+    CONTACT = "contact"
+    FINANCIAL = "financial"
+    HEALTH = "health"
+    LOCATION = "location"
+    OTHER = "other"
+
+
+class LegalBasis(str, Enum):
+    """§12 処理の法的根拠 (GDPR 第6条をベースライン)"""
+    CONSENT = "consent"
+    CONTRACT = "contract"
+    LEGAL_OBLIGATION = "legal_obligation"
+    VITAL_INTEREST = "vital_interest"
+    PUBLIC_TASK = "public_task"
+    LEGITIMATE_INTEREST = "legitimate_interest"
+
+
+class PrivacyTechnique(str, Enum):
+    """§12 / §11 保護手法。pseudonymized は個人データのまま、anonymized は基準を満たす場合だけ統制外"""
+    NONE = "none"
+    MASKED = "masked"
+    TOKENIZED = "tokenized"
+    PSEUDONYMIZED = "pseudonymized"
+    ANONYMIZED = "anonymized"
+    AGGREGATED = "aggregated"
+
+
+class ConsentStatus(str, Enum):
+    """§12 Consent"""
+    GRANTED = "granted"
+    WITHDRAWN = "withdrawn"
+    EXPIRED = "expired"
+
+
+class ErasureStatus(str, Enum):
+    """§12 Right to Erasure の状態遷移"""
+    RECEIVED = "received"
+    SCOPED = "scoped"
+    APPROVED = "approved"
+    DISPATCHED = "dispatched"
+    COMPLETED = "completed"
+    PARTIALLY_COMPLETED = "partially_completed"
+    VERIFIED = "verified"
+    CLOSED = "closed"
+    REJECTED = "rejected"
+
+
+class ErasureTaskStatus(str, Enum):
+    PLANNED = "planned"              # スコープ済み。承認と発行を待っている
+    PENDING = "pending"              # 発行済み。Data Plane の応答待ち
+    ACKNOWLEDGED = "acknowledged"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WITHHELD = "withheld"            # Legal Hold などにより削除しない (§10.2)
+    CANCELLED = "cancelled"          # 要求の却下による取消
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

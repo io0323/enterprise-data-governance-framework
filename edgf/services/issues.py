@@ -25,7 +25,8 @@ def assignee_for(asset: DataAsset | None, level: EscalationLevel) -> str | None:
 
 
 def open_issue(db: Session, actor: str, *, asset: DataAsset | None, kind: str, title: str,
-               description: str = "", severity: str = "medium", source_ref: str | None = None) -> Issue | None:
+               description: str = "", severity: str = "medium", source_ref: str | None = None,
+               level: EscalationLevel = EscalationLevel.STEWARD) -> Issue | None:
     """重複起票防止: 同一 asset+source_ref の未解決Issueがあれば作成しない。"""
     if source_ref:
         dup = db.scalar(select(Issue).where(Issue.asset_id == (asset.id if asset else None),
@@ -33,8 +34,9 @@ def open_issue(db: Session, actor: str, *, asset: DataAsset | None, kind: str, t
         if dup:
             return None
     issue = Issue(asset_id=asset.id if asset else None, kind=kind, title=title, description=description,
-                  severity=severity, source_ref=source_ref, assignee=assignee_for(asset, EscalationLevel.STEWARD),
-                  escalation_level=EscalationLevel.STEWARD.value,
+                  severity=severity, source_ref=source_ref,
+                  assignee=assignee_for(asset, level) or assignee_for(asset, EscalationLevel.STEWARD),
+                  escalation_level=level.value,
                   due_at=utcnow() + timedelta(days=settings.issue_sla_days))
     db.add(issue)
     db.flush()

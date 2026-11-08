@@ -17,7 +17,8 @@ from edgf.config import settings
 from edgf.models import DataAsset, PolicyException, QualityRule, utcnow, term_asset
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
-               "min_quality_score", "has_upstream_lineage", "glossary_linked"}
+               "min_quality_score", "has_upstream_lineage", "glossary_linked",
+               "anonymization_k", "pseudonymization_controls", "pii_columns_documented"}
 
 
 class PolicyLoadError(Exception):
@@ -84,8 +85,14 @@ def get_policies(reload: bool = False) -> list[Policy]:
     return _cache
 
 
-def _run_check(db: Session, asset: DataAsset, check: dict) -> tuple[bool, str]:
+def _run_check(db: Session, asset: DataAsset, check: dict) -> tuple[bool | None, str]:
+    """(合否, メッセージ) を返す。None は対象外で、評価結果に含めない。"""
     t = check["type"]
+    if t in ("anonymization_k", "pseudonymization_controls", "pii_columns_documented"):
+        from edgf.services import privacy
+        return {"anonymization_k": privacy.check_anonymization_k,
+                "pseudonymization_controls": privacy.check_pseudonymization,
+                "pii_columns_documented": privacy.check_pii_documented}[t](asset)
     if t == "required_fields":
         missing = [f for f in check["fields"] if getattr(asset, f, None) in (None, "", [])]
         return not missing, f"未設定: {missing}" if missing else "ok"
@@ -126,6 +133,8 @@ def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None 
         if not p.applies_to(asset):
             continue
         ok, msg = _run_check(db, asset, p.check)
+        if ok is None:
+            continue
         status = "pass" if ok else ("excepted" if p.id in excepted else "fail")
         results.append({"policy_id": p.id, "name": p.name, "severity": p.severity, "scope": p.scope,
                         "status": status, "message": msg, "design_ref": p.design_ref})

@@ -24,8 +24,8 @@ from sqlalchemy import and_, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from edgf.auth import (ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, ROLES, SENSITIVITY_LEVELS, STEWARD,
-                       Principal)
+from edgf.auth import (ADMIN, COMMITTEE, CONSENT_COLLECTOR, CONSUMER, CUSTODIAN, OWNER, ROLES, SENSITIVITY_LEVELS,
+                       STEWARD, Principal)
 from edgf.errors import ProblemError
 from edgf.models import AccessGrant, DataAsset, utcnow
 
@@ -96,6 +96,28 @@ PERMISSIONS: Mapping[str, Rule] = {
     "exception.request": rule(roles=(ADMIN,), domain_roles=(OWNER, STEWARD), relations=("owner", "steward"),
                               description="ポリシー例外の申請"),
     "exception.decide": rule(roles=(COMMITTEE, ADMIN), approval=True, description="ポリシー例外の承認/却下"),
+    # Privacy (§12)
+    "privacy.inventory.read": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER, STEWARD),
+                                   description="PII インベントリの参照"),
+    "privacy.purpose.write": rule(roles=(ADMIN, COMMITTEE), description="Purpose カタログの登録・更新"),
+    "privacy.consent.write": rule(roles=(ADMIN, COMMITTEE, CONSENT_COLLECTOR), domain_roles=(STEWARD,),
+                                  description="同意の取得・撤回の記録 (ドメインは Purpose の所属で判定)"),
+    "privacy.consent.check": rule(roles=(ADMIN, COMMITTEE, CONSENT_COLLECTOR), domain_roles=(STEWARD,),
+                                  description="目的内利用の判定と同意履歴の参照"),
+    "privacy.erasure.request": rule(roles=(ADMIN, COMMITTEE),
+                                    description="消去要求の受付・対象特定・削除指示の発行・期限超過の処理"),
+    "privacy.erasure.read": rule(roles=(ADMIN, COMMITTEE), relations=("owner",), description="消去要求の参照"),
+    "privacy.erasure.approve": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                                    description="消去の対象範囲の承認 (Owner は自分の資産の分のみ)"),
+    "privacy.erasure.reject": rule(roles=(COMMITTEE,), approval=True, description="消去要求の却下 (理由必須)"),
+    "privacy.erasure.verify": rule(roles=(COMMITTEE,), relations=("owner",), approval=True,
+                                   description="消去の完了確認とクローズ"),
+    "privacy.erasure.certificate": rule(roles=(ADMIN, COMMITTEE), description="消去証明の発行"),
+    "privacy.erasure.task_read": rule(roles=(ADMIN, COMMITTEE), relations=("custodian",),
+                                      description="消去タスクの取得 (Custodian は自分の資産の分のみ)"),
+    # 物理削除の実行と報告 (§4.2 ライフサイクル実行 R)。承認ではないため Custodian を含む
+    "privacy.erasure.task_ack": rule(relations=("custodian",), description="消去タスクの受領"),
+    "privacy.erasure.task_complete": rule(relations=("custodian",), description="消去タスクの完了報告"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -113,6 +135,8 @@ def validate_permissions(permissions: Mapping[str, Rule]) -> None:
             raise ValueError(f"{action}: Custodian に承認権限を与えることはできません (§4 Business Ownership)")
         if r.approval and (CONSUMER in r.roles | r.domain_roles or r.authenticated):
             raise ValueError(f"{action}: 承認行為を全員に開放することはできません")
+        if r.approval and CONSENT_COLLECTOR in r.roles | r.domain_roles:
+            raise ValueError(f"{action}: サービスアカウント用ロールに承認権限を与えることはできません")
 
 
 validate_permissions(PERMISSIONS)
@@ -205,6 +229,21 @@ def require_read(db: Session, principal: Principal, asset: DataAsset) -> None:
         else:
             reason = f"clearance ({principal.clearance}) が資産の機密度 ({asset.sensitivity}) に達していません"
         deny(db, principal, "asset.read", entity_type="asset", entity_id=asset.id, reason=reason)
+
+
+def require_scope(db: Session, principal: Principal, action: str, domain_column: Any = None) -> ColumnElement[bool]:
+    """ドメイン横断の一覧で使う SQL 条件。全社ロールは全件、ドメイン内ロールは所属ドメインのみ。権限が無ければ 403。"""
+    r = PERMISSIONS[action]
+    domain_column = DataAsset.domain if domain_column is None else domain_column
+    if r.authenticated or principal.roles & r.roles:
+        return true()
+    if principal.roles & r.domain_roles:
+        if "*" in principal.domains:
+            return true()
+        if principal.domains:
+            return domain_column.in_(sorted(principal.domains))
+    deny(db, principal, action, entity_type="privacy", entity_id="*",
+         reason=f"この操作 ({action}: {r.description}) を行う権限がありません", required=r)
 
 
 def permission_matrix() -> dict[str, dict[str, Any]]:
