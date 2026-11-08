@@ -12,12 +12,12 @@ from edgf import authz
 from edgf.auth import COMMITTEE, Principal
 from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
-from edgf.models import DatasetCard, DatasetVersion, ModelCard, ModelVersion, TrainingApproval
-from edgf.pagination import Page, page_params, paginate
+from edgf.models import DataAsset, DatasetCard, DatasetVersion, ModelCard, ModelUsage, ModelVersion, TrainingApproval
+from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (DatasetCardIn, DatasetCardOut, DatasetSourceOut, DatasetVersionIn, DatasetVersionOut, ModelCardIn,
-                          ModelCardOut, ModelSuspendIn, ModelVersionIn, ModelVersionOut, TrainingApprovalIn, TrainingApprovalOut,
+                          ModelCardOut, ModelSuspendIn, ModelUsageIn, ModelUsageOut, ModelVersionIn, ModelVersionOut, TrainingApprovalIn, TrainingApprovalOut,
                           TrainingDecisionIn)
-from edgf.services import ai, ai_training, audit
+from edgf.services import ai, ai_lineage, ai_training, audit
 from edgf.services.ai import AiStateError, AiValidationError
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -267,3 +267,55 @@ def withdraw_training_approval(approval_id: str, db: Session = Depends(get_sessi
     audit.record(db, principal.audit_actor, "ai.training.withdraw", "training_approval", approval.id,
                  {"dataset_version_id": version.id})
     return approval
+
+
+# ---------------- AI Lineage (§14) ----------------
+@router.post("/model-versions/{version_id}/usages", response_model=ModelUsageOut, status_code=201)
+def add_model_usage(version_id: str, body: ModelUsageIn, db: Session = Depends(get_session),
+                    principal: Principal = Depends(get_principal)):
+    """モデル版の利用先 (デプロイ、RAG、用途) を記録する。出力そのものは受け取らない。"""
+    version = _load_model_version(db, principal, version_id, "ai.model_version.register")
+    usage = _guard(ai.add_usage, db, version, kind=body.kind, target=body.target, target_asset_id=body.target_asset_id,
+                   description=body.description, actor=principal.subject)
+    audit.record(db, principal.audit_actor, "ai.model_usage.add", "model_version", version.id,
+                 {"usage_id": usage.id, "kind": usage.kind, "target": usage.target, "target_asset_id": usage.target_asset_id})
+    return usage
+
+
+@router.get("/model-versions/{version_id}/usages", response_model=list[ModelUsageOut])
+def list_model_usages(version_id: str, request: Request, response: Response, page: Page = Depends(page_params()),
+                      db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    _load_model_version(db, principal, version_id)
+    stmt = select(ModelUsage).where(ModelUsage.model_version_id == version_id).order_by(ModelUsage.created_at, ModelUsage.id)
+    return paginate(db, stmt, page, request, response)
+
+
+def _readable(db: Session, principal: Principal, asset_id: str | None) -> bool:
+    asset = db.get(DataAsset, asset_id) if asset_id else None
+    return asset is None or authz.can_read(db, principal, asset)
+
+
+@router.get("/lineage/models/{model_version_id}")
+def trace_model(model_version_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """モデル版から起点の資産まで遡る。閲覧できない資産 (ABAC) は名前だけを返し、詳細を伏せる。"""
+    version = _load_model_version(db, principal, model_version_id)
+    trace = ai_lineage.trace_model(db, version)
+    redact = lambda item: item if _readable(db, principal, item["asset_id"]) else {  # noqa: E731
+        "qualified_name": item["qualified_name"], "redacted": True}
+    trace["datasets"] = [redact(d) for d in trace["datasets"]]
+    trace["sources"] = [redact(s) for s in trace["sources"]]
+    return trace
+
+
+@router.get("/lineage/assets/{asset_id}/models")
+def impacted_models(asset_id: str, request: Request, response: Response, page: Page = Depends(page_params()),
+                    db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """その資産の影響を受けるモデル版。閲覧できないモデルは名前と状態だけを返す (影響の有無は隠さない)。"""
+    asset = load_asset(db, principal, asset_id)
+    impact = ai_lineage.affected_by_assets(db, [asset.qualified_name])
+    rows = []
+    for view in ai_lineage.model_views(db, impact):
+        if not _readable(db, principal, view["asset_id"]):
+            view = {"qualified_name": view["qualified_name"], "status": view["status"], "redacted": True}
+        rows.append(view)
+    return paginate_list(rows, page, request, response)

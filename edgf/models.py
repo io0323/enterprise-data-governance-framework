@@ -492,6 +492,19 @@ class ModelVersion(Base):
     datasets: Mapped[list[DatasetVersion]] = relationship(secondary=model_version_dataset)
 
 
+class ModelUsage(Base):
+    """§14 AI Lineage: モデル版の利用先 (デプロイ、RAG、用途)。出力そのものは持たない。"""
+    __tablename__ = "model_usages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    model_version_id: Mapped[str] = mapped_column(ForeignKey("model_versions.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # deployment / rag / application
+    target: Mapped[str] = mapped_column(String(300))
+    target_asset_id: Mapped[str | None] = mapped_column(ForeignKey("data_assets.id"))
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class TrainingApproval(Base):
     """§14 Training Data: Dataset Version ごとの学習利用の承認。controls の自己申告ではなく、この記録で AI-001 を判定する。"""
     __tablename__ = "training_approvals"

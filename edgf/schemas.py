@@ -719,3 +719,21 @@ class TrainingApprovalOut(ORM):
 
 class ModelSuspendIn(AiInput):
     reason: str = Field(min_length=1, max_length=1000, description="停止の理由。個人情報を含めないこと")
+
+
+class ModelUsageIn(AiInput):
+    kind: Literal["deployment", "rag", "application"]
+    target: str = Field(min_length=1, max_length=300, description="利用先の名前 (環境、サービス、用途)")
+    target_asset_id: str | None = Field(default=None, max_length=36, description="利用先が Catalog の資産ならその ID")
+    description: str = Field(default="", max_length=1000)
+
+
+class ModelUsageOut(ORM):
+    id: str
+    model_version_id: str
+    kind: str
+    target: str
+    target_asset_id: str | None
+    description: str
+    created_by: str
+    created_at: datetime

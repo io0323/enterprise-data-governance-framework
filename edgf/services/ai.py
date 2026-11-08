@@ -12,14 +12,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf.enums import AiKind, DataClass, DatasetVersionStatus
-from edgf.models import (DataAsset, DatasetCard, DatasetVersion, DatasetVersionSource, ModelCard, ModelVersion,
-                         PrivacyPurpose, RefDataSet, RefDataVersion, to_naive_utc)
+from edgf.models import (DataAsset, DatasetCard, DatasetVersion, DatasetVersionSource, ModelCard, ModelUsage,
+                         ModelVersion, PrivacyPurpose, RefDataSet, RefDataVersion, to_naive_utc)
+from edgf.services import lineage
 from edgf.services.mdm_rules import get_entities
 
 MODEL = AiKind.MODEL.value
 TRAINING_DATASET = AiKind.TRAINING_DATASET.value
 DATA_KINDS = tuple(k.value for k in AiKind if k != AiKind.MODEL)  # Dataset Card を持つ種別
 AI_TRAINING_PURPOSE = "ai_training"
+# lineage_edges に反映するデータセット単位のエッジの job。これ以外の job のエッジは版の情報と対応しない
+DATASET_JOB, MODEL_JOB, USAGE_JOB = "edgf.ai.dataset_version", "edgf.ai.model_version", "edgf.ai.usage"
 DELETED = "deleted"
 DATASET_CARD_FIELDS = ("purpose", "collection_source", "license", "known_biases", "constraints")
 MODEL_CARD_FIELDS = ("intended_use", "out_of_scope_use", "metrics", "bias_evaluation_ref", "constraints")
@@ -138,6 +141,8 @@ def register_dataset_version(db: Session, asset: DataAsset, fields: Mapping[str,
     for (source_id, kind, source_version), source in resolved.items():
         db.add(DatasetVersionSource(dataset_version_id=version.id, asset_id=source_id, kind=kind, version=source_version,
                                     qualified_name=source.qualified_name))
+        # 既存の impact_analysis と LIN-001 がそのまま使えるよう、データセット単位のエッジも反映する
+        lineage.upsert_edge(db, source.qualified_name, asset.qualified_name, DATASET_JOB, run_id=version.id)
     db.flush()
     return version
 
@@ -160,4 +165,25 @@ def register_model_version(db: Session, asset: DataAsset, *, version: str, exter
     row = ModelVersion(asset_id=asset.id, version=version, external_uri=external_uri, registered_by=actor, datasets=datasets)
     db.add(row)
     db.flush()
+    for dataset in datasets:
+        lineage.upsert_edge(db, db.get(DataAsset, dataset.asset_id).qualified_name, asset.qualified_name, MODEL_JOB,
+                            run_id=row.id)
     return row
+
+
+def add_usage(db: Session, version: ModelVersion, *, kind: str, target: str, target_asset_id: str | None,
+              description: str, actor: str) -> ModelUsage:
+    """利用先を記録する。Catalog の資産なら下流のエッジにも反映する (消去やリコールの影響範囲に入る)。"""
+    if target_asset_id:
+        target_asset = db.get(DataAsset, target_asset_id)
+        if target_asset is None:
+            raise AiValidationError(f"利用先の資産が見つかりません: {target_asset_id}")
+        model = db.get(DataAsset, version.asset_id)
+        if target_asset.id == model.id:
+            raise AiValidationError("モデル自身を利用先にはできません")
+        lineage.upsert_edge(db, model.qualified_name, target_asset.qualified_name, USAGE_JOB, run_id=version.id)
+    usage = ModelUsage(model_version_id=version.id, kind=kind, target=target, target_asset_id=target_asset_id,
+                       description=description, created_by=actor)
+    db.add(usage)
+    db.flush()
+    return usage
