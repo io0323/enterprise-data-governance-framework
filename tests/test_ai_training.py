@@ -1,8 +1,12 @@
 """Phase 10b (§14 Training Data): 学習利用の承認、AI-001、Model Version の状態遷移."""
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
+from edgf.db import engine
 from tests.ai_helpers import (ADMIN, API, COMMITTEE, CUSTODIAN, OWNER, STEWARD, U, ai_asset, approve_dataset, asset,
                               dataset_version, edge, model_version, request_approval, run_quality)
 
@@ -288,3 +292,46 @@ def test_model_lifecycle(two_owners):
     assert client.post(f"{url}/retire", headers=OWNER).status_code == 409
     assert client.post(f"{url}/resume", headers=OWNER).status_code == 409
     assert client.get(url, headers=ADMIN).json()["retired_at"]
+
+
+# ---------------------------------------------------------------- 並行実行 (実 DB のみ)
+needs_real_concurrency = pytest.mark.skipif(engine.dialect.name == "sqlite",
+                                            reason="インメモリの SQLite は 1 接続を共有するため並行実行できない")
+
+
+@needs_real_concurrency
+def test_concurrent_final_approvals_always_finalize(client):
+    """最後の承認が同時に来ても、互いの未決を読んで確定し損ねることがない。"""
+    owners = [f"owner-{i}" for i in range(6)]
+    for i, owner in enumerate(owners):
+        run_quality(client, asset(client, f"crm.s{i}", owner=owner)["id"])
+    rows = client.get(f"{API}/assets", headers=ADMIN, params={"q": "crm.s", "limit": 100}).json()
+    ds = ai_asset(client, "ai.race", "training_dataset")
+    for round_no in range(5):
+        dv = dataset_version(client, ds["id"], [a["id"] for a in rows], version=f"r{round_no}")
+        approval = request_approval(client, dv["id"]).json()
+        barrier = threading.Barrier(len(owners))
+
+        def decide(owner: str):
+            barrier.wait()
+            return _decide(client, approval["id"], U(owner)).status_code
+
+        with ThreadPoolExecutor(len(owners)) as pool:
+            codes = list(pool.map(decide, owners))
+        assert codes == [200] * len(owners)
+        assert client.get(f"{API}/ai/training-approvals/{approval['id']}", headers=ADMIN).json()["status"] == "approved"
+        assert client.get(f"{API}/ai/dataset-versions/{dv['id']}", headers=ADMIN).json()["status"] == "approved"
+
+
+@needs_real_concurrency
+def test_concurrent_requests_leave_one_pending(two_owners):
+    client, _, dv = two_owners
+    barrier = threading.Barrier(4)
+
+    def req(_):
+        barrier.wait()
+        return request_approval(client, dv["id"]).status_code
+
+    with ThreadPoolExecutor(4) as pool:
+        codes = sorted(pool.map(req, range(4)))
+    assert codes == [201, 409, 409, 409]

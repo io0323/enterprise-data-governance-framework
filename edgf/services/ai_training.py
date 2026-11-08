@@ -102,6 +102,11 @@ def _needs_committee(db: Session, assets: Sequence[DataAsset]) -> bool:
     return False
 
 
+def _lock_version(db: Session, version: DatasetVersion) -> None:
+    """版の行をロックして読み直す。申請の重複、決裁と消去 (superseded) の競合を防ぐ。"""
+    db.refresh(version, with_for_update=True)
+
+
 def pending_of(db: Session, version: DatasetVersion) -> TrainingApproval | None:
     return db.scalar(select(TrainingApproval).where(TrainingApproval.dataset_version_id == version.id,
                                                     TrainingApproval.status == TA.PENDING.value))
@@ -110,6 +115,7 @@ def pending_of(db: Session, version: DatasetVersion) -> TrainingApproval | None:
 def request(db: Session, version: DatasetVersion, *, license_status: str, license_ref: str, bias_evaluation_ref: str,
             requested_by: str) -> TrainingApproval:
     ai.require_kind(db.get(DataAsset, version.asset_id), ai.TRAINING_DATASET)
+    _lock_version(db, version)
     if version.status != DV.DRAFT.value:
         raise AiStateError(f"状態が {version.status} の版は申請できません")
     if pending_of(db, version):
@@ -153,6 +159,7 @@ def decide(db: Session, approval: TrainingApproval, slot: TrainingApprovalDecisi
     """1 つの枠を決裁する。却下は 1 件で確定し、承認は全枠が揃った時点で Dataset Version を approved にする。"""
     now = utcnow()
     version = db.get(DatasetVersion, approval.dataset_version_id)
+    _lock_version(db, version)
     if version.status != DV.DRAFT.value:
         raise AiStateError(f"Dataset Version の状態が {version.status} のため決裁できません")
     if approve:  # 申請後に構成元の状況が変わっていないか確認する (同意の記載や品質の変更など)

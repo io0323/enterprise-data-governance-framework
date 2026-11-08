@@ -198,8 +198,9 @@ def retire_model_version(version_id: str, db: Session = Depends(get_session), pr
 
 
 # ---------------- 学習利用の承認 (§14 Training Data / §13 Approval) ----------------
-def _load_approval(db: Session, approval_id: str) -> tuple[TrainingApproval, DatasetVersion]:
-    approval = db.get(TrainingApproval, approval_id)
+def _load_approval(db: Session, approval_id: str, *, lock: bool = False) -> tuple[TrainingApproval, DatasetVersion]:
+    # 決裁は行ロックで直列化する。同時に決裁すると互いの未決を読み、全員が承認しても確定しないことがあるため
+    approval = db.get(TrainingApproval, approval_id, with_for_update=lock or None)
     if approval is None:
         raise HTTPException(404, f"training approval not found: {approval_id}")
     return approval, db.get(DatasetVersion, approval.dataset_version_id)
@@ -241,7 +242,7 @@ def decide_training_approval(approval_id: str, body: TrainingDecisionIn, db: Ses
 
     Owner の枠を持つ人は Owner として決裁する。Committee の枠は、申請者と Owner の枠の決裁者には開かない (職務分離)。
     """
-    approval, version = _load_approval(db, approval_id)
+    approval, version = _load_approval(db, approval_id, lock=True)
     slot = ai_training.owner_slot_for(db, approval, principal.subject)
     authz.require(db, principal, "ai.training.approve", relations=("owner",) if slot else (),
                   entity_type="training_approval", entity_id=approval.id)
@@ -265,7 +266,7 @@ def decide_training_approval(approval_id: str, body: TrainingDecisionIn, db: Ses
 @router.post("/training-approvals/{approval_id}/withdraw", response_model=TrainingApprovalOut)
 def withdraw_training_approval(approval_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """申請後に Owner が交代した場合などに取り下げて、申請し直す。"""
-    approval, version = _load_approval(db, approval_id)
+    approval, version = _load_approval(db, approval_id, lock=True)
     load_asset(db, principal, version.asset_id, "ai.training.request")
     _guard(ai_training.withdraw, db, approval)
     audit.record(db, principal.audit_actor, "ai.training.withdraw", "training_approval", approval.id,
@@ -403,7 +404,7 @@ def get_remediation(remediation_id: str, db: Session = Depends(get_session), pri
 def decide_remediation(remediation_id: str, body: RemediationDecisionIn, db: Session = Depends(get_session),
                        principal: Principal = Depends(get_principal)):
     """Committee の判断。accept は理由と期限が必須で、期限は最大 365 日 (恒久的な許容は不可)。"""
-    row = db.get(ModelRemediation, remediation_id)
+    row = db.get(ModelRemediation, remediation_id, with_for_update=True)
     if row is None:
         raise HTTPException(404, f"model remediation not found: {remediation_id}")
     authz.require(db, principal, "ai.remediation.decide", entity_type="model_remediation", entity_id=row.id)
@@ -419,7 +420,7 @@ def decide_remediation(remediation_id: str, body: RemediationDecisionIn, db: Ses
 def complete_remediation(remediation_id: str, body: RemediationCompleteIn, db: Session = Depends(get_session),
                          principal: Principal = Depends(get_principal)):
     """再学習は置き換える版、Unlearning は Data Plane の証跡のハッシュを添えて完了を報告する。"""
-    row = db.get(ModelRemediation, remediation_id)
+    row = db.get(ModelRemediation, remediation_id, with_for_update=True)
     if row is None:
         raise HTTPException(404, f"model remediation not found: {remediation_id}")
     load_asset(db, principal, row.asset_id, "ai.remediation.complete")

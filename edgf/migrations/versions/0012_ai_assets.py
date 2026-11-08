@@ -115,12 +115,13 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_model_version_datasets_dataset_version_id'), 'model_version_datasets', ['dataset_version_id'], unique=False)
     # 標準の Purpose。同じ ID を既に登録している環境では、その定義を尊重する
-    now = utcnow()
-    op.get_bind().execute(sa.text(
-        "INSERT INTO privacy_purposes (id, description, default_legal_basis, created_at, updated_at) "
-        "SELECT :id, :description, 'consent', :now, :now "
-        "WHERE NOT EXISTS (SELECT 1 FROM privacy_purposes WHERE id = :id)"),
-        {"id": AI_TRAINING, "description": "AI モデルの学習への利用 (§14 Training Data)", "now": now})
+    conn = op.get_bind()
+    if conn.execute(sa.text("SELECT 1 FROM privacy_purposes WHERE id = :id"), {"id": AI_TRAINING}).first() is None:
+        now = utcnow()
+        conn.execute(sa.text(
+            "INSERT INTO privacy_purposes (id, description, default_legal_basis, created_at, updated_at) "
+            "VALUES (:id, :description, 'consent', :now, :now)"),
+            {"id": AI_TRAINING, "description": "AI モデルの学習への利用 (§14 Training Data)", "now": now})
 
 
 def downgrade() -> None:

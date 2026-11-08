@@ -1,10 +1,13 @@
 """Phase 10a (§14 AI Metadata): AI 資産、Card、版の情報."""
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from tests.ai_helpers import (ADMIN, API, COMMITTEE, CUSTODIAN, HASH, OWNER, STEWARD, U, ai_asset, asset, dataset_version,
                               model_version)
+from tests.test_mdm_integration import _alembic
 
 MDM_ASSET = "mdm.party"  # policies/mdm/party.yaml の対応資産
 
@@ -174,3 +177,34 @@ def test_state_changes_are_audited(world):
     model_version(client, model["id"], [dv["id"]])
     actions = [e["action"] for e in client.get(f"{API}/audit/events", headers=ADMIN, params={"limit": 1000}).json()]
     assert {"ai.card.write", "ai.dataset_version.register", "ai.model_version.register"} <= set(actions)
+
+
+def test_seed_keeps_existing_purpose_and_consent_history(tmp_path):
+    """同じ ID の Purpose が既にある環境では定義を尊重する。同意の履歴があれば downgrade でも消さない。"""
+    db = tmp_path / "seed.db"
+    url = f"sqlite:///{db}"
+    _alembic(["upgrade", "0011"], url)
+    now = "2026-01-01 00:00:00"
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO privacy_purposes (id, description, default_legal_basis, created_at, updated_at) "
+                     "VALUES ('ai_training', '自社の定義', 'contract', ?, ?)", (now, now))
+        conn.execute("INSERT INTO consents (subject_ref, purpose_id, status, source, recorded_by, recorded_at) "
+                     "VALUES ('ab', 'ai_training', 'granted', '', 'x', ?)", (now,))
+    _alembic(["upgrade", "head"], url)
+    query = "SELECT description, default_legal_basis FROM privacy_purposes WHERE id = 'ai_training'"
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(query).fetchone() == ("自社の定義", "contract")
+    _alembic(["downgrade", "0011"], url)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(query).fetchone() == ("自社の定義", "contract")
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert not tables & {"dataset_versions", "model_versions", "training_approvals", "model_remediations", "ai_incidents"}
+        assert "ai_kind" not in [r[1] for r in conn.execute("PRAGMA table_info(data_assets)")]
+    # 参照が無ければ downgrade で標準の行を消す
+    fresh = tmp_path / "fresh.db"
+    _alembic(["upgrade", "head"], f"sqlite:///{fresh}")
+    with sqlite3.connect(fresh) as conn:
+        assert conn.execute(query).fetchone()[1] == "consent"
+    _alembic(["downgrade", "0011"], f"sqlite:///{fresh}")
+    with sqlite3.connect(fresh) as conn:
+        assert conn.execute(query).fetchone() is None
