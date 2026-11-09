@@ -9,3 +9,6 @@ build/
 .probe
 .coverage
 htmlcov/
+perf/manifest.json
+perf/results/*.json
+!perf/results/.gitkeep
