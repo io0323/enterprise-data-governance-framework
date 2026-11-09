@@ -1,5 +1,5 @@
 // 自前の SVG の折れ線グラフ。値は表でも示すので、グラフは視覚的な補助。
-import {s} from "./dom.js";
+import {h, s} from "./dom.js";
 import {t} from "./i18n.js";
 
 const WIDTH = 720;
@@ -28,8 +28,14 @@ export function lineChart(title, labels, series, {percent = true} = {}) {
     const points = line.values.map((v, i) => (v === null || v === undefined ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`)).filter(Boolean);
     if (points.length > 1) svg.append(s("polyline", {class: `series series-${index}`, points: points.join(" ")}));
     line.values.forEach((v, i) => {
-      if (v !== null && v !== undefined) svg.append(s("circle", {class: "point", cx: x(i), cy: y(v), r: 3}, s("title", {}, `${line.label} ${labels[i]}: ${percent ? `${(v * 100).toFixed(1)}%` : v}`)));
+      if (v !== null && v !== undefined) svg.append(s("circle", {class: `point point-${index}`, cx: x(i), cy: y(v), r: 3}, s("title", {}, `${line.label} ${labels[i]}: ${percent ? `${(v * 100).toFixed(1)}%` : v}`)));
     });
   });
   return svg;
+}
+
+/** 凡例。色だけに頼らないよう、線種の見本も付ける (WCAG 1.4.1)。 */
+export function chartLegend(labels) {
+  return h("ul", {class: "chart-legend"}, labels.map((label, index) => h("li", {},
+    s("svg", {width: 28, height: 10, "aria-hidden": "true"}, s("line", {class: `series series-${index}`, x1: 0, x2: 28, y1: 5, y2: 5})), label)));
 }

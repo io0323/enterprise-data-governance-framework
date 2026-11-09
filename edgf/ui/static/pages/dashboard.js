@@ -3,7 +3,7 @@ import {h} from "../lib/dom.js";
 import {t} from "../lib/i18n.js";
 import {get} from "../lib/api.js";
 import {asyncSection, badge, definitions, formatRate, section, table} from "../lib/components.js";
-import {lineChart} from "../lib/charts.js";
+import {chartLegend, lineChart} from "../lib/charts.js";
 
 // 設計書 §1.8 と §17 の目標。direction: at_least は値が目標以上、at_most は目標以下で達成
 const TARGETS = [
@@ -70,7 +70,7 @@ function trends(history) {
   const labels = history.map((r) => r.day);
   return h("div", {class: "grid"}, TREND_GROUPS.map((metrics) => h("div", {},
     lineChart(metrics.map((m) => t(`kpi.${m}`)).join(" / "), labels, metrics.map((m) => ({label: t(`kpi.${m}`), values: history.map((r) => r.metrics[m] ?? null)}))),
-    h("ul", {class: "muted"}, metrics.map((m) => h("li", {}, t(`kpi.${m}`)))))));
+    chartLegend(metrics.map((m) => t(`kpi.${m}`))))));
 }
 
 function domainTable(rows) {

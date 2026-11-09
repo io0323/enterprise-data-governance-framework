@@ -59,9 +59,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .chart text { font-size: 11px; fill: var(--muted); }
 .chart .axis { stroke: var(--line); }
 .chart .series { fill: none; stroke: var(--accent); stroke-width: 2; }
-.chart .series-1 { stroke: #a4560a; }
-.chart .series-2 { stroke: #17643a; }
-.chart .point { fill: var(--accent); }
+.series { fill: none; stroke: var(--accent); stroke-width: 2; }
+.series-1 { stroke: #a4560a; stroke-dasharray: 7 4; }
+.series-2 { stroke: #17643a; stroke-dasharray: 2 3; }
+.chart .point, .point-0 { fill: var(--accent); }
+.chart .point-1 { fill: #a4560a; }
+.chart .point-2 { fill: #17643a; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; margin: 8px 0 0; padding: 0; font-size: .9rem; }
+.chart-legend li { display: flex; align-items: center; gap: 6px; }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .page-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
 .page-head h1 { margin: 0 8px 0 0; }

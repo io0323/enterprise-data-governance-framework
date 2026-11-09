@@ -160,6 +160,8 @@ def test_dashboard(session_of):
     for expected in ("Owner 割当率", "目標", "未計測", "AI の KPI", "Data Mesh の KPI", "Privacy の KPI", "sales"):
         assert expected in text, expected
     assert s.page.locator("svg.chart").count() == 2
+    # 線種の凡例で、どの線がどの指標か分かる
+    assert s.page.locator(".chart-legend li").count() == 6 and "Policy 準拠率" in s.page.locator(".chart-legend").first.inner_text()
 
 
 def test_products_issues_inbox(session_of):
