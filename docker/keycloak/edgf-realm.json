@@ -1,0 +1,286 @@
+{
+  "realm": "edgf",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "admin"
+      },
+      {
+        "name": "committee"
+      },
+      {
+        "name": "owner"
+      },
+      {
+        "name": "steward"
+      },
+      {
+        "name": "custodian"
+      },
+      {
+        "name": "consumer"
+      }
+    ]
+  },
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\": [{\"name\": \"username\", \"displayName\": \"username\", \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}}, {\"name\": \"email\", \"displayName\": \"email\", \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}}], \"unmanagedAttributePolicy\": \"ENABLED\"}"
+          ]
+        }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "edgf-ui",
+      "name": "Data Governance UI",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "http://localhost:8000/ui/callback.html"
+      ],
+      "webOrigins": [
+        "http://localhost:8000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8000/ui/"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "edgf-control-plane",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "clearance",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "clearance",
+            "claim.name": "clearance",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "domains",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "domains",
+            "claim.name": "domains",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "dg-admin",
+      "enabled": true,
+      "email": "dg-admin@example.test",
+      "emailVerified": true,
+      "firstName": "dg-admin",
+      "lastName": "Dev",
+      "realmRoles": [
+        "admin"
+      ],
+      "attributes": {
+        "clearance": [
+          "restricted"
+        ],
+        "domains": [
+          "*"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "edgf-dev-only",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "dg-committee",
+      "enabled": true,
+      "email": "dg-committee@example.test",
+      "emailVerified": true,
+      "firstName": "dg-committee",
+      "lastName": "Dev",
+      "realmRoles": [
+        "committee"
+      ],
+      "attributes": {
+        "clearance": [
+          "restricted"
+        ],
+        "domains": [
+          "*"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "edgf-dev-only",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "dg-owner",
+      "enabled": true,
+      "email": "dg-owner@example.test",
+      "emailVerified": true,
+      "firstName": "dg-owner",
+      "lastName": "Dev",
+      "realmRoles": [
+        "owner"
+      ],
+      "attributes": {
+        "clearance": [
+          "confidential"
+        ],
+        "domains": [
+          "sales"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "edgf-dev-only",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "dg-steward",
+      "enabled": true,
+      "email": "dg-steward@example.test",
+      "emailVerified": true,
+      "firstName": "dg-steward",
+      "lastName": "Dev",
+      "realmRoles": [
+        "steward"
+      ],
+      "attributes": {
+        "clearance": [
+          "confidential"
+        ],
+        "domains": [
+          "sales"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "edgf-dev-only",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "dg-custodian",
+      "enabled": true,
+      "email": "dg-custodian@example.test",
+      "emailVerified": true,
+      "firstName": "dg-custodian",
+      "lastName": "Dev",
+      "realmRoles": [
+        "custodian"
+      ],
+      "attributes": {
+        "clearance": [
+          "confidential"
+        ],
+        "domains": [
+          "sales"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "edgf-dev-only",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "dg-consumer",
+      "enabled": true,
+      "email": "dg-consumer@example.test",
+      "emailVerified": true,
+      "firstName": "dg-consumer",
+      "lastName": "Dev",
+      "realmRoles": [
+        "consumer"
+      ],
+      "attributes": {
+        "clearance": [
+          "internal"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "edgf-dev-only",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

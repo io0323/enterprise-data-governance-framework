@@ -879,6 +879,18 @@ class JobRun(Base):
     error: Mapped[str | None] = mapped_column(String(200))  # 例外の種類だけ (内部情報を残さない)
 
 
+class KpiSnapshot(Base):
+    """§17 KPI の日次のスナップショット。全社 (scope_type=enterprise) とドメイン別。1 日 1 件。"""
+    __tablename__ = "kpi_snapshots"
+    __table_args__ = (UniqueConstraint("day", "scope_type", "scope_name", name="uq_kpi_snapshot"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    scope_type: Mapped[str] = mapped_column(String(20))  # enterprise / domain
+    scope_name: Mapped[str] = mapped_column(String(100), default="")  # ドメイン名 (全社は空)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

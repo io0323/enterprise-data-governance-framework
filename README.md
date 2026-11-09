@@ -28,6 +28,7 @@
 | §14 | AI 資産(Dataset / Model Card、版の情報)、学習利用の承認、AI Lineage、統制属性の継承、RAG の判定、消去の伝播と是正、インシデント | `/ai/...` |
 | §15 | Data Product、Output Port、Data Contract(互換性の判定、メジャー版の更新)、利用登録、CDM の取り込みと準拠の検証、出荷基準(DATSIS)、ODCS の取り込みと書き出し | `/mesh/...` |
 | §16 | 汎用の承認エンジンと共通の承認箱、Policy の変更のワークフロー、Outbox と Webhook(CloudEvents)、定期レビュー、ジョブ基盤と保持期限の自動執行 | `/approvals`, `/policies/bundles`, `/webhooks`, `/outbox`, `/reviews`, `/ops/jobs` |
+| §7 / §9 / §17 / §20 | 読み取り専用の UI(Catalog、Lineage、KPI、成熟度)、KPI の推移 | `/ui/`, `/kpi/history`, `/lineage/{name}/graph`, `/mesh/products/overview` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
 ## 起動
@@ -69,6 +70,9 @@ docker compose up --build             # 既定: jwt モード (EDGF_OIDC_* が�
 | `EDGF_MIN_K_ANONYMITY` | `5` | `anonymized` と宣言するために必要な k-匿名性の下限(PRV-003)。継承の解除の基準にもなる |
 | `EDGF_AI_REMEDIATION_SLA_DAYS` | `30` | ModelRemediation の判断と実施の期限(日) |
 | `EDGF_CONTRACT_DEPRECATION_DAYS` | `90` | 新しいメジャー版の公開後、旧版を併存させる期間(日) |
+| `EDGF_UI_OIDC_CLIENT_ID` | (なし) | UI の OIDC クライアント ID。未設定だと UI はログインできません |
+| `EDGF_UI_OIDC_ISSUER` / `EDGF_UI_OIDC_AUDIENCE` | `EDGF_OIDC_ISSUER` / `EDGF_OIDC_AUDIENCE` | UI が使う issuer と audience |
+| `EDGF_UI_OIDC_SCOPES` | `openid,profile` | 要求するスコープ(カンマ区切り) |
 | `EDGF_REVIEW_DUE_DAYS` | `30` | レビューの対応期限(日) |
 | `EDGF_ACCESS_REVIEW_GRACE_DAYS` | `14` | 棚卸の期限を過ぎてから権限を自動で取り消すまでの猶予(日) |
 | `EDGF_RETENTION_REJECT_COOLDOWN_DAYS` | `90` | 保持期限の削除の申請を却下されたあと、次に申請するまでの期間(日) |
@@ -95,7 +99,7 @@ MVP(v0.1, `create_all`)で作成済みの既存 DB は、スキーマが同一�
 | モード | 操作者の特定 | 用途 |
 |---|---|---|
 | `jwt`(既定) | `Authorization: Bearer <JWT>`。署名・`iss`・`aud`・`exp`・`nbf` を検証します。トークンが無い・不正なら 401 で、`X-Actor` は無視します | 本番・検証環境 |
-| `dev` | `X-Actor`(必須)、`X-Roles` / `X-Domains` / `X-Clearance`(任意)ヘッダ | ローカル開発・移行期間 |
+| `dev` | `X-Actor`(必須)、`X-Roles` / `X-Domains` / `X-Clearance`(任意)ヘッダ | 開発・テスト専用(恒久的な機能) |
 
 ### jwt モードの設定(IdP 製品に依存しない)
 
@@ -123,6 +127,8 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 `{"iss": "...", "aud": "edgf-control-plane", "sub": "hanako", "exp": ..., "roles": ["steward"], "domains": ["sales"], "clearance": "confidential"}`
 
 ### dev モードの安全策
+
+dev モードは**開発・テスト専用の恒久的な機能**です(以前は移行期間の措置としていました)。API のテストや `curl` での確認を手軽にするために残し、次の安全策を維持します。UI は dev モードに対応しません。UI を手元で動かすときは `docker-compose.idp.yml` を使ってください。
 
 - `EDGF_ENV=production` と同時に指定すると、起動時に例外を出して停止します。
 - 起動時に WARNING ログを出し、`/health` の応答に `"auth_mode": "dev"` を含めます(外形監視で検知できます)。
@@ -842,6 +848,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 | `outbox_deliver` | 1 分 | Outbox の配信 |
 | `approval_sla` | 1 時間 | 承認の SLA 超過の処理 |
 | `review_campaigns` | 1 日 | レビューキャンペーンの作成と期限の処理 |
+| `kpi_snapshot` | 1 日 | KPI の日次のスナップショット(同じ日に 2 回実行しても 1 日分) |
 
 ```cron
 # cron の例 (環境変数は EDGF_DATABASE_URL などを設定しておく)
@@ -855,6 +862,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 10 2 * * *  python -m edgf.jobs run retention_detect
 20 2 * * *  python -m edgf.jobs run consent_expire
 30 2 * * *  python -m edgf.jobs run review_campaigns
+40 2 * * *  python -m edgf.jobs run kpi_snapshot
 ```
 
 ```yaml
@@ -889,6 +897,111 @@ cron を使わない場合は `python -m edgf.jobs serve` を常駐させます(
 - 資産の保持期限が来ると、削除の承認申請を自動で作ります。承認されると `lifecycle.delete_requested` を記録します(`active` は状態遷移の規則に沿って `archived` を経由します)。
 - Legal Hold 中の資産は申請を作らず、申請の後に Legal Hold が設定されたら取り消します。承認の時点でも 409 で止めます。Owner が却下した資産は、`EDGF_RETENTION_REJECT_COOLDOWN_DAYS` の間は申請を作り直しません。Owner が未割当なら Committee 宛ての Issue を起票します。
 
+## UI(§7 / §9 / §17 / §20)
+
+`/ui/` で配信する**読み取り専用**の画面です。素の JavaScript(ES Modules)、HTML、CSS だけで作り、フレームワーク、ビルド工程、npm の依存、外部の CDN やフォントは使いません。データはすべて REST API から取り、認証と ABAC は API が判定します。
+
+### 構成
+
+| パス | 内容 |
+|---|---|
+| `edgf/ui/routes.py` | 配信、`/ui/config.json`、セキュリティヘッダ |
+| `edgf/ui/static/lib/oidc.js` | OIDC Authorization Code + PKCE |
+| `edgf/ui/static/lib/api.js` | REST API の読み取り(GET だけ) |
+| `edgf/ui/static/lib/` の他 | DOM の部品、ルーティング、ページング、Problem Details の表示、グラフ、Lineage のレイアウト |
+| `edgf/ui/static/pages/` | 各画面 |
+| `edgf/ui/static/i18n/` | 文言の辞書(`ja` が既定、`en`) |
+
+**読み取り専用の保証**: Control Plane への呼び出しは GET だけです。唯一の例外は、OIDC の仕様上必須である IdP の `token_endpoint` への POST で、`oidc.js` の 1 か所だけです。これは静的な検査(`tests/test_ui_server.py`)と、実ブラウザでのネットワークの監視(`tests/e2e/`)で確認しています。データの表示はすべて `textContent` 相当と DOM API で行い、`innerHTML` や `eval` は使いません。
+
+### 起動方法
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.idp.yml up --build
+# http://localhost:8000/ui/ を開き、下のテストユーザーでログインする
+```
+
+Keycloak はローカル開発用のツールで、Control Plane の実行時の依存ではありません。設定は OIDC の標準項目だけなので、別の IdP にも同じ項目で接続できます。
+
+| ユーザー | ロール | clearance | ドメイン |
+|---|---|---|---|
+| `dg-admin` | admin | restricted | `*` |
+| `dg-committee` | committee | restricted | `*` |
+| `dg-owner` | owner | confidential | `sales` |
+| `dg-steward` | steward | confidential | `sales` |
+| `dg-custodian` | custodian | confidential | `sales` |
+| `dg-consumer` | consumer | internal | なし |
+
+パスワードはすべて `edgf-dev-only` です(開発専用)。データは API で登録してください(例: `dg-admin` のトークンを使うか、dev モードの `./scripts/demo.sh`)。
+
+### OIDC のクライアントの設定
+
+IdP に、次の内容で公開クライアントを登録します。設定例は [docker/keycloak/edgf-realm.json](docker/keycloak/edgf-realm.json) です。
+
+| 項目 | 値 |
+|---|---|
+| クライアントの種類 | 公開クライアント(クライアントシークレットなし) |
+| フロー | Authorization Code + PKCE(`S256`) |
+| リダイレクト URI | `<UI のオリジン>/ui/callback.html` |
+| ログアウト後のリダイレクト URI | `<UI のオリジン>/ui/` |
+| CORS | ディスカバリとトークンエンドポイントで UI のオリジンを許可する |
+| アクセストークンの claim | `aud` に `EDGF_OIDC_AUDIENCE`。ロール、ドメイン、clearance は `EDGF_CLAIM_*` で指定した claim |
+
+- トークンはメモリにだけ持ちます(`localStorage`、`sessionStorage`、Cookie は使いません)。再読み込みや期限切れのあとは、もう一度ログインします。
+- PKCE の verifier と state もメモリに置くため、ログインはポップアップで行い、本体のページを残します。**ポップアップの許可が必要です**。`callback.html` は `BroadcastChannel` で認可コードを本体に渡して閉じます。
+- `crypto.subtle` を使うので、本番では https で配信してください(`localhost` は例外)。
+
+### セキュリティヘッダ
+
+`/ui` のすべての応答に付けます。
+
+| ヘッダ | 値 |
+|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' <issuer のオリジン>; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'` |
+| `Referrer-Policy` | `no-referrer` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Permissions-Policy` | `accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()` |
+
+### 画面の一覧
+
+| 画面 | パス | 使う API |
+|---|---|---|
+| [カタログの検索](docs/ui/catalog.png) | `#/catalog` | `/assets`, `/domains` |
+| [資産の詳細](docs/ui/asset.png) | `#/assets/{id}` | `/assets/{id}`, `/quality/...`, `/policies/evaluate/...`, `/glossary/terms`, `/mesh/products?asset_id=`, `/ai/assets/...` |
+| [用語集](docs/ui/glossary.png) | `#/glossary`, `#/glossary/{id}` | `/glossary/terms` |
+| [リネージと影響分析](docs/ui/lineage.png) | `#/lineage/{name}?depth=` | `/lineage/{name}/graph`, `/lineage/{name}/impact` |
+| [KPI と成熟度](docs/ui/dashboard.png) | `#/dashboard` | `/kpi`, `/kpi/history` |
+| [Data Product](docs/ui/products.png) | `#/products` | `/mesh/products/overview` |
+| [Issue](docs/ui/issues.png) | `#/issues` | `/issues` |
+| [承認箱](docs/ui/inbox.png) | `#/inbox` | `/approvals/inbox`(判断する API を案件ごとに示す) |
+| [ジョブの状態](docs/ui/jobs.png) | `#/jobs` | `/ops/jobs` |
+
+![KPI ダッシュボード](docs/ui/dashboard.png)
+
+![リネージ](docs/ui/lineage.png)
+
+### UI のために追加した API
+
+| API | 内容 | 認可 |
+|---|---|---|
+| `GET /kpi/history?scope=&domain=&from=&to=` | KPI の推移(古い順、ページング)。`scope` は `enterprise` か `domains` | 認証済みの全員。ドメイン別は、閲覧できる資産があるか所属するドメインだけ |
+| `GET /lineage/{name}/graph?depth=` | グラフの描画用のノードとエッジ | 認証済みの全員。閲覧できない資産は名前と深さだけで、接するエッジの `job` も伏せる |
+| `GET /mesh/products/overview` | DATSIS の合否、Contract の版(閲覧できる Output Port だけ)、有効な利用登録の数 | 認証済みの全員 |
+| `GET /mesh/products?asset_id=` | 資産を Output Port に持つ Product(既存の API への絞り込みの追加) | 閲覧できない資産なら結果は空 |
+
+`/kpi` に `privacy_pii_asset_count`、`privacy_erasure_open_count`、`privacy_erasure_overdue_count` を、`maturity` に `level_name` と `next_level`(次のレベルの条件)を追加しました。成熟度の判定そのものは変えていません。
+
+### テスト
+
+```bash
+pip install -e ".[dev,e2e]" && playwright install chromium
+EDGF_E2E=1 pytest -q tests/e2e                                       # IdP を模して実ブラウザで実行する
+EDGF_E2E=1 EDGF_UI_SCREENSHOTS=docs/ui pytest -q tests/e2e           # スクリーンショットも撮る
+EDGF_E2E_KEYCLOAK=http://localhost:8000 pytest -q tests/e2e_keycloak # docker-compose.idp.yml を起動しておく
+```
+
+CI では `playwright` ジョブが常に実行されます。Keycloak との E2E は手動で起動します(`.github/workflows/e2e-keycloak.yml`)。
+
 ## API の共通仕様
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
@@ -918,7 +1031,7 @@ cron を使わない場合は `python -m edgf.jobs serve` を常駐させます(
 
 ## 既知の制約と次フェーズ
 
-- dev モード(`X-Actor`)は移行期間の措置です。移行が完了したら廃止します
+- dev モード(`X-Actor`)は開発・テスト専用の恒久的な機能です。本番では起動を拒否します
 - 閲覧の申請は承認エンジンの `access_request` で扱います。Owner が直接付与する API も残っています。SLA の営業日は土日だけを除きます(祝日は考慮しません)
 - 棚卸はキャンペーンの作成時点の一覧で行います。作成後に付与された権限は次の四半期の対象です
 - リネージの `upstream`/`downstream`/`impact` はオブジェクトで返すため、ページネーションの対象外です(`depth` 上限 50 で件数を抑えています)
@@ -958,7 +1071,12 @@ cron を使わない場合は `python -m edgf.jobs serve` を常駐させます(
 - 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください
 - `split` の直後は、どのソースの識別子か判定できないので、`subject_ref` の対応を両方の Golden Record に残します(再構成で正しくなります。消去の対象から漏らさないための措置です)
 - Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
-- 未着手: Catalog UI
+- **UI のアクセシビリティ**は WCAG 2.2 AA の基本(キーボード操作、ランドマーク、ラベル、フォーカスの表示、配色)に沿って作り、キーボード操作と構造を E2E で確認しています。支援技術での確認と、適合の監査は行っていません
+- UI はポップアップが必要で、再読み込みすると再ログインになります(トークンをメモリにだけ持つため)。トークンエンドポイントは issuer と同じオリジンにある必要があります(CSP の `connect-src` が issuer だけを許可するため)。トークンの自動更新はありません
+- 既存の `GET /kpi/domains` はドメインごとの ABAC の絞り込みをしていません(互換性のため変更していません)。UI のドメイン別の表示は絞り込みのある `/kpi/history` を使います。ドメイン別の値は、閲覧できない資産も含めた集計です
+- 既存の `GET /lineage/{name}/upstream` と `/downstream` は名前を伏せず、`transformation` も返します(互換性のため変更していません)。UI は `/graph` を使います
+- ダッシュボードの目標のうち、**Catalog 登録率(§1.8)は計測できません**(未登録の資産を検出する手段が無いため)。§20 の Level 3 の判定も、登録率の代わりにメタデータ充足率を使っています
+- `/mesh/products/overview` は Product ごとに DATSIS を評価するので、件数に比例して遅くなります。性能は Phase 14 の負荷試験で確認します
 - **Policy の起案者は admin、Committee、ドメイン内の Owner です**。§16 の「起案(Steward/Owner)」のうち Steward は含みません
 - Policy の影響評価は全資産を評価するので、資産の数に比例して提案に時間がかかります。評価の結果は提案の時点のものです(公開までに資産が変わっても再計算しません)
 - inbox は案件を集めてからページングするので、案件の数に比例して遅くなります。性能は Phase 14 の負荷試験で確認します

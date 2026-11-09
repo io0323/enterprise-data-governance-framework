@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import or_, select
+from sqlalchemy import false, or_, select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -85,13 +85,40 @@ def create_product(body: ProductIn, db: Session = Depends(get_session), principa
 
 @router.get("/products", response_model=list[ProductOut])
 def list_products(request: Request, response: Response, domain: str | None = None, status: str | None = None,
-                  owner: str | None = None, page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                  owner: str | None = None, asset_id: str | None = None, page: Page = Depends(page_params()), db: Session = Depends(get_session),
                   principal: Principal = Depends(get_principal)):
+    """asset_id を指定すると、その資産を Output Port に持つ Product に絞る (閲覧できない資産なら結果は空)。"""
     stmt = select(DataProduct).order_by(DataProduct.domain, DataProduct.name)
+    if asset_id is not None:
+        asset = db.get(DataAsset, asset_id)
+        if asset is None or not authz.can_read(db, principal, asset):
+            stmt = stmt.where(false())
+        else:
+            stmt = stmt.where(DataProduct.id.in_(select(OutputPort.product_id).where(OutputPort.asset_id == asset_id)))
     for column, value in ((DataProduct.domain, domain), (DataProduct.status, status), (DataProduct.owner, owner)):
         if value is not None:
             stmt = stmt.where(column == value)
     return [_product_out(db, principal, p) for p in paginate(db, stmt, page, request, response)]
+
+
+@router.get("/products/overview")
+def products_overview(request: Request, response: Response, page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                      principal: Principal = Depends(get_principal)):
+    """一覧の画面用: DATSIS の合否、Contract の版 (閲覧できる Output Port だけ)、有効な利用登録の数。"""
+    stmt = select(DataProduct).order_by(DataProduct.domain, DataProduct.name)
+    rows = []
+    for product in paginate(db, stmt, page, request, response):
+        results, blockers = mesh_datsis.evaluate(db, product)
+        contracts = []
+        for port in product.ports:
+            if authz.can_read(db, principal, db.get(DataAsset, port.asset_id)):
+                contract = db.scalar(select(DataContract).where(DataContract.output_port_id == port.id))
+                latest = mesh_contracts.latest_published(db, contract) if contract else None
+                contracts.append({"port": port.name, "version": latest.version if latest else None, "status": latest.status if latest else None})
+        rows.append({"id": product.id, "name": product.name, "domain": product.domain, "owner": product.owner, "status": product.status,
+                     "datsis_passed": not blockers, "datsis_failed": sorted(r["policy_id"] for r in results if r["status"] == "fail"),
+                     "contracts": contracts, "subscription_count": len([s for s in mesh_subscriptions.valid_for_product(db, product.id) if s.status == "active"])})
+    return rows
 
 
 @router.get("/products/{product_id}", response_model=ProductOut)

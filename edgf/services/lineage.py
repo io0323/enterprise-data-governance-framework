@@ -76,3 +76,21 @@ def impact_analysis(db: Session, qualified_name: str, max_depth: int = 10) -> di
         "unregistered_downstream": [i["qualified_name"] for i in impacted if not i["registered"]],
         "impacted": impacted,
     }
+
+
+def graph(db: Session, qualified_name: str, max_depth: int = 3) -> dict:
+    """UI の描画用: 上流と下流のノードとエッジ。level は起点からの距離 (上流は負、下流は正)。"""
+    levels: dict[str, int] = {qualified_name: 0}
+    edges: dict[tuple[str, str, str], dict] = {}
+    for direction, sign, key in (("upstream", -1, "from"), ("downstream", 1, "to")):
+        for edge in traverse(db, qualified_name, direction, max_depth):
+            edges[(edge["from"], edge["to"], edge["job"])] = {"from": edge["from"], "to": edge["to"], "job": edge["job"]}
+            levels.setdefault(edge[key], sign * edge["depth"])
+    assets = {a.qualified_name: a for a in db.scalars(select(DataAsset).where(DataAsset.qualified_name.in_(levels)))}
+    nodes = []
+    for name, level in sorted(levels.items(), key=lambda kv: (kv[1], kv[0])):
+        asset = assets.get(name)
+        nodes.append({"qualified_name": name, "level": level, "registered": asset is not None, "asset_id": asset.id if asset else None,
+                      "is_cde": bool(asset and asset.is_cde), "certified": bool(asset and asset.certification == "certified"),
+                      "data_class": asset.data_class if asset else None})
+    return {"asset": qualified_name, "depth": max_depth, "nodes": nodes, "edges": list(edges.values())}

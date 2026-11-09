@@ -14,6 +14,7 @@ from edgf.deps import get_principal
 from edgf.errors import PROBLEM_RESPONSES, install_problem_handlers
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from edgf.services.mdm_rules import get_entities
+from edgf.ui import routes as ui_routes
 from edgf.services.policy_bundles import bootstrap_on_startup
 from edgf.services.subject_ref import validate_subject_key
 
@@ -54,6 +55,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         # /api/v1 はすべて認証必須 (認可は各エンドポイントで edgf.authz が判定)
         app.include_router(r, prefix="/api/v1", responses=PROBLEM_RESPONSES, dependencies=[Depends(get_principal)])
     app.include_router(ops.router)
+    app.include_router(ui_routes.build_router(s))  # 静的ファイルと config.json だけで、データは含まない
     setup_tracing(app, s.otel_enabled, s.service_name)
     return app
 

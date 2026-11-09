@@ -87,3 +87,19 @@ def test_port_redacted_for_unreadable_asset(sales):
                     "port_type": None, "address_uri": None, "contract_id": None}
     assert sales.get(f"{MESH}/ports/{port['id']}", headers=reader).json()["redacted"] is True
     assert sales.get(f"{MESH}/ports/{port['id']}", headers=U("so")).json()["asset_id"] == secret["id"]
+
+
+def test_products_can_be_filtered_by_readable_asset(sales):
+    open_asset = port_asset(sales)
+    secret = port_asset(sales, "sales.secret", sensitivity="restricted", owner="so")
+    p = product(sales)
+    q = product(sales, "other")
+    add_port(sales, p["id"], open_asset["id"])
+    add_port(sales, q["id"], secret["id"], name="secret")
+    url = f"{MESH}/products"
+    reader = U("reader", clearance="internal")
+    assert [x["name"] for x in sales.get(url, headers=reader, params={"asset_id": open_asset["id"]}).json()] == ["orders"]
+    # 閲覧できない資産からは Product を引けない
+    assert sales.get(url, headers=reader, params={"asset_id": secret["id"]}).json() == []
+    assert [x["name"] for x in sales.get(url, headers=U("so"), params={"asset_id": secret["id"]}).json()] == ["other"]
+    assert sales.get(url, headers=reader, params={"asset_id": "none"}).json() == []

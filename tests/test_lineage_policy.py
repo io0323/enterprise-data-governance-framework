@@ -97,3 +97,52 @@ def test_audit_chain_and_kpi(client, sales_asset):
     assert k["asset_count"] == 1 and k["owner_assignment_rate"] == 1.0
     assert k["maturity"]["indicative_level"] >= 1
     assert client.get(f"{API}/kpi/domains").json()[0]["scope"] == "sales"
+
+
+def _graph_setup(client):
+    client.post(f"{API}/domains", json={"name": "sales"}, headers=H())
+    _asset(client, "up.raw")
+    _asset(client, "mid.cde", is_cde=True)
+    _asset(client, "down.secret", sensitivity="restricted", owner="so")
+    for s, t in (("up.raw", "mid.cde"), ("mid.cde", "down.secret"), ("mid.cde", "ext.unregistered"), ("down.secret", "down.deep")):
+        assert client.post(f"{API}/lineage/edges", headers=H(), json={"source": s, "target": t, "job": "etl"}).status_code == 201
+
+
+def test_lineage_graph_levels_and_attributes(client):
+    _graph_setup(client)
+    g = client.get(f"{API}/lineage/mid.cde/graph", headers=H(), params={"depth": 1}).json()
+    levels = {n["qualified_name"]: n["level"] for n in g["nodes"]}
+    assert levels == {"up.raw": -1, "mid.cde": 0, "down.secret": 1, "ext.unregistered": 1}
+    by_name = {n["qualified_name"]: n for n in g["nodes"]}
+    assert by_name["mid.cde"]["is_cde"] is True and by_name["ext.unregistered"]["registered"] is False
+    deeper = client.get(f"{API}/lineage/mid.cde/graph", headers=H(), params={"depth": 2}).json()
+    assert {n["qualified_name"] for n in deeper["nodes"]} == set(levels) | {"down.deep"} and len(deeper["edges"]) == 4
+    assert client.get(f"{API}/lineage/mid.cde/graph", headers=H(), params={"depth": 0}).status_code == 422
+    assert client.get(f"{API}/lineage/mid.cde/graph", headers=H(), params={"depth": 51}).status_code == 422
+
+
+def test_lineage_graph_redacts_unreadable_nodes(client):
+    _graph_setup(client)
+    reader = {"X-Actor": "reader", "X-Roles": "", "X-Domains": "", "X-Clearance": "confidential"}
+    g = client.get(f"{API}/lineage/mid.cde/graph", headers=reader, params={"depth": 2}).json()
+    hidden = next(n for n in g["nodes"] if n["qualified_name"] == "down.secret")
+    # 名前と深さだけで、資産の ID や属性は返さない。接するエッジの job も伏せる
+    assert hidden == {"qualified_name": "down.secret", "level": 1, "registered": True, "redacted": True}
+    jobs = {(e["from"], e["to"]): e["job"] for e in g["edges"]}
+    assert jobs[("mid.cde", "down.secret")] is None and jobs[("down.secret", "down.deep")] is None and jobs[("up.raw", "mid.cde")] == "etl"
+    # 当事者には全部返す
+    seen = client.get(f"{API}/lineage/mid.cde/graph", headers={"X-Actor": "so"}, params={"depth": 2}).json()
+    assert next(n for n in seen["nodes"] if n["qualified_name"] == "down.secret").get("redacted") is None
+    # 読めない資産を起点にしても詳細は出ない
+    root = client.get(f"{API}/lineage/down.secret/graph", headers=reader).json()
+    assert next(n for n in root["nodes"] if n["level"] == 0)["redacted"] is True
+
+
+def test_lineage_graph_handles_cycles_and_unknown_assets(client):
+    client.post(f"{API}/lineage/edges", headers=H(), json={"source": "a", "target": "b"})
+    client.post(f"{API}/lineage/edges", headers=H(), json={"source": "b", "target": "a"})
+    g = client.get(f"{API}/lineage/a/graph", headers=H()).json()
+    assert {n["qualified_name"] for n in g["nodes"]} == {"a", "b"} and len(g["edges"]) == 2
+    empty = client.get(f"{API}/lineage/none/graph", headers=H()).json()
+    assert [n["qualified_name"] for n in empty["nodes"]] == ["none"] and empty["edges"] == []
+    assert client.get(f"{API}/lineage/a/graph").status_code == 200
