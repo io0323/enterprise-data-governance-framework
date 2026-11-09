@@ -190,8 +190,26 @@ class Session:
         return self
 
     def go(self, fragment, wait="main h1"):
-        self.page.evaluate("f => { window.location.hash = f; }", fragment)
-        self.page.wait_for_selector(wait)
+        """画面を切り替え、遷移が終わるまで待つ。
+
+        ハッシュは代入と同時に変わり、再描画はそのあとの hashchange で起きる。代入の直後に要素を待つと、
+        切り替わる前の画面で成立してしまう (docs/operations/flaky-tests.md)。再描画は <main> を作り直すので、
+        古い <main> に印を付けておき、印の無い <main> が現れたことでルートの切り替わりを判定する。
+        """
+        navigated = self.page.evaluate("""f => {
+            const before = window.location.hash;
+            const main = document.getElementById("main");
+            if (main) main.__e2eStale = true;
+            window.location.hash = f;
+            const changed = window.location.hash !== before;
+            if (!changed && main) delete main.__e2eStale;  // 同じハッシュでは hashchange が起きず、作り直されない
+            return changed;
+        }""", fragment)
+        from playwright.sync_api import expect  # playwright は E2E のときだけ入れる
+        if navigated:
+            self.page.wait_for_function("() => { const main = document.getElementById('main'); return main !== null && !main.__e2eStale; }")
+        expect(self.page.locator(wait).first).to_be_visible()
+        expect(self.page.locator(".loading")).to_have_count(0)
         return self
 
     def settled(self):
