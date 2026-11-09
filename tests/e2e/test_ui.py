@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
 
 from tests.e2e.conftest import ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, STEWARD, USERS, Session
 
@@ -227,7 +228,9 @@ def test_keyboard_only_flow(browser, idp, app_url, seed):
         page.keyboard.type("sales.internal")
         page.keyboard.press("Enter")
         page.wait_for_function("() => window.location.hash.includes('q=sales.internal')")
-        page.wait_for_selector("#catalog-results a")
+        # ハッシュは送信と同時に変わり、再描画はそのあとの hashchange で起きる。リンクの有無だけで待つと、検索前の一覧で成立してしまう
+        expect(page.locator("#catalog-results a")).to_have_text(["sales.internal"])
+        expect(page.locator("#main")).to_be_focused()
         _tab_until(page, "() => document.activeElement?.textContent === 'sales.internal'")
         page.keyboard.press("Enter")
         page.wait_for_selector("text=Business Metadata")
