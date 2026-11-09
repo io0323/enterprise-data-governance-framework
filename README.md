@@ -3,6 +3,19 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 14)
+
+**ABAC の漏れを修正しました(セキュリティの修正として承認済みの挙動の変更です)。** 閲覧できない資産の**名前**は、Lineage 系のすべての API で返さなくなりました。
+
+| API | 変更 |
+|---|---|
+| `GET /lineage/{name}/upstream`, `/downstream` | 閲覧できない資産の名前を不透明なラベル(`redacted-1` など)に置き換え、接するエッジの `job` と `transformation` を `null` にします。項目は削っていません。**非推奨**で、`Deprecation` と `Link`(`rel="successor-version"`)ヘッダで `/graph` を案内します |
+| `GET /lineage/{name}/graph`, `/impact`、`POST /mesh/contracts/{id}/check` の `impact` | 名前と深さではなく、ラベルと深さだけを返します。通知先の Owner(`owners_to_notify`)とリスクは引き続き返します |
+| `GET /ai/lineage/models/{id}`, `/ai/lineage/assets/{id}/models` | 同様にラベルに置き換えます。`origins` と `upstream_edges` で名前が出ていたのも修正しました |
+| `GET /kpi/domains` | 閲覧できる資産があるか所属するドメインだけを返し、集計も閲覧できる資産の範囲で行います |
+
+ラベルは応答ごとに振り直す番号で、応答の外では意味を持ちません。
+
 ## 変更点(Phase 12)
 
 **`POST /policies/reload` の意味が変わりました(承認済みの挙動の変更です)。** これまではディスクの内容を即時に反映していましたが、**提案を作るだけ**になりました(`202`、応答は `proposal_version` と `approval_id`)。承認と公開を経るまで、実行時の評価は変わりません。**Policy を即時に反映する手段はありません。** 詳しくは「[Governance Process](#governance-process16)」を参照してください。
@@ -246,7 +259,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 
 - AI 資産は、宣言値ではなく上流から継承した**実効機密度**で判定します(後述の「統制属性の継承」)。
 - clearance は claim(`EDGF_CLAIM_CLEARANCE`)で与えます。無い場合はロールから導きます(admin/committee=restricted、owner/steward/custodian=confidential、consumer=internal、consent_collector=public)。
-- 閲覧できない資産は、一覧(資産・保持期限・Issue・ポリシー例外・用語の紐付け先)から件数を含めて除外し、個別に取得しようとすると 403 になります。影響分析では名前と深さだけを返し、詳細を伏せます(通知先 Owner は変更管理に必要なので返します)。
+- 閲覧できない資産は、一覧(資産・保持期限・Issue・ポリシー例外・用語の紐付け先)から件数を含めて除外し、個別に取得しようとすると 403 になります。影響分析とリネージでは名前をラベルに置き換えて深さだけを返し、詳細を伏せます(通知先 Owner は変更管理に必要なので返します)。
 - Owner による閲覧承認: `POST /assets/{id}/access-grants`(`subject`, `purpose`, `expires_at`。期限は最大 365 日)。取り消しは `DELETE /assets/{id}/access-grants/{grant_id}` で、Owner と Committee が行えます。
 
 ## Data Privacy(§12 / §10)
@@ -985,7 +998,7 @@ IdP に、次の内容で公開クライアントを登録します。設定例�
 | API | 内容 | 認可 |
 |---|---|---|
 | `GET /kpi/history?scope=&domain=&from=&to=` | KPI の推移(古い順、ページング)。`scope` は `enterprise` か `domains` | 認証済みの全員。ドメイン別は、閲覧できる資産があるか所属するドメインだけ |
-| `GET /lineage/{name}/graph?depth=` | グラフの描画用のノードとエッジ | 認証済みの全員。閲覧できない資産は名前と深さだけで、接するエッジの `job` も伏せる |
+| `GET /lineage/{name}/graph?depth=` | グラフの描画用のノードとエッジ | 認証済みの全員。閲覧できない資産は名前をラベルに置き換えて深さだけを返し、接するエッジの `job` も伏せる |
 | `GET /mesh/products/overview` | DATSIS の合否、Contract の版(閲覧できる Output Port だけ)、有効な利用登録の数 | 認証済みの全員 |
 | `GET /mesh/products?asset_id=` | 資産を Output Port に持つ Product(既存の API への絞り込みの追加) | 閲覧できない資産なら結果は空 |
 
@@ -1073,8 +1086,7 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 - Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
 - **UI のアクセシビリティ**は WCAG 2.2 AA の基本(キーボード操作、ランドマーク、ラベル、フォーカスの表示、配色)に沿って作り、キーボード操作と構造を E2E で確認しています。支援技術での確認と、適合の監査は行っていません
 - UI はポップアップが必要で、再読み込みすると再ログインになります(トークンをメモリにだけ持つため)。トークンエンドポイントは issuer と同じオリジンにある必要があります(CSP の `connect-src` が issuer だけを許可するため)。トークンの自動更新はありません
-- 既存の `GET /kpi/domains` はドメインごとの ABAC の絞り込みをしていません(互換性のため変更していません)。UI のドメイン別の表示は絞り込みのある `/kpi/history` を使います。ドメイン別の値は、閲覧できない資産も含めた集計です
-- 既存の `GET /lineage/{name}/upstream` と `/downstream` は名前を伏せず、`transformation` も返します(互換性のため変更していません)。UI は `/graph` を使います
+- `/kpi/history` のドメイン別の値は日次のスナップショットで、閲覧できない資産も含めた集計です(行そのものは ABAC で絞り込みます)。閲覧できる範囲で集計したい場合は `/kpi/domains` を使ってください
 - ダッシュボードの目標のうち、**Catalog 登録率(§1.8)は計測できません**(未登録の資産を検出する手段が無いため)。§20 の Level 3 の判定も、登録率の代わりにメタデータ充足率を使っています
 - `/mesh/products/overview` は Product ごとに DATSIS を評価するので、件数に比例して遅くなります。性能は Phase 14 の負荷試験で確認します
 - **Policy の起案者は admin、Committee、ドメイン内の Owner です**。§16 の「起案(Steward/Owner)」のうち Steward は含みません

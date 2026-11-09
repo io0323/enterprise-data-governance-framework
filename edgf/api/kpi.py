@@ -28,9 +28,19 @@ def enterprise_kpi(db: Session = Depends(get_session)):
 
 @router.get("/domains")
 def domain_kpis(request: Request, response: Response, page: Page = Depends(page_params()),
-                db: Session = Depends(get_session)):
-    domains = paginate(db, select(Domain).order_by(Domain.name), page, request, response)
-    return [kpi.compute(db, d.name) for d in domains]
+                db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """閲覧できる資産があるドメインか所属するドメインだけを返し、集計は閲覧できる資産の範囲で行う (ABAC)。"""
+    stmt = select(Domain).order_by(Domain.name)
+    readable = None
+    if not _sees_all_domains(principal):
+        readable = authz.readable_clause(principal)
+        stmt = stmt.where(or_(Domain.name.in_(select(DataAsset.domain).where(readable, DataAsset.domain.is_not(None))),
+                              Domain.name.in_(sorted(principal.domains))))
+    return [kpi.compute(db, d.name, readable) for d in paginate(db, stmt, page, request, response)]
+
+
+def _sees_all_domains(principal: Principal) -> bool:
+    return bool(principal.roles & authz.PRIVILEGED_READERS) or "*" in principal.domains
 
 
 @router.get("/history")
@@ -39,7 +49,7 @@ def kpi_history(request: Request, response: Response, scope: Literal["enterprise
                 page: Page = Depends(page_params()), db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     """KPI の推移 (古い順)。ドメイン別は、閲覧できる資産があるドメインか、所属するドメインだけを返す (ABAC)。"""
     stmt = select(KpiSnapshot).order_by(KpiSnapshot.day, KpiSnapshot.scope_type, KpiSnapshot.scope_name)
-    if not principal.roles & authz.PRIVILEGED_READERS and "*" not in principal.domains:
+    if not _sees_all_domains(principal):
         readable = select(DataAsset.domain).where(authz.readable_clause(principal), DataAsset.domain.is_not(None))
         stmt = stmt.where(or_(KpiSnapshot.scope_type == "enterprise", KpiSnapshot.scope_name.in_(readable), KpiSnapshot.scope_name.in_(sorted(principal.domains))))
     if scope == "enterprise":

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf import authz
+from edgf.api.lineage import NameRedactor
 from edgf.auth import COMMITTEE, Principal
 from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
@@ -304,13 +305,18 @@ def _readable(db: Session, principal: Principal, asset_id: str | None) -> bool:
 
 @router.get("/lineage/models/{model_version_id}")
 def trace_model(model_version_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
-    """モデル版から起点の資産まで遡る。閲覧できない資産 (ABAC) は名前だけを返し、詳細を伏せる。"""
+    """モデル版から起点の資産まで遡る。閲覧できない資産 (ABAC) は名前も詳細も伏せる。"""
     version = _load_model_version(db, principal, model_version_id)
     trace = ai_lineage.trace_model(db, version)
+    names = NameRedactor(db, principal)
     redact = lambda item: item if _readable(db, principal, item["asset_id"]) else {  # noqa: E731
-        "qualified_name": item["qualified_name"], "redacted": True}
+        "qualified_name": names.label(item["qualified_name"]), "redacted": True}
     trace["datasets"] = [redact(d) for d in trace["datasets"]]
     trace["sources"] = [redact(s) for s in trace["sources"]]
+    # 起点とエッジの名前も伏せる (閲覧できない資産に接するエッジは job も返さない)
+    trace["origins"] = sorted(names.label(o) for o in trace["origins"])
+    trace["upstream_edges"] = [{"from": names.label(e["from"]), "to": names.label(e["to"]),
+                                "job": None if names.hidden(e["from"]) or names.hidden(e["to"]) else e["job"]} for e in trace["upstream_edges"]]
     return trace
 
 
@@ -320,10 +326,11 @@ def impacted_models(asset_id: str, request: Request, response: Response, page: P
     """その資産の影響を受けるモデル版。閲覧できないモデルは名前と状態だけを返す (影響の有無は隠さない)。"""
     asset = load_asset(db, principal, asset_id)
     impact = ai_lineage.affected_by_assets(db, [asset.qualified_name])
+    names = NameRedactor(db, principal)
     rows = []
     for view in ai_lineage.model_views(db, impact):
         if not _readable(db, principal, view["asset_id"]):
-            view = {"qualified_name": view["qualified_name"], "status": view["status"], "redacted": True}
+            view = {"qualified_name": names.label(view["qualified_name"]), "status": view["status"], "redacted": True}
         rows.append(view)
     return paginate_list(rows, page, request, response)
 

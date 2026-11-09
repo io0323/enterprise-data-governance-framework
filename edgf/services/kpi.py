@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from edgf.enums import DataClass, DatasetVersionStatus, ErasureStatus, ProductStatus, RemediationStatus, SubscriptionStatus
 from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, Domain, ErasureRequest, ErasureTask, GoldenRecord, Issue, KpiSnapshot,
@@ -77,10 +78,13 @@ def _privacy_metrics(db: Session, domain: str | None, assets: list[DataAsset], a
     }
 
 
-def compute(db: Session, domain: str | None = None) -> dict:
+def compute(db: Session, domain: str | None = None, readable: ColumnElement[bool] | None = None) -> dict:
+    """readable を渡すと、その条件を通した資産の範囲で集計する (ドメイン別の ABAC)。"""
     stmt = select(DataAsset).where(DataAsset.lifecycle_state != "deleted")
     if domain:
         stmt = stmt.where(DataAsset.domain == domain)
+    if readable is not None:
+        stmt = stmt.where(readable)
     assets = db.scalars(stmt).all()
     ids = [a.id for a in assets]
     n = len(assets)
