@@ -49,6 +49,12 @@ def test_parse_cpu_and_percentages():
     assert probe.summarize_cpu(before, before) == {}
 
 
+def test_parse_cpu_model():
+    text = "processor : 0\nmodel name\t: AMD EPYC 7763 64-Core Processor\nprocessor : 1\nmodel name\t: AMD EPYC 7763 64-Core Processor\n"
+    assert probe.parse_cpu_model(text) == {"cpu_model": "AMD EPYC 7763 64-Core Processor", "cpu_count": 2}
+    assert probe.parse_cpu_model("processor : 0\n") == {"cpu_model": "unknown", "cpu_count": 0}
+
+
 def test_diff_handles_numeric_types_and_missing_keys():
     from decimal import Decimal
     assert probe.diff({"a": Decimal("5.5"), "b": 3, "c": 1}, {"a": 1, "b": 1}) == {"a": 4.5, "b": 2.0}
@@ -101,10 +107,13 @@ def test_probe_without_url_and_without_proc(monkeypatch):
 
 
 def test_probe_collects_disk_and_cpu(monkeypatch):
+    info = "model name : X\n"
     stat = iter(["cpu  1 0 1 8 0 0 0 0\n", "cpu  2 0 2 9 1 0 0 0\n"])
     disk = iter([DISKSTATS, DISKSTATS, DISKSTATS.replace("sda 100 0 800 50 1000 0 8000 2000 0 900", "sda 100 0 800 50 1100 0 8800 2100 0 1900")])
 
     def read(path):
+        if path == "/proc/cpuinfo":
+            return info
         return next(stat) if path == "/proc/stat" else next(disk, DISKSTATS.replace("sda 100 0 800 50 1000 0 8000 2000 0 900", "sda 100 0 800 50 1100 0 8800 2100 0 1900"))
 
     monkeypatch.setattr(probe, "_read", read)
@@ -112,7 +121,7 @@ def test_probe_collects_disk_and_cpu(monkeypatch):
     with probe.Probe(None) as p:
         while p._thread.is_alive() and not p._peak:
             pass
-    assert p.result["disk"]["sda"]["writes"] == 100 and p.result["cpu"]["iowait_pct"] == 25.0
+    assert p.result["runner"]["cpu_model"] == "X" and p.result["disk"]["sda"]["writes"] == 100 and p.result["cpu"]["iowait_pct"] == 25.0
 
 
 

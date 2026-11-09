@@ -158,12 +158,12 @@ def test_max_retries_is_configurable():
 
 def test_summary_shows_each_attempt_and_retry(tmp_path):
     probe = {"wal": {"wal_sync_time": 1234.5, "wal_fpi": 9}, "checkpoint": {"checkpoints_timed": 1, "checkpoints_req": 0},
-             "disk": {"sda": {"writes": 10, "avg_write_ms": 8.5, "peak_busy_pct": 97.0}}, "cpu": {"iowait_pct": 12.0, "steal_pct": 0.5}}
+             "disk": {"sda": {"writes": 10, "avg_write_ms": 8.5, "peak_busy_pct": 97.0}}, "cpu": {"iowait_pct": 12.0, "steal_pct": 0.5}, "runner": {"cpu_model": "EPYC", "cpu_count": 4}}
     results = compare.measure_with_retries(FakeRunner(search=[_row(500), _row(100)], audit_write=[{**_row(50, rps=300), "probe": probe}]), ("search", "audit_write"), BASE)
     text = compare.markdown_summary(results, BASE)
     assert "| search | 100ms | 500ms | 100ms | - | あり | 100ms | OK |" in text
     assert "| audit_write | 300 件/秒 | 300 件/秒 | - | - | なし | 300 件/秒 | OK |" in text
-    assert "1234.5" in text and "97.0" in text
+    assert "1234.5" in text and "97.0" in text and "EPYC" in text
     path = tmp_path / "summary.md"
     file = tmp_path / "r.json"
     base = tmp_path / "b.json"

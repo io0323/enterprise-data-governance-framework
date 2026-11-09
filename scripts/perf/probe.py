@@ -43,6 +43,12 @@ def parse_cpu(text: str) -> dict[str, int]:
     return {name: int(value) for name, value in zip(CPU_FIELDS, values, strict=False)}
 
 
+def parse_cpu_model(text: str) -> dict[str, Any]:
+    """/proc/cpuinfo のモデル名と論理 CPU の数。ランナーの種類の違いを結果と突き合わせるために記録する。"""
+    models = [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("model name")]
+    return {"cpu_model": models[0] if models else "unknown", "cpu_count": len(models)}
+
+
 def diff(after: Mapping[str, Any], before: Mapping[str, Any]) -> dict[str, float]:
     return {key: round(float(after[key]) - float(before[key]), 3) for key in after if key in before}
 
@@ -118,6 +124,9 @@ class Probe:
     def __enter__(self) -> Probe:
         self._started = time.monotonic()
         self._disk, self._cpu = _read("/proc/diskstats"), _read("/proc/stat")
+        cpuinfo = _read("/proc/cpuinfo")
+        if cpuinfo is not None:
+            self.result["runner"] = parse_cpu_model(cpuinfo)
         try:
             self._before = self._db() if self.url else None
         except Exception as e:  # noqa: BLE001 - 統計が取れなくても測定は続ける

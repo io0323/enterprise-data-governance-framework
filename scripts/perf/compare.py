@@ -126,6 +126,9 @@ def markdown_summary(results: Mapping[str, Any], baseline: Mapping[str, Any], th
     if misses:
         lines += ["", "性能目標の未達(失敗にはしません): " + "、".join(misses)]
     probes = _probe_rows(results)
+    runner = next((r["probe"]["runner"] for rows in attempts.values() for r in rows if r.get("probe", {}).get("runner")), None)
+    if runner:
+        lines += ["", f"ランナー: {runner['cpu_model']}({runner['cpu_count']} 論理 CPU)"]
     if probes:
         lines += ["", "### WAL、checkpoint、ディスク", "", "| 回 | 件/秒 | p95 ms | WAL sync ms | WAL FPI | checkpoint 完了数 | 書き込み待ち ms | 最大 busy % | iowait % | steal % |",
                   "|---|---|---|---|---|---|---|---|---|---|", *probes]
