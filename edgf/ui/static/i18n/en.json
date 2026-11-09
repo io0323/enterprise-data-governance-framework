@@ -1,0 +1,19 @@
+{
+  "app.title": "Data Governance",
+  "nav.main": "Main menu", "nav.skip": "Skip to content", "nav.language": "日本語", "nav.logout": "Log out", "nav.catalog": "Catalog",
+  "login.title": "Log in", "login.description": "Log in with your organization's identity provider. The login page opens in a separate window.",
+  "login.button": "Log in", "login.waiting": "Complete the login in the other window.",
+  "login.expired": "Your session has expired. Please log in again.",
+  "login.not_configured": "OIDC is not configured. Check settings such as EDGF_UI_OIDC_CLIENT_ID.",
+  "login.error.popup_blocked": "The login window could not open. Please allow pop-ups.",
+  "login.error.discovery_failed": "Could not load the identity provider configuration.",
+  "login.error.issuer_mismatch": "The identity provider issuer does not match the configuration.",
+  "login.error.login_failed": "Login failed.",
+  "login.error.token_failed": "Could not obtain a token.",
+  "login.error.id_token_invalid": "ID token validation failed.",
+  "common.loading": "Loading", "common.empty": "Nothing to show", "common.pagination": "Pagination", "common.prev": "Previous", "common.next": "Next",
+  "common.total": "{count} in total", "common.yes": "Yes", "common.no": "No",
+  "error.forbidden": "You do not have permission", "error.generic": "An error occurred", "error.not_found": "Page not found", "error.request_id": "request_id: {id}",
+  "sensitivity.public": "Public", "sensitivity.internal": "Internal", "sensitivity.confidential": "Confidential", "sensitivity.restricted": "Restricted",
+  "certification.certified": "Certified", "certification.deprecated": "Deprecated", "certification.draft": "Draft"
+}

@@ -78,6 +78,11 @@ class Settings:
     retention_reject_cooldown_days: int = field(default_factory=lambda: int(os.getenv("EDGF_RETENTION_REJECT_COOLDOWN_DAYS", "90")))
     # §16 ジョブのリースの有効期間 (秒)。実行中に異常終了しても、これを過ぎれば次の実行ができる
     job_lease_seconds: int = field(default_factory=lambda: int(os.getenv("EDGF_JOB_LEASE_SECONDS", "900")))
+    # UI の OIDC クライアント (/ui/config.json)。issuer と audience は省略時に API の検証の設定を使う
+    ui_oidc_issuer: str = field(default_factory=lambda: os.getenv("EDGF_UI_OIDC_ISSUER", ""))
+    ui_oidc_client_id: str = field(default_factory=lambda: os.getenv("EDGF_UI_OIDC_CLIENT_ID", ""))
+    ui_oidc_scopes: tuple[str, ...] = field(default_factory=lambda: _env_list("EDGF_UI_OIDC_SCOPES", "openid,profile"))
+    ui_oidc_audience: str = field(default_factory=lambda: os.getenv("EDGF_UI_OIDC_AUDIENCE", ""))
     # §12 Anonymization: anonymized と宣言するために必要な k-匿名性の下限 (PRV-003)
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)
