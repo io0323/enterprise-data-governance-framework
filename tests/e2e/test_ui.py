@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
 
 from tests.e2e.conftest import ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, STEWARD, USERS, Session
 
@@ -227,7 +228,9 @@ def test_keyboard_only_flow(browser, idp, app_url, seed):
         page.keyboard.type("sales.internal")
         page.keyboard.press("Enter")
         page.wait_for_function("() => window.location.hash.includes('q=sales.internal')")
-        page.wait_for_selector("#catalog-results a")
+        # ハッシュは送信と同時に変わり、再描画はそのあとの hashchange で起きる。リンクの有無だけで待つと、検索前の一覧で成立してしまう
+        expect(page.locator("#catalog-results a")).to_have_text(["sales.internal"])
+        expect(page.locator("#main")).to_be_focused()
         _tab_until(page, "() => document.activeElement?.textContent === 'sales.internal'")
         page.keyboard.press("Enter")
         page.wait_for_selector("text=Business Metadata")
@@ -239,6 +242,33 @@ def test_keyboard_only_flow(browser, idp, app_url, seed):
         page.wait_for_selector("text=全社の KPI と目標")
         assert page.locator(".site-nav a[aria-current=page]").inner_text() == "ダッシュボード"
     finally:
+        s.close()
+
+
+def test_search_keeps_focus_on_main_while_results_load(browser, idp, app_url, seed):
+    """検索の応答を止めて、読み込み中の状態を固定する。古い待ち方は、この状態で Tab を使い切って失敗していた。"""
+    s = Session(browser, idp, app_url, STEWARD).login()
+    page = s.page
+    held = []
+    try:
+        expect(page.locator("#catalog-results a")).not_to_have_count(0)  # 検索前の一覧
+        assert page.locator("#catalog-results a").count() > 1
+        page.route("**/api/v1/assets?*q=sales.internal*", lambda route: held.append(route))
+        page.fill("#catalog-q", "sales.internal")
+        with page.expect_request(lambda request: "q=sales.internal" in request.url):
+            page.press("#catalog-q", "Enter")
+        # 検索前の一覧は残らず、読み込み中のあいだフォーカスは本文にある
+        expect(page.locator("#catalog-results")).to_have_count(0)
+        expect(page.locator(".loading")).not_to_have_count(0)
+        expect(page.locator("#main")).to_be_focused()
+        assert len(held) == 1
+        held.pop().continue_()
+        # 応答が来ても、フォーカスを奪わない
+        expect(page.locator("#catalog-results a")).to_have_text(["sales.internal"])
+        expect(page.locator("#main")).to_be_focused()
+    finally:
+        for route in held:
+            route.continue_()
         s.close()
 
 
