@@ -89,6 +89,11 @@ def _reviews(db: Session, actor: str) -> dict[str, Any]:
     return reviews.run_campaigns(db, actor)
 
 
+def _kpi_snapshot(db: Session, actor: str) -> dict[str, Any]:
+    from edgf.services import kpi
+    return kpi.snapshot(db)
+
+
 @dataclass(frozen=True)
 class Job:
     name: str
@@ -119,6 +124,7 @@ JOBS: dict[str, Job] = {j.name: j for j in (
     Job("outbox_deliver", "Outbox の配信 (§16)", _outbox, 60),
     Job("approval_sla", "承認の SLA 超過の処理 (§16)", _approvals, HOUR),
     Job("review_campaigns", "レビューキャンペーンの作成と期限の処理 (§16 / §11)", _reviews, DAY),
+    Job("kpi_snapshot", "KPI の日次のスナップショット (§17)", _kpi_snapshot, DAY),
 )}
 
 

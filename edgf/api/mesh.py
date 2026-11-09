@@ -101,6 +101,26 @@ def list_products(request: Request, response: Response, domain: str | None = Non
     return [_product_out(db, principal, p) for p in paginate(db, stmt, page, request, response)]
 
 
+@router.get("/products/overview")
+def products_overview(request: Request, response: Response, page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                      principal: Principal = Depends(get_principal)):
+    """一覧の画面用: DATSIS の合否、Contract の版 (閲覧できる Output Port だけ)、有効な利用登録の数。"""
+    stmt = select(DataProduct).order_by(DataProduct.domain, DataProduct.name)
+    rows = []
+    for product in paginate(db, stmt, page, request, response):
+        results, blockers = mesh_datsis.evaluate(db, product)
+        contracts = []
+        for port in product.ports:
+            if authz.can_read(db, principal, db.get(DataAsset, port.asset_id)):
+                contract = db.scalar(select(DataContract).where(DataContract.output_port_id == port.id))
+                latest = mesh_contracts.latest_published(db, contract) if contract else None
+                contracts.append({"port": port.name, "version": latest.version if latest else None, "status": latest.status if latest else None})
+        rows.append({"id": product.id, "name": product.name, "domain": product.domain, "owner": product.owner, "status": product.status,
+                     "datsis_passed": not blockers, "datsis_failed": sorted(r["policy_id"] for r in results if r["status"] == "fail"),
+                     "contracts": contracts, "subscription_count": len([s for s in mesh_subscriptions.valid_for_product(db, product.id) if s.status == "active"])})
+    return rows
+
+
 @router.get("/products/{product_id}", response_model=ProductOut)
 def get_product(product_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     return _product_out(db, principal, _get_product(db, product_id))

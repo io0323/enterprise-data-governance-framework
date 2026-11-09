@@ -1,14 +1,14 @@
 """§17 KPI / Metrics, §20 Maturity indicator."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from edgf.enums import DataClass, DatasetVersionStatus, ProductStatus, RemediationStatus, SubscriptionStatus
-from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, GoldenRecord, Issue, MdmReview, MdmXref, MeshSubscription,
-                         ModelRemediation, utcnow)
+from edgf.enums import DataClass, DatasetVersionStatus, ErasureStatus, ProductStatus, RemediationStatus, SubscriptionStatus
+from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, Domain, ErasureRequest, ErasureTask, GoldenRecord, Issue, KpiSnapshot,
+                         MdmReview, MdmXref, MeshSubscription, ModelRemediation, utcnow)
 from edgf.services.ai import card_complete
 from edgf.services.ai_inherit import compute as compute_inherited, is_violation
 from edgf.services.issues import OPEN_STATES
@@ -60,6 +60,20 @@ def _mesh_metrics(db: Session, domain: str | None, asset_ids: list[str]) -> dict
         "mesh_breaking_rejected_count": sum(1 for r in rejected if r.get("breaking") and (not domain or r.get("domain") == domain)),
         "mesh_subscription_active_count": db.scalar(active) or 0,
         "mesh_schema_drift_issue_count": db.scalar(drift) or 0,
+    }
+
+
+def _privacy_metrics(db: Session, domain: str | None, assets: list[DataAsset], asset_ids: list[str], now: datetime) -> dict:
+    """§12 Privacy の KPI。ドメイン別は、そのドメインの資産がタスクの対象になっている要求を数える。"""
+    finished = (ErasureStatus.CLOSED.value, ErasureStatus.REJECTED.value, ErasureStatus.VERIFIED.value)
+    stmt = select(ErasureRequest).where(ErasureRequest.status.not_in(finished))
+    if domain:
+        stmt = stmt.where(ErasureRequest.id.in_(select(ErasureTask.request_id).where(ErasureTask.asset_id.in_(asset_ids))))
+    open_requests = db.scalars(stmt).all()
+    return {
+        "privacy_pii_asset_count": sum(1 for a in assets if a.contains_pii),
+        "privacy_erasure_open_count": len(open_requests),
+        "privacy_erasure_overdue_count": sum(1 for r in open_requests if r.due_at < now),
     }
 
 
@@ -132,21 +146,51 @@ def compute(db: Session, domain: str | None = None) -> dict:
         "mdm_auto_merge_rate": _rate(auto_merged, auto_merged + steward_merged),  # 統合のうち自動マージの割合
         **_ai_metrics(db, list(assets), now),
         **_mesh_metrics(db, domain, ids),
+        **_privacy_metrics(db, domain, list(assets), ids, now),
     }
+
+
+LEVEL_NAMES = {0: "No Governance", 1: "Basic Policy", 2: "Managed", 3: "Standardized", 4: "Federated Governance", 5: "Autonomous Governance"}
+# §20 の到達条件のうち、KPI で自動判定できるもの。min=None は「計測を開始している」こと
+LEVEL_CONDITIONS: dict[int, tuple[tuple[str, float | None], ...]] = {
+    1: (("owner_assignment_rate", 0.5),),
+    2: (("owner_assignment_rate", 0.8), ("quality_score_avg", None)),
+    3: (("metadata_completeness", 0.95), ("compliance_rate", 0.9)),
+    4: (("certified_rate", 0.5), ("compliance_rate", 0.98)),
+}
+MAX_AUTOMATIC_LEVEL = max(LEVEL_CONDITIONS)
+
+
+def _condition_met(k: dict, metric: str, minimum: float | None) -> bool:
+    return k.get(metric) is not None if minimum is None else (k.get(metric) or 0) >= minimum
 
 
 def maturity_indicator(k: dict) -> dict:
     """§20 成熟度の自動判定 (一次指標。最終評価は Committee が実施)。"""
-    def ge(key: str, v: float) -> bool:
-        return (k.get(key) or 0) >= v
-
     level = 0
-    if ge("owner_assignment_rate", 0.5):
-        level = 1
-    if level == 1 and ge("owner_assignment_rate", 0.8) and k.get("quality_score_avg") is not None:
-        level = 2
-    if level == 2 and ge("metadata_completeness", 0.95) and ge("compliance_rate", 0.9):
-        level = 3
-    if level == 3 and ge("certified_rate", 0.5) and ge("compliance_rate", 0.98):
-        level = 4
-    return {"indicative_level": level, "note": "Level 4以上の連邦統治・Level 5の自律統治は組織評価を併用して判定"}
+    while level < MAX_AUTOMATIC_LEVEL and all(_condition_met(k, m, v) for m, v in LEVEL_CONDITIONS[level + 1]):
+        level += 1
+    next_level = None
+    if level < MAX_AUTOMATIC_LEVEL:
+        next_level = {"level": level + 1, "name": LEVEL_NAMES[level + 1],
+                      "conditions": [{"metric": m, "minimum": v, "value": k.get(m), "met": _condition_met(k, m, v)}
+                                     for m, v in LEVEL_CONDITIONS[level + 1]]}
+    return {"indicative_level": level, "level_name": LEVEL_NAMES[level], "next_level": next_level,
+            "note": "Level 4以上の連邦統治・Level 5の自律統治は組織評価を併用して判定"}
+
+
+def snapshot(db: Session, today: date | None = None) -> dict:
+    """日次のスナップショットを作る。その日の分が既にあれば作らない (冪等)。"""
+    day = today or utcnow().date()
+    existing = set(db.execute(select(KpiSnapshot.scope_type, KpiSnapshot.scope_name).where(KpiSnapshot.day == day)).all())
+    scopes = [("enterprise", ""), *(("domain", name) for name in db.scalars(select(Domain.name).order_by(Domain.name)))]
+    created = 0
+    for scope_type, name in scopes:
+        if (scope_type, name) in existing:
+            continue
+        metrics = compute(db, name or None)
+        metrics["maturity_level"] = maturity_indicator(metrics)["indicative_level"]
+        db.add(KpiSnapshot(day=day, scope_type=scope_type, scope_name=name, metrics=metrics))
+        created += 1
+    db.flush()
+    return {"day": day.isoformat(), "created": created}
