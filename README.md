@@ -3,6 +3,10 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 12)
+
+**`POST /policies/reload` の意味が変わりました(承認済みの挙動の変更です)。** これまではディスクの内容を即時に反映していましたが、**提案を作るだけ**になりました(`202`、応答は `proposal_version` と `approval_id`)。承認と公開を経るまで、実行時の評価は変わりません。**Policy を即時に反映する手段はありません。** 詳しくは「[Governance Process](#governance-process16)」を参照してください。
+
 ## 実装範囲(成熟度 Level 2〜3 相当)
 
 | 設計書 | 機能 | API (`/api/v1`) |
@@ -23,6 +27,7 @@
 | §8 | Golden Record(値は持たず、xref・由来・版の情報のみ)、2 段階のマッチング、Survivorship、裁定キュー、as-of、Reference Data の版管理 | `/mdm/...`, `/reference-data/...` |
 | §14 | AI 資産(Dataset / Model Card、版の情報)、学習利用の承認、AI Lineage、統制属性の継承、RAG の判定、消去の伝播と是正、インシデント | `/ai/...` |
 | §15 | Data Product、Output Port、Data Contract(互換性の判定、メジャー版の更新)、利用登録、CDM の取り込みと準拠の検証、出荷基準(DATSIS)、ODCS の取り込みと書き出し | `/mesh/...` |
+| §16 | 汎用の承認エンジンと共通の承認箱、Policy の変更のワークフロー、Outbox と Webhook(CloudEvents)、定期レビュー、ジョブ基盤と保持期限の自動執行 | `/approvals`, `/policies/bundles`, `/webhooks`, `/outbox`, `/reviews`, `/ops/jobs` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
 ## 起動
@@ -64,6 +69,14 @@ docker compose up --build             # 既定: jwt モード (EDGF_OIDC_* が�
 | `EDGF_MIN_K_ANONYMITY` | `5` | `anonymized` と宣言するために必要な k-匿名性の下限(PRV-003)。継承の解除の基準にもなる |
 | `EDGF_AI_REMEDIATION_SLA_DAYS` | `30` | ModelRemediation の判断と実施の期限(日) |
 | `EDGF_CONTRACT_DEPRECATION_DAYS` | `90` | 新しいメジャー版の公開後、旧版を併存させる期間(日) |
+| `EDGF_REVIEW_DUE_DAYS` | `30` | レビューの対応期限(日) |
+| `EDGF_ACCESS_REVIEW_GRACE_DAYS` | `14` | 棚卸の期限を過ぎてから権限を自動で取り消すまでの猶予(日) |
+| `EDGF_RETENTION_REJECT_COOLDOWN_DAYS` | `90` | 保持期限の削除の申請を却下されたあと、次に申請するまでの期間(日) |
+| `EDGF_WEBHOOK_MAX_ATTEMPTS` | `8` | Webhook の最大試行回数。超えるとデッドレターに移す |
+| `EDGF_WEBHOOK_BACKOFF_SECONDS` / `EDGF_WEBHOOK_BACKOFF_MAX_SECONDS` | `60` / `21600` | 再試行の間隔(指数バックオフ)の基準と上限 |
+| `EDGF_WEBHOOK_TIMEOUT_SECONDS` | `10` | Webhook の送信のタイムアウト |
+| `EDGF_JOB_LEASE_SECONDS` | `900` | ジョブのリースの有効期間 |
+| `EDGF_JOB_<NAME>_ENABLED` / `EDGF_JOB_<NAME>_INTERVAL_SECONDS` | `true` / ジョブごと | ジョブの有効・無効と間隔(`<NAME>` は大文字。例: `EDGF_JOB_OUTBOX_DELIVER_ENABLED`) |
 
 ### スキーマ変更(Alembic)
 
@@ -690,6 +703,192 @@ Contract は [ODCS](https://bitol-io.github.io/open-data-contract-standard/lates
 
 KPI(`/kpi`、ドメイン別は `/kpi/domains`)に `mesh_product_published_count`、`mesh_datsis_pass_rate`、`mesh_breaking_rejected_count`、`mesh_subscription_active_count`、`mesh_schema_drift_issue_count` を追加しました。成熟度の判定(§20)には使いません。
 
+## Governance Process(§16)
+
+### 承認エンジンと inbox の構成
+
+```mermaid
+flowchart LR
+    subgraph 新しいエンジン
+        T["approval_types.py<br>種別、ステップ、SLA、ハンドラ"] --> E["approvals.py<br>申請、判断 (追記のみ)、SLA"]
+    end
+    subgraph 既存の個別の承認
+        S1[ポリシー例外]
+        S2[MDM ルール]
+        S3[Reference Data]
+        S4[学習データ]
+        S5[Contract]
+        S6[利用登録]
+        S7[CDM]
+        S8[Remediation]
+    end
+    E --> A[ApprovalSource]
+    S1 & S2 & S3 & S4 & S5 & S6 & S7 & S8 --> A
+    A --> I["GET /approvals/inbox<br>判断できて閲覧できる案件"]
+```
+
+既存の承認の API は変えていません。アダプタは「今この人が判断できるもの」を読むだけで、各案件の `action` が判断する API を示します。
+
+| 種別 | 内容 | 承認者 | SLA | 承認されたときの処理 |
+|---|---|---|---|---|
+| `access_request` | 利用者の閲覧の申請 | 対象資産の Owner | 3 営業日 | AccessGrant を作る(Owner が直接付与する API も残っています) |
+| `external_share` | 社外提供(§10 Share) | Owner → Committee | 5 営業日 | 証跡とイベントを残す(提供は Data Plane) |
+| `policy_change` | Policy の変更 | 範囲による(後述) | 10 営業日 | Bundle を approved にする |
+| `retention_delete` | 保持期限による削除 | 対象資産の Owner | 5 営業日 | `lifecycle.delete_requested` |
+| `access_review` | 権限の棚卸 | 対象資産の Owner | キャンペーンの期限 | 却下は取り消し |
+| `ownership_attestation` | Owner などの証明 | 対象資産の Owner | キャンペーンの期限 | 却下は修正の Issue |
+
+- 申請できるのは `access_request` と `external_share` だけです(`POST /approvals`)。他はシステムが作ります。
+- ステップは承認者のルール(authz の `Rule`)と定足数の組です。判断の記録は追記のみです。
+- **職務分離**: 申請者本人と対象資産の Custodian は承認できません。Custodian を含むルールはロード時に拒否します。1 人が同じ案件で判断できるのは 1 回だけです。
+- SLA を超過すると Issue を起票し、Issue の期限も過ぎるとエスカレーションします。
+
+CDM の取り込みは Committee の操作そのものが承認で、承認待ちの状態がありません。そのため inbox の CDM には、新しい版の再検証で不合格になった Contract の対応待ちを出します。
+
+### Policy の変更のライフサイクル
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: 初回の起動 (policy.bootstrap)
+    [*] --> proposed: POST /policies/bundles、/reload、/bundles/rollback
+    note right of proposed
+        提案の時点で検証し (不正は 422)
+        影響評価 (dry-run) を記録する
+    end note
+    proposed --> approved: 全ステップの承認
+    proposed --> rejected: 却下、取り消し
+    approved --> active: POST .../publish (Committee)
+    active --> superseded: 次の版の公開
+    superseded --> [*]
+    rejected --> [*]
+```
+
+- **実行時の評価は active の版だけを使います。** 公開されると内容ハッシュが変わるので、複数のプロセスでも追従します。
+- **初回の起動**で active の版が無いときだけ、ディスクの内容を v1 として取り込みます。以後ディスクを変更しても評価は変わらず、`/ready` の `checks.policy_drift` に示します(503 にはしません)。
+- **承認者**: Global Policy を含む変更は Committee。Domain Policy だけの変更は、そのドメインの Owner と Committee です。
+- **提案できる人**: admin、Committee、ドメイン内の Owner(Domain Policy だけ。全ドメインに所属していても Global は提案できません)。
+- **提案時の検証**: Global の上書き、未知の check type、YAML の不正、パスと宣言の不一致(`domains/<ドメイン>.yaml` は `scope: domain` と同じ `domain` が必須)。
+- **影響評価**: `GET /policies/bundles/{version}/diff` で、Policy の定義の差分、新しく不合格になる資産、合格になる資産、ドメイン別の準拠率の変化を返します。閲覧できない資産は件数だけです。
+- **公開の条件**: 提案の後に active の版が変わっていれば 409 です。影響評価をやり直すため、提案し直してください。
+- **切り戻し**: `POST /policies/bundles/rollback` で 1 つ前の版の提案を作ります。切り戻しにも承認と公開が必要です。
+
+### イベント(CloudEvents 1.0)
+
+状態変更と同じトランザクションで `outbox_events` に書き込みます(巻き戻ればイベントも残りません)。`source` は `urn:edgf:control-plane` です。payload には監査と同じガードを適用し、PII と生の識別子を含むものは拒否します。
+
+| `type` | 発生のタイミング | `data` の主な項目 |
+|---|---|---|
+| `edgf.issue.opened` / `.updated` / `.escalated` | Issue の起票、更新、エスカレーション | `issue_id`, `asset_id`, `severity`, `status`, `escalation_level` |
+| `edgf.approval.requested` / `.approved` / `.rejected` / `.cancelled` / `.expired` | 承認の申請と確定 | `approval_id`, `type`, `target_id`, `asset_id`, `status`, `due_at` |
+| `edgf.access.granted` / `.revoked` | 閲覧の付与と取り消し(棚卸を含む) | `grant_id` または `target_id`, `asset_id`, `subject` |
+| `edgf.share.approved` | 社外提供の承認 | `approval_id`, `asset_id`, `recipient`, `expires_at` |
+| `edgf.asset.delete_requested` | 削除の指示 | `asset_id`, `qualified_name` |
+| `edgf.erasure.task.dispatched` | 消去タスクの発行 | `task_id`, `erasure_request_id`, `asset_id`, `ai_kind`, `due_at` |
+| `edgf.consent.expired` | 保持期間による同意の失効 | `purpose_id`, `count` |
+| `edgf.contract.published` | Contract の公開 | `contract_id`, `contract_version_id`, `version`, `breaking` |
+| `edgf.policy.published` | Policy の公開 | `version`, `content_hash`, `superseded`, `rollback_of` |
+| `edgf.review.campaign_created` | レビューキャンペーンの作成 | `campaign_id`, `kind`, `period`, `due_at` |
+
+`edgf.erasure.task.dispatched` には `subject_ref` を載せません。受信側は既存の `GET /privacy/erasure-tasks` でタスクを取得します(pull 型の API はそのまま使えます)。
+
+### Webhook
+
+`POST /webhooks`(admin)で配信先を登録します。`event_types` は `edgf.issue.*` のように指定でき、空なら全種別です。
+
+- **秘密鍵は保存しません。** `secret_ref: env:<環境変数名>` の外部参照だけを持ちます。解決できなければ送信しません(署名なしで送ることはありません)。KMS などを使う場合は `SecretResolver` を実装してください。
+- **配信は at-least-once です。** 受信側はイベント ID(CloudEvents の `id`)で冪等にしてください。
+- **再試行**は指数バックオフで、`EDGF_WEBHOOK_MAX_ATTEMPTS` 回で届かなければデッドレターに移します(`GET /outbox/dead-letters`、`POST /outbox/dead-letters/{id}/redeliver`)。
+- **配信先の制限**: リダイレクトは追いません。本番では https だけで、内部ネットワークの宛先には配信しません(SSRF 対策)。
+
+署名は `X-EDGF-Signature: t=<UNIX 時刻>,v1=<HMAC-SHA256>` で、対象は `<UNIX 時刻>.` と本文のバイト列です。
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
+    parts = dict(p.split("=", 1) for p in header.split(","))
+    timestamp = int(parts["t"])
+    if abs(time.time() - timestamp) > tolerance:   # 古い通知の再送を拒否する
+        return False
+    expected = hmac.new(secret.encode(), f"{timestamp}.".encode() + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, parts["v1"])
+
+# 受信側の冪等性: event = json.loads(body); 処理済みの event["id"] なら 2xx だけを返す
+```
+
+### 定期レビュー
+
+| 種別 | 周期 | 内容 | 期限と猶予を過ぎたとき |
+|---|---|---|---|
+| `access_review` | 四半期 | 有効な AccessGrant と利用登録を、対象資産の Owner が継続か取り消しか判断する | 期限で Issue、猶予を過ぎると**自動で取り消し**(`review.auto_revoke` を監査に記録) |
+| `ownership_attestation` | 年次 | 各資産の Owner が、Owner・Steward・分類・保持期間が正しいことを証明する | 期限で Issue、猶予を過ぎると Committee にエスカレーション(権限は変えない) |
+| `policy_review` | 年次 | 365 日以上見直されていない Policy の Issue を起票する | `POST /policies/{id}/review` で記録すると解決する |
+
+判断は `POST /reviews/items/{id}/decision` または inbox の案件で行います。
+
+### ジョブ
+
+外部の依存を増やさず、`python -m edgf.jobs run <job>` を外部の cron や CronJob から呼びます。各ジョブは冪等で、DB のリースによって同時に 1 つしか実行されません(他で実行中なら `skipped` で正常終了します)。
+
+| ジョブ | 既定の間隔 | 内容 |
+|---|---|---|
+| `issue_escalate` | 1 時間 | SLA 超過の Issue のエスカレーション |
+| `erasure_escalate` | 1 時間 | 消去要求の期限超過の処理 |
+| `mdm_review_escalate` | 1 時間 | MDM の裁定キューの期限超過の処理 |
+| `ai_remediation_escalate` | 1 時間 | ModelRemediation の期限超過の処理 |
+| `policy_evaluate` | 1 日 | 全資産の自動監査と Issue 化 |
+| `retention_detect` | 1 日 | 保持期限の検出と削除の承認申請(Legal Hold 中は作らない) |
+| `consent_expire` | 1 日 | 保持期間を過ぎた Consent の失効(`expired` の行を追記する) |
+| `outbox_deliver` | 1 分 | Outbox の配信 |
+| `approval_sla` | 1 時間 | 承認の SLA 超過の処理 |
+| `review_campaigns` | 1 日 | レビューキャンペーンの作成と期限の処理 |
+
+```cron
+# cron の例 (環境変数は EDGF_DATABASE_URL などを設定しておく)
+* * * * *   python -m edgf.jobs run outbox_deliver
+0 * * * *   python -m edgf.jobs run issue_escalate
+5 * * * *   python -m edgf.jobs run erasure_escalate
+10 * * * *  python -m edgf.jobs run mdm_review_escalate
+15 * * * *  python -m edgf.jobs run ai_remediation_escalate
+20 * * * *  python -m edgf.jobs run approval_sla
+0 2 * * *   python -m edgf.jobs run policy_evaluate
+10 2 * * *  python -m edgf.jobs run retention_detect
+20 2 * * *  python -m edgf.jobs run consent_expire
+30 2 * * *  python -m edgf.jobs run review_campaigns
+```
+
+```yaml
+# Kubernetes CronJob の例
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: edgf-outbox-deliver
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: job
+              image: edgf:latest
+              command: ["python", "-m", "edgf.jobs", "run", "outbox_deliver"]
+              envFrom:
+                - secretRef: {name: edgf-env}
+```
+
+cron を使わない場合は `python -m edgf.jobs serve` を常駐させます(標準ライブラリだけで動き、複数のプロセスで動かしてもリースで重複しません)。失敗したジョブの終了コードは 1 です。
+
+実行の状況は `GET /ops/jobs` で確認できます。間隔の 3 倍を過ぎても成功していないジョブは、`/ready` の `checks.jobs_overdue` に示します(503 にはしません)。
+
+### 保持期限の自動執行
+
+- Purpose の `retention_days` を過ぎた Consent は `expired` になります。Consent は追記のみなので `expired` の行を追記し、監査には件数だけを記録します。
+- 資産の保持期限が来ると、削除の承認申請を自動で作ります。承認されると `lifecycle.delete_requested` を記録します(`active` は状態遷移の規則に沿って `archived` を経由します)。
+- Legal Hold 中の資産は申請を作らず、申請の後に Legal Hold が設定されたら取り消します。承認の時点でも 409 で止めます。Owner が却下した資産は、`EDGF_RETENTION_REJECT_COOLDOWN_DAYS` の間は申請を作り直しません。Owner が未割当なら Committee 宛ての Issue を起票します。
+
 ## API の共通仕様
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
@@ -702,7 +901,7 @@ KPI(`/kpi`、ドメイン別は `/kpi/domains`)に `mesh_product_published_count
 ## アーキテクチャ上の判断
 
 - **Control Plane / Data Plane の分離**: 品質検査ではData Planeからレコードを受け取って評価し、レコード自体は保存しません。物理削除もData Planeが行い、Control Planeは削除指示と証跡だけを記録します。
-- **Policy as Code**: `policies/global.yaml` は Committee が管理します。`policies/domains/*.yaml` はポリシーを追加することだけができ、同じIDで上書きしようとするとロード時にエラーになります(連邦型ガバナンスで緩和を禁止するため)。評価器は dict を返す単純な作りなので、OPA などに置き換えられます。
+- **Policy as Code**: Policy の正は DB に記録した承認済みの Bundle で、`policies/` のファイルは提案と初回の取り込みの元です。`policies/global.yaml` は Committee が管理します。`policies/domains/*.yaml` はポリシーを追加することだけができ、同じIDで上書きしようとするとロード時にエラーになります(連邦型ガバナンスで緩和を禁止するため)。評価器は dict を返す単純な作りなので、OPA などに置き換えられます。
 - **証跡**: SHA-256のハッシュチェーンにし、`prev_hash` にUNIQUE制約を付けて、同時書き込みでチェーンが分岐しないようにしています。衝突した書き込みはセーブポイントまで戻して先頭を読み直し、同じリクエストの他の変更を失わずに再試行します。書き込みはチェーン上で直列化されるので、監査対象の更新の同時実行数は DB のトランザクション時間で律速されます。分離レベルは READ COMMITTED が前提です。
 - **ポータビリティ**: SQLAlchemy 2.0 を使い、SQLite と PostgreSQL のどちらでも動きます。メタデータの交換には OpenLineage 互換の形式を使います。マイグレーションは方言に依存しない DDL だけで書き、制約名は命名規約で固定しています。
 - **Observability(§19)**: ログは標準ライブラリだけで JSON 化しています(ログ基盤製品に依存しないため)。トレーシングは OpenTelemetry(ベンダー中立の OSS 標準)を任意で有効化でき、未導入でも動作します。
@@ -720,16 +919,16 @@ KPI(`/kpi`、ドメイン別は `/kpi/domains`)に `mesh_product_published_count
 ## 既知の制約と次フェーズ
 
 - dev モード(`X-Actor`)は移行期間の措置です。移行が完了したら廃止します
-- 閲覧承認(AccessGrant)は単独の承認です。申請→承認のワークフローと承認 SLA は Phase 12 の汎用承認エンジンで扱います
-- 権限の定期棚卸(§11 四半期)はまだ実装していません。監査ログ(`access.grant` / `authz.denied`)から集計できます
+- 閲覧の申請は承認エンジンの `access_request` で扱います。Owner が直接付与する API も残っています。SLA の営業日は土日だけを除きます(祝日は考慮しません)
+- 棚卸はキャンペーンの作成時点の一覧で行います。作成後に付与された権限は次の四半期の対象です
 - リネージの `upstream`/`downstream`/`impact` はオブジェクトで返すため、ページネーションの対象外です(`depth` 上限 50 で件数を抑えています)
 - リネージはデータセット単位です → CDE はカラム単位にする(§9)
-- Right to Erasure は pull 型です。Phase 12 の Outbox が入ったら push 型の通知を追加します。バックアップを含む物理削除の実施は Data Plane の責務で、Control Plane は報告された件数と証跡ハッシュを記録するだけです(内容は検証しません)
+- Right to Erasure は pull 型の API に加えて、タスクの発行を `edgf.erasure.task.dispatched` で通知します。バックアップを含む物理削除の実施は Data Plane の責務で、Control Plane は報告された件数と証跡ハッシュを記録するだけです(内容は検証しません)
 - 発行後に Legal Hold で `withheld` になったタスクは、Hold が解除されても自動では再発行しません。新しい消去要求を出してください
 - `subject_ref` は消去後も Consent と消去要求の記録に残ります(元の識別子には戻せず、消去の証跡として必要なため)。HMAC 鍵のローテーションは未実装です
 - k-匿名性の `k` は申告値で、データ自体は検証しません(Control Plane はデータを持たないため)
 - 監査ガードはキーとパターンによる検査です。形式に特徴の無い識別子(顧客 ID など)は検出できないので、生の識別子を payload に渡さない実装とテスト(全テーブルの走査)で担保しています
-- `POST /consents/check` は高頻度の呼び出しを想定し、監査ログに記録しません。Purpose の `retention_days` はカタログ上の情報で、保持期限の自動執行とは連動していません(Phase 12 で対応)
+- `POST /consents/check` は高頻度の呼び出しを想定し、監査ログに記録しません。Purpose の `retention_days` は `consent_expire` ジョブで執行します(同意の記録の日時から数えます)
 - **AI 資産の消去の伝播は実装済みです**が、Control Plane は主体がどの資産や版に含まれるかを知りません。下流の資産と該当しうる版をすべて対象にするので、実際には主体を含まない版も superseded になります。Data Plane は `subject_ref` で照合し、含まれなければ `records_deleted=0` で完了を報告してください
 - 消去のタスクは、匿名化を経た下流の AI 資産にも発行します。継承は解除されますが、`k` は申告値なので消去の対象からは外しません(含まれなければ 0 件で完了します)
 - 未完了の ModelRemediation があっても、消去要求の `verify` と `close` は止めません(是正は 30 日で終わらないことがあるため)。消去証明の `model_remediation_open` と Issue で追跡します
@@ -759,4 +958,12 @@ KPI(`/kpi`、ドメイン別は `/kpi/domains`)に `mesh_product_published_count
 - 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください
 - `split` の直後は、どのソースの識別子か判定できないので、`subject_ref` の対応を両方の Golden Record に残します(再構成で正しくなります。消去の対象から漏らさないための措置です)
 - Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
-- 未着手: Catalog UI、スケジューラとの連携(`/issues/escalate-overdue`、`/policies/evaluate`、`/privacy/erasure-requests/escalate-overdue`、`/mdm/reviews/escalate-overdue`、`/ai/remediations/escalate-overdue` の定期実行)
+- 未着手: Catalog UI
+- **Policy の起案者は admin、Committee、ドメイン内の Owner です**。§16 の「起案(Steward/Owner)」のうち Steward は含みません
+- Policy の影響評価は全資産を評価するので、資産の数に比例して提案に時間がかかります。評価の結果は提案の時点のものです(公開までに資産が変わっても再計算しません)
+- inbox は案件を集めてからページングするので、案件の数に比例して遅くなります。性能は Phase 14 の負荷試験で確認します
+- 対象資産の Owner と Custodian が同じ人だと、その資産の承認を判断できません(Custodian は承認者になれないため)。Owner か Custodian を変更してください
+- ジョブのリースは更新しません。`EDGF_JOB_LEASE_SECONDS` より長く動くジョブは、別のプロセスと重なることがあります(各ジョブが冪等なので結果は壊れません)。配信ジョブは 1 回に 200 件までです
+- イベントの順序は保証しません。`outbox_events` と `webhook_deliveries` の削除(保持期間)は未実装です
+- 内部ネットワークへの配信の拒否は、確認と送信の間に DNS が変わる場合を防げません。本番では外向きの通信も制限してください
+- 秘密鍵の参照は `env:` だけに対応しています。KMS などは `SecretResolver` の実装が必要です
