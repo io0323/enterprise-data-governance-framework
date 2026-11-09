@@ -30,7 +30,7 @@ from edgf.errors import ProblemError
 from edgf.models import AccessGrant, DataAsset, utcnow
 
 ASSET_RELATIONS = ("owner", "steward", "custodian")
-RELATIONS = frozenset({*ASSET_RELATIONS, "assignee"})
+RELATIONS = frozenset({*ASSET_RELATIONS, "assignee", "requester"})
 PRIVILEGED_READERS = frozenset({ADMIN, COMMITTEE})  # 全資産のメタデータを参照できる (監督・運用責任)
 RESTRICTED = "restricted"
 
@@ -168,6 +168,12 @@ PERMISSIONS: Mapping[str, Rule] = {
     "mesh.subscription.read": rule(roles=(ADMIN, COMMITTEE), description="全利用者の利用登録の参照"),
     "cdm.import": rule(roles=(ADMIN, COMMITTEE), approval=True,
                        description="外部の CDM 定義の版の取り込み (作成・編集の機能は持たない)"),
+    # 汎用の承認エンジン (§16 Approval)。decide の実際の判定は種別とステップごとのルール (approval_types.py) で行う
+    "approval.request": rule(authenticated=True, description="承認の申請 (種別ごとの申請条件は approval_types で定義する)"),
+    "approval.decide": rule(roles=(COMMITTEE,), domain_roles=(OWNER,), relations=("owner",), approval=True,
+                            description="承認の判断 (種別とステップごとのルールで判定する)"),
+    "approval.cancel": rule(roles=(ADMIN,), relations=("requester",), description="承認の申請の取り消し (申請者本人、admin)"),
+    "approval.read": rule(roles=(ADMIN, COMMITTEE), description="全案件の参照 (ABAC で絞り込む)"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -201,7 +207,11 @@ def relations_of(principal: Principal, asset: DataAsset | None) -> set[str]:
 
 def is_allowed(principal: Principal, action: str, *, asset: DataAsset | None = None, domain: str | None = None,
                relations: Iterable[str] = ()) -> bool:
-    r = PERMISSIONS[action]
+    return rule_allows(principal, PERMISSIONS[action], asset=asset, domain=domain, relations=relations)
+
+
+def rule_allows(principal: Principal, r: Rule, *, asset: DataAsset | None = None, domain: str | None = None,
+                relations: Iterable[str] = ()) -> bool:
     if r.authenticated or principal.roles & r.roles:
         return True
     target_domain = asset.domain if asset is not None and domain is None else domain

@@ -719,6 +719,38 @@ class CdmVersion(Base):
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ApprovalRequest(Base):
+    """§16 Approval: 汎用の承認エンジンの案件。承認のステップは作成時に確定して保持する。"""
+    __tablename__ = "approval_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    type: Mapped[str] = mapped_column(String(50), index=True)
+    target_type: Mapped[str] = mapped_column(String(50))
+    target_id: Mapped[str] = mapped_column(String(300), index=True)
+    asset_id: Mapped[str | None] = mapped_column(ForeignKey("data_assets.id"), index=True)  # 承認者と ABAC の判定に使う
+    requested_by: Mapped[str] = mapped_column(String(200), index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    steps: Mapped[list] = mapped_column(JSON, default=list)  # [{name, rule, quorum, domain}]
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ApprovalDecision(Base):
+    """判断の記録。追記のみで、更新も削除もしない。1 人が同じ案件で判断できるのは 1 回だけ。"""
+    __tablename__ = "approval_decisions"
+    __table_args__ = (UniqueConstraint("request_id", "decided_by", name="uq_approval_decision"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), index=True)
+    step: Mapped[int] = mapped_column(Integer)
+    decided_by: Mapped[str] = mapped_column(String(200))
+    approve: Mapped[bool] = mapped_column(Boolean)
+    comment: Mapped[str] = mapped_column(Text, default="")
+    decided_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

@@ -145,6 +145,10 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `ai.remediation.escalate` | 是正の期限超過の処理 | ロール: admin, committee |  |
 | `ai.training.approve` | 学習利用の承認 (構成元の資産の Owner と Committee) | ロール: committee<br>対象の owner | ✓ |
 | `ai.training.request` | 学習利用の承認の申請と取り下げ | 対象の owner / steward |  |
+| `approval.cancel` | 承認の申請の取り消し (申請者本人、admin) | ロール: admin<br>対象の requester |  |
+| `approval.decide` | 承認の判断 (種別とステップごとのルールで判定する) | ロール: committee<br>ドメイン内ロール: owner<br>対象の owner | ✓ |
+| `approval.read` | 全案件の参照 (ABAC で絞り込む) | ロール: admin, committee |  |
+| `approval.request` | 承認の申請 (種別ごとの申請条件は approval_types で定義する) | 認証済みの全員 |  |
 | `asset.access_grant` | 閲覧の承認 (§4.2 アクセス承認 A/R) | 対象の owner | ✓ |
 | `asset.access_grant.read` | 閲覧承認の一覧 | ロール: admin, committee<br>対象の owner / steward |  |
 | `asset.access_revoke` | 閲覧承認の取消 | ロール: committee<br>対象の owner |  |

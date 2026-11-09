@@ -201,6 +201,15 @@ class SubscriptionStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ApprovalStatus(str, Enum):
+    """§16 Approval: 汎用の承認エンジンの状態"""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

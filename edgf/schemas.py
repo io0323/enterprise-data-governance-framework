@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus,
-                        ContractStatus, ProductStatus, RemediationStatus, SubscriptionStatus)
+                        ApprovalStatus, ContractStatus, ProductStatus, RemediationStatus, SubscriptionStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -1095,3 +1095,51 @@ class CdmVersionOut(ORM):
     source_uri: str | None
     imported_by: str
     imported_at: datetime
+
+
+# ---------- Governance Process (§16) ----------
+class ApprovalIn(MeshInput):
+    """申請。申請できる種別は approval_types で定義する (access_request / external_share)。"""
+    type: str = Field(max_length=50)
+    asset_id: str = Field(max_length=36)
+    reason: str = Field(min_length=1, max_length=1000, description="申請の理由。個人情報を含めないこと")
+    purpose: str = Field(min_length=1, max_length=1000, description="利用目的 (社外提供は提供の目的)")
+    expires_at: datetime = Field(description="閲覧や提供の期限 (最大 365 日。恒久は不可)")
+    recipient: str | None = Field(default=None, max_length=200, description="external_share: 提供先の組織。個人情報を含めないこと")
+
+
+class ApprovalDecisionIn(MeshInput):
+    approve: bool
+    comment: str = Field(default="", max_length=1000, description="却下のときは必須。個人情報を含めないこと")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ApprovalDecisionIn:
+        if not self.approve and not self.comment.strip():
+            raise ValueError("却下には comment が必要です")
+        return self
+
+
+class ApprovalDecisionOut(ORM):
+    step: int
+    decided_by: str
+    approve: bool
+    comment: str
+    decided_at: datetime
+
+
+class ApprovalOut(ORM):
+    id: str
+    type: str
+    target_type: str
+    target_id: str
+    asset_id: str | None
+    requested_by: str
+    reason: str
+    payload: dict[str, Any]
+    steps: list[dict[str, Any]]
+    current_step: int
+    status: ApprovalStatus
+    due_at: datetime
+    created_at: datetime
+    decided_at: datetime | None
+    decisions: list[ApprovalDecisionOut] = Field(default_factory=list)
