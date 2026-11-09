@@ -184,6 +184,9 @@ PERMISSIONS: Mapping[str, Rule] = {
     "review.decide": rule(relations=("owner",), approval=True, description="棚卸と証明の判断 (対象資産の Owner)"),
     "review.read": rule(roles=(ADMIN, COMMITTEE), description="キャンペーンと全項目の参照"),
     "policy.review": rule(roles=(COMMITTEE,), approval=True, description="Policy の年次見直しの記録"),
+    # ジョブ (§16 / §19 Observability)
+    "jobs.run": rule(roles=(ADMIN,), description="ジョブの手動実行 (通常は外部の cron や CronJob から実行する)"),
+    "jobs.read": rule(roles=(ADMIN, COMMITTEE), description="ジョブの実行状況の参照"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

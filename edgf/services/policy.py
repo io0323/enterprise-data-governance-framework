@@ -261,3 +261,19 @@ def evaluate_all(db: Session) -> dict:
                           "violations": [r for r in res if r["status"] == "fail"], "results": res})
     return {"compliance_rate": round(compliant / applicable, 6) if applicable else 1.0,
             "applicable_checks": applicable, "compliant_checks": compliant, "assets": per_asset}
+
+
+def evaluate_and_open_issues(db: Session, actor: str) -> dict:
+    """全資産の自動監査と、違反の Issue 化 (重複起票なし)。"""
+    from edgf.services import issues
+
+    report = evaluate_all(db)
+    opened = 0
+    for a in report["assets"]:
+        asset = db.get(DataAsset, a["asset_id"])
+        for v in a["violations"]:
+            if issues.open_issue(db, actor, asset=asset, kind="policy", severity=v["severity"], source_ref=f"policy:{v['policy_id']}",
+                                 title=f"[POLICY] {a['qualified_name']}: {v['policy_id']} {v['name']}", description=v["message"]):
+                opened += 1
+    report["issues_opened"] = opened
+    return report

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import yaml
@@ -341,3 +343,20 @@ def test_new_process_follows_published_bundle(client):
         conn.execute(text("UPDATE policy_bundles SET status = 'active' WHERE version = 1"))
     assert "TEST-001" not in _results(client, a["id"])
     assert policy.get_policies()  # DB を指定しない経路も同じ
+
+
+@pytest.mark.skipif(engine.dialect.name == "sqlite", reason="インメモリの SQLite は 1 接続を共有するため並行実行できない")
+def test_concurrent_publish_leaves_one_active(client):
+    proposals = [_propose(client, {"global.yaml": _global_with(client, {**NEW_POLICY, "id": f"TEST-{i}"})}) for i in range(4)]
+    for p in proposals:
+        decide(client, p["approval_id"], COMMITTEE)
+    barrier = threading.Barrier(len(proposals))
+
+    def go(p):
+        barrier.wait()
+        return client.post(f"{POL}/bundles/{p['proposal_version']}/publish", headers=COMMITTEE).status_code
+
+    with ThreadPoolExecutor(len(proposals)) as pool:
+        codes = sorted(pool.map(go, proposals))
+    assert codes == [200, 409, 409, 409]
+    assert client.get(f"{POL}/bundles", headers=ADMIN, params={"status": "active"}).headers["X-Total-Count"] == "1"

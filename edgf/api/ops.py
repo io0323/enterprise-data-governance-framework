@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, Request
 from sqlalchemy import text
 
-from edgf import __version__, db, migrate
+from edgf import __version__, db, jobs, migrate
 from edgf.errors import ProblemError
 from edgf.services.mdm_rules import get_entities
 from edgf.services.policy import get_policies
@@ -51,6 +51,9 @@ def ready():
     drift = drift_message()
     if drift:
         checks["policy_drift"] = drift
+    overdue = jobs.overdue_jobs()
+    if overdue:
+        checks["jobs_overdue"] = ", ".join(overdue)
     if failed:
         raise ProblemError(503, "依存先が利用できないため、リクエストを受け付けられません", type_="not-ready", checks=checks)
     return {"status": "ready", "version": __version__, "checks": checks}

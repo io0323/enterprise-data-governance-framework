@@ -249,7 +249,8 @@ def on_rejected(db: Session, actor: str, req: ApprovalRequest, decided_by: str) 
 def publish(db: Session, actor: str, bundle: PolicyBundle, publisher: str) -> None:
     if bundle.status != B.APPROVED.value:
         raise PolicyBundleConflict(f"状態が {bundle.status} の版は公開できません (承認済みの版だけ)")
-    active = active_bundle(db)
+    # active の行をロックする。同じ版を元にした提案を同時に公開しても、active の版が 2 つにならない
+    active = db.scalar(select(PolicyBundle).where(PolicyBundle.status == B.ACTIVE.value).with_for_update())
     if active is None or active.content_hash != bundle.base_hash:
         raise PolicyBundleConflict("提案の後に active の版が変わりました。影響評価をやり直すため、提案し直してください")
     validate_files(bundle.files)

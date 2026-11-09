@@ -74,6 +74,10 @@ class Settings:
     # §16 Review / §11 棚卸: 対応の期限 (日) と、期限後に自動で取り消すまでの猶予 (日)
     review_due_days: int = field(default_factory=lambda: int(os.getenv("EDGF_REVIEW_DUE_DAYS", "30")))
     access_review_grace_days: int = field(default_factory=lambda: int(os.getenv("EDGF_ACCESS_REVIEW_GRACE_DAYS", "14")))
+    # §10.2 保持期限の削除の申請を却下されたあと、次に申請するまでの期間 (日)
+    retention_reject_cooldown_days: int = field(default_factory=lambda: int(os.getenv("EDGF_RETENTION_REJECT_COOLDOWN_DAYS", "90")))
+    # §16 ジョブのリースの有効期間 (秒)。実行中に異常終了しても、これを過ぎれば次の実行ができる
+    job_lease_seconds: int = field(default_factory=lambda: int(os.getenv("EDGF_JOB_LEASE_SECONDS", "900")))
     # §12 Anonymization: anonymized と宣言するために必要な k-匿名性の下限 (PRV-003)
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)

@@ -855,6 +855,30 @@ class PolicyReview(Base):
     note: Mapped[str] = mapped_column(Text, default="")
 
 
+class JobLease(Base):
+    """§16 / §19 ジョブのリース。同じジョブが同時に 1 つしか実行されないようにする (外部の依存を増やさず DB で行う)。"""
+    __tablename__ = "job_leases"
+    name: Mapped[str] = mapped_column(String(50), primary_key=True)
+    holder: Mapped[str] = mapped_column(String(100))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class JobRun(Base):
+    """ジョブの実行の記録 (リース・開始・終了・結果・件数)。"""
+    __tablename__ = "job_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job: Mapped[str] = mapped_column(String(50), index=True)
+    holder: Mapped[str] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)  # running / succeeded / failed
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(200))  # 例外の種類だけ (内部情報を残さない)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

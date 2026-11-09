@@ -16,7 +16,7 @@ from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (ExceptionDecision, ExceptionIn, ExceptionOut, PolicyBundleDetail, PolicyBundleOut, PolicyProposalIn,
                           PolicyReviewIn, PolicyRollbackIn)
 from edgf.services import audit, issues, policy_bundles, reviews
-from edgf.services.policy import evaluate_all, evaluate_asset, get_policies, read_disk_files
+from edgf.services.policy import evaluate_all, evaluate_and_open_issues, evaluate_asset, get_policies, read_disk_files
 from edgf.services.policy_bundles import PolicyBundleConflict, PolicyBundleInvalid
 
 router = APIRouter(prefix="/policies", tags=["policy"])
@@ -141,17 +141,8 @@ def evaluate_one(asset_id: str, db: Session = Depends(get_session), principal: P
 def evaluate(open_issues: bool = False, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     authz.require(db, principal, "policy.evaluate_all", entity_type="policy", entity_id="*")
     """全資産の自動監査。open_issues=true で違反を Issue 化 (重複起票なし)。"""
-    report = evaluate_all(db)
-    opened = 0
-    if open_issues:
-        for a in report["assets"]:
-            asset = db.get(DataAsset, a["asset_id"])
-            for v in a["violations"]:
-                if issues.open_issue(db, principal.audit_actor, asset=asset, kind="policy", severity=v["severity"],
-                                     source_ref=f"policy:{v['policy_id']}",
-                                     title=f"[POLICY] {a['qualified_name']}: {v['policy_id']} {v['name']}",
-                                     description=v["message"]):
-                    opened += 1
+    report = evaluate_and_open_issues(db, principal.audit_actor) if open_issues else {**evaluate_all(db), "issues_opened": 0}
+    opened = report["issues_opened"]
     audit.record(db, principal.audit_actor, "policy.evaluate", "policy", "*",
                  {"compliance_rate": report["compliance_rate"], "issues_opened": opened})
     report["issues_opened"] = opened
