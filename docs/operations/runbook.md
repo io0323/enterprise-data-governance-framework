@@ -159,6 +159,18 @@ curl -X POST -H "Authorization: Bearer $TOKEN" https://<host>/api/v1/outbox/dead
 | JWKS に届かない | 認証は 503 `auth-unavailable`(fail-close) | IdP の復旧。キャッシュ済みの鍵では動作を続ける |
 | 監査チェーンの混雑 | 503(証跡なしでは確定しない) | 再試行。続くなら長いトランザクションを調べる |
 | Policy が不正 | 起動時に停止 / `/ready` が 503 | 承認済みの Bundle の確認 |
+| `/ready` の `search_index: degraded` | 検索は同じ結果を返すが遅い(503 にはしない) | 下の手順で索引を作る |
+
+### 検索の索引が無いとき
+
+`pg_trgm` を作れない環境(権限が無い、contrib が入っていない)では、マイグレーションは索引を作らずに成功します。拡張を使えるようにしてから、作り直します。
+
+```sh
+# 必要なら管理者が先に実行する: CREATE EXTENSION pg_trgm;
+alembic downgrade 0027 && alembic upgrade head
+```
+
+0028 の downgrade は索引だけを削除し、拡張は残します。索引の作成中は `data_assets` と `glossary_terms` への書き込みが止まるので、メンテナンスの時間に実行してください。
 
 Control Plane が止まってもデータ利用は Data Plane の側で継続します(§19)。ただし認可の判定は fail-close です。
 

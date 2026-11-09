@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import Select, String, cast, func, or_, select, union
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from edgf import authz
 from edgf.auth import Principal
@@ -14,8 +17,8 @@ from edgf.db import get_session
 from edgf.deps import get_principal, load_asset
 from edgf.enums import LIFECYCLE_TRANSITIONS, Certification, LifecycleState
 from edgf.errors import ProblemError
-from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_utc, utcnow
-from edgf.pagination import Page, page_params, paginate, paginate_list
+from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, term_asset, to_naive_utc, utcnow
+from edgf.pagination import Page, page_params, paginate, paginate_list, set_page_headers
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
 from edgf.services import ai, ai_inherit, audit, mesh_contracts, outbox, privacy
@@ -51,6 +54,8 @@ def list_domains(request: Request, response: Response, page: Page = Depends(page
 
 # ---------------- Assets ----------------
 _LIKE_ESCAPE = "!"
+MIN_TRIGRAM_QUERY = 3  # これより短い語からはトライグラムを作れず、索引が効かない
+MAX_SORTED_MATCHES = 1000  # これより多く一致したら、全件を並べ替えず索引の順に読む
 
 
 def _contains(value: str) -> str:
@@ -95,19 +100,6 @@ def search_assets(
 ):
     """閲覧できない資産 (ABAC) は件数を含め一覧から除外する。"""
     stmt = select(DataAsset).where(authz.readable_clause(principal))
-    if q:
-        like = _contains(q)
-        term_assets = select(DataAsset.id).join(DataAsset.terms).where(
-            or_(GlossaryTerm.name.ilike(like, escape=_LIKE_ESCAPE), GlossaryTerm.definition.ilike(like, escape=_LIKE_ESCAPE)))
-        # tags は JSON 配列。要素の完全一致 (大文字小文字無視) を、保存時と同じ JSON 表現の部分一致で DB 側判定する
-        tag_like = _contains(json.dumps(q))
-        # ILIKE と同じ結果で、パターンを行ごとに小文字にしない分だけ速い (件数の取得で全行を見る。docs/operations/performance.md)
-        lowered = func.lower(like)
-        stmt = stmt.where(or_(func.lower(DataAsset.name).like(lowered, escape=_LIKE_ESCAPE),
-                              func.lower(DataAsset.qualified_name).like(lowered, escape=_LIKE_ESCAPE),
-                              func.lower(DataAsset.description).like(lowered, escape=_LIKE_ESCAPE),
-                              DataAsset.id.in_(term_assets),
-                              func.lower(cast(DataAsset.tags, String)).like(func.lower(tag_like), escape=_LIKE_ESCAPE)))
     for col, val in (("domain", domain), ("data_class", data_class), ("ai_kind", ai_kind), ("sensitivity", sensitivity),
                      ("owner", owner), ("certification", certification), ("lifecycle_state", lifecycle_state),
                      ("is_cde", is_cde)):
@@ -117,7 +109,46 @@ def search_assets(
         stmt = stmt.where(or_(DataAsset.owner.is_(None), DataAsset.owner == ""))
     if not include_deleted and lifecycle_state is None:
         stmt = stmt.where(DataAsset.lifecycle_state != LifecycleState.DELETED.value)
+    if q and len(q) >= MIN_TRIGRAM_QUERY:
+        return _search_by_union(db, stmt, q, page, request, response)
+    if q:
+        own, by_term = _text_matches(q)
+        stmt = stmt.where(or_(own, DataAsset.id.in_(by_term)))
     return paginate(db, stmt.order_by(DataAsset.qualified_name), page, request, response)
+
+
+def _text_matches(q: str) -> tuple[ColumnElement[bool], Select[Any]]:
+    """資産自身の条件と、用語から資産を引く問い合わせ。式は索引 (0028 の pg_trgm) の定義と一致させる。
+
+    ILIKE と同じ結果で、索引が無い環境でも全行の照合が速い (docs/operations/performance.md)。
+    """
+    like = func.lower(_contains(q))
+    # tags は JSON 配列。要素の完全一致 (大文字小文字無視) を、保存時と同じ JSON 表現の部分一致で DB 側判定する
+    tag_like = func.lower(_contains(json.dumps(q)))
+    own = or_(func.lower(DataAsset.name).like(like, escape=_LIKE_ESCAPE), func.lower(DataAsset.qualified_name).like(like, escape=_LIKE_ESCAPE),
+              func.lower(DataAsset.description).like(like, escape=_LIKE_ESCAPE), func.lower(cast(DataAsset.tags, String)).like(tag_like, escape=_LIKE_ESCAPE))
+    by_term = select(term_asset.c.asset_id).join(GlossaryTerm, GlossaryTerm.id == term_asset.c.term_id).where(
+        or_(func.lower(GlossaryTerm.name).like(like, escape=_LIKE_ESCAPE), func.lower(GlossaryTerm.definition).like(like, escape=_LIKE_ESCAPE)))
+    return own, by_term
+
+
+def _search_by_union(db: Session, stmt: Select[Any], q: str, page: Page, request: Request, response: Response) -> list[DataAsset]:
+    """資産自身の条件と用語の条件を UNION に分けて、各枝で索引を使う。結果は OR と同じ。
+
+    絞り込みの条件を各枝に入れ、id と並びの列だけで件数と並べ替えを行ってから行を読む。
+    外側で data_assets と結合すると全行を見ることになり、索引の効果が消える。
+    一致が多いときは、一覧だけ qualified_name の索引の順に読む形にする。すぐに必要な数が集まり、全件の並べ替えより速い。
+    """
+    own, by_term = _text_matches(q)
+    keys = stmt.with_only_columns(DataAsset.id, DataAsset.qualified_name)
+    matched = union(keys.where(own), keys.where(DataAsset.id.in_(by_term))).subquery()
+    total = db.scalar(select(func.count()).select_from(matched)) or 0
+    set_page_headers(request, response, page, total)
+    if total > MAX_SORTED_MATCHES:
+        return list(db.scalars(stmt.where(or_(own, DataAsset.id.in_(by_term))).order_by(DataAsset.qualified_name).limit(page.limit).offset(page.offset)))
+    ids = db.scalars(select(matched.c.id).order_by(matched.c.qualified_name).limit(page.limit).offset(page.offset)).all()
+    rows = {a.id: a for a in db.scalars(select(DataAsset).where(DataAsset.id.in_(ids)))}
+    return [rows[i] for i in ids]
 
 
 @router.get("/assets/retention-due", response_model=list[AssetOut])

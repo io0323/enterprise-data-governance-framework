@@ -27,7 +27,7 @@ os.environ.setdefault("EDGF_AUTH_MODE", "dev")
 
 from edgf import models  # noqa: E402,F401
 from edgf.db import Base  # noqa: E402
-from edgf.migrate import alembic_config  # noqa: E402
+from edgf.migrate import alembic_config, include_object  # noqa: E402
 
 ALEMBIC = str(Path(sys.executable).parent / "alembic")
 
@@ -118,7 +118,7 @@ def main() -> None:
 
     print("[4] モデルとの差分")
     with engine.connect() as conn:
-        diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+        diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True, "include_object": include_object}), Base.metadata)
     if diff:
         sys.exit(f"FAILED: モデルとマイグレーションに差分があります: {diff}")
     print("  ok: 差分なし")

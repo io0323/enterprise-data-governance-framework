@@ -14,6 +14,14 @@ from alembic.script import ScriptDirectory
 from sqlalchemy.engine import Connection, Engine
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+# PostgreSQL だけに条件付きで作る索引 (0028)。モデルに置けないので、モデルとの差分の比較から除く
+CONDITIONAL_INDEXES = frozenset({"ix_data_assets_name_trgm", "ix_data_assets_qualified_name_trgm", "ix_data_assets_description_trgm", "ix_data_assets_tags_trgm",
+                                 "ix_glossary_terms_name_trgm", "ix_glossary_terms_definition_trgm"})
+
+
+def include_object(obj: object, name: str | None, type_: str, reflected: bool, compare_to: object) -> bool:
+    """alembic の autogenerate に渡すフィルタ。"""
+    return not (type_ == "index" and name in CONDITIONAL_INDEXES)
 
 
 def alembic_config(url: str | None = None) -> Config:

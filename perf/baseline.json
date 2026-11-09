@@ -1,15 +1,15 @@
 {
   "profile": "standard",
   "seconds": 30,
-  "note": "GitHub Actions ubuntu-24.04 の同じコミットの 2 回の実行で、シナリオごとに悪い方の値 (ランナーの差で p95 が最大 47% 変わるため)",
+  "note": "GitHub Actions ubuntu-24.04 の同じコミットの複数回の実行で、シナリオごとに悪い方の値 (ランナーの差で p95 が大きく変わるため)。検索だけ pg_trgm の導入後の 4 回から取得",
   "scenarios": {
     "search": {
-      "p50_ms": 230.0,
-      "p95_ms": 460.0,
-      "p99_ms": 570.0,
-      "rps": 19.58,
+      "p50_ms": 120.0,
+      "p95_ms": 250.0,
+      "p99_ms": 450.0,
+      "rps": 37.75,
       "error_rate": 0.0,
-      "requests": 568,
+      "requests": 1096,
       "users": 5
     },
     "asset_detail": {

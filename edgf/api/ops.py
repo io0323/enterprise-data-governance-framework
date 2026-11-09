@@ -9,12 +9,14 @@ import logging
 
 from fastapi import APIRouter, Request
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from edgf import __version__, db, jobs, migrate
 from edgf.errors import ProblemError
 from edgf.services.mdm_rules import get_entities
 from edgf.services.policy import get_policies
 from edgf.services.policy_bundles import drift_message
+from edgf.services.search_index import DEGRADED, search_index_warning
 
 router = APIRouter(tags=["ops"])
 log = logging.getLogger("edgf.ops")
@@ -51,6 +53,12 @@ def ready():
     drift = drift_message()
     if drift:
         checks["policy_drift"] = drift
+    try:
+        with db.engine.connect() as conn:
+            if search_index_warning(conn):  # 検索は索引なしでも同じ結果を返す。遅いだけなので 503 にしない
+                checks["search_index"] = DEGRADED
+    except SQLAlchemyError as e:
+        log.warning("search index check skipped", extra={"fields": {"error": type(e).__name__}})
     overdue = jobs.overdue_jobs()
     if overdue:
         checks["jobs_overdue"] = ", ".join(overdue)
