@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6.0",
     "alembic>=1.13",
     "PyJWT[crypto]>=2.8",
+    "cryptography>=50.0",  # PyJWT の依存として導入済み。49 以下には既知の脆弱性がある。監査アンカーの Ed25519 署名でも直接使う
 ]
 
 [project.optional-dependencies]

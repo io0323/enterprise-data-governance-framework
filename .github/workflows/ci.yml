@@ -74,3 +74,19 @@ jobs:
         env:
           EDGF_E2E: "1"
         run: pytest -q tests/e2e
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[postgres,security]"
+      # pip-audit は深刻度を出さないので、既知の脆弱性はすべて失敗にする。誤検知の除外は下に理由を書いて --ignore-vuln で指定する
+      - name: 依存関係の脆弱性 (pip-audit)
+        run: pip-audit --skip-editable
+      # 深刻度 High 以上で失敗する。誤検知はコードに # nosec <ID> と理由を書いて除外する
+      - name: 静的解析 (bandit)
+        run: bandit -q -r edgf scripts --severity-level high

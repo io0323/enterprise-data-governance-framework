@@ -99,7 +99,7 @@ def _is_chain_conflict(exc: IntegrityError | OperationalError) -> bool:
 
 
 def _backoff(attempt: int) -> None:
-    time.sleep(random.uniform(0, min(0.002 * attempt, 0.05)))
+    time.sleep(random.uniform(0, min(0.002 * attempt, 0.05)))  # nosec B311 - 再試行の間隔をずらすだけで、暗号用途ではない
 
 
 def record(db: Session, actor: str, action: str, entity_type: str, entity_id: str, payload: dict | None = None) -> AuditEvent:

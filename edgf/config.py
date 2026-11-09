@@ -87,6 +87,8 @@ class Settings:
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)
     mdm_review_sla_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MDM_REVIEW_SLA_DAYS", "7")))
+    # §19 Security: リクエスト本文の上限 (バイト)。超えると 413 Problem を返す
+    max_body_bytes: int = field(default_factory=lambda: int(os.getenv("EDGF_MAX_BODY_BYTES", str(10 * 1024 * 1024))))
     # IdP 側のロール/グループ名 → edgf ロール (例: "dg-committee=committee,dg-admins=admin")
     role_map: tuple[tuple[str, str], ...] = field(default_factory=lambda: _env_pairs("EDGF_ROLE_MAP"))
 
