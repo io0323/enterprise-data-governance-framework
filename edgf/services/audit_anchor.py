@@ -35,6 +35,7 @@ log = logging.getLogger("edgf.audit")
 
 FORMAT_VERSION = 1
 SEED_BYTES = 32
+CHUNK = 500
 # verify の status のうち、改ざんや欠落を示すもの (valid を false にする)
 BROKEN = frozenset({"tail_truncated", "mismatch", "signature_invalid", "file_tampered"})
 
@@ -323,8 +324,20 @@ def _file_problem(rows: Sequence[AuditAnchor], path: Path, keys: dict[str, Ed255
     return None, anchors
 
 
+def _first_mismatch(db: Session, anchors: Sequence[Anchor]) -> int | None:
+    expected = {(a.seq, a.hash) for a in anchors}
+    seqs = sorted({seq for seq, _ in expected})
+    actual: dict[int, str] = {}
+    for start in range(0, len(seqs), CHUNK):
+        actual.update(db.execute(select(AuditEvent.seq, AuditEvent.hash).where(AuditEvent.seq.in_(seqs[start:start + CHUNK]))).tuples().all())
+    return next((seq for seq, value in sorted(expected) if actual.get(seq) != value), None)
+
+
 def verify(db: Session, s: Settings | None = None) -> dict[str, Any]:
-    """最新のアンカーとチェーンを照合する。DB とファイルのアンカーのうち、最も新しいものを基準にする。
+    """すべてのアンカー (DB とファイル) をチェーンと照合する。
+
+    最新のものだけでは足りない。チェーンを計算し直されたあとに定期のアンカーが作られると、最新のアンカーは偽の先頭に署名してしまう。
+    過去のアンカーは書き換え前のハッシュを持ち続けるので、全件と比べれば改ざんの後でも検知できる。
 
     - tail_truncated: チェーンの先頭の seq がアンカーより小さい (末尾の削除、または古いバックアップからの復元)
     - mismatch: アンカーの seq のハッシュが一致しない (チェーン全体の計算し直しを含む、アンカー以前の改ざん)
@@ -350,8 +363,9 @@ def verify(db: Session, s: Settings | None = None) -> dict[str, Any]:
     report["head_seq"] = head
     if head is None or head < latest.seq:
         return {**report, "status": "tail_truncated"}
-    if db.scalar(select(AuditEvent.hash).where(AuditEvent.seq == latest.seq)) != latest.hash:
-        return {**report, "status": "mismatch"}
+    mismatched = _first_mismatch(db, candidates)
+    if mismatched is not None:
+        return {**report, "status": "mismatch", "detail": f"seq:{mismatched}"}
     return {**report, "status": "ok" if keys else "unverifiable"}
 
 

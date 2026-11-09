@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import select, text
 
+from edgf import jobs as jobs_module
 from edgf.config import Settings
 from edgf.db import SessionLocal, engine
 from edgf.jobs import JOBS, run_job
@@ -149,6 +151,14 @@ def test_enabled_without_anchors_reports_none(client, anchor_settings):
     assert body["valid"] is True and body["anchor"]["status"] == "none"
 
 
+def test_overdue_warning_only_when_anchoring_is_enabled(client, monkeypatch):
+    job = JOBS["audit_anchor"]
+    old, now = audit.utcnow() - timedelta(days=30), audit.utcnow()
+    assert jobs_module._is_overdue(job, None, old, now) is False
+    monkeypatch.setattr(jobs_module, "settings", replace(jobs_module.settings, anchor_enabled=True))
+    assert jobs_module._is_overdue(job, None, old, now) is True
+
+
 def test_missing_key_fails_the_job_outside_production(client, anchor_settings, monkeypatch):
     monkeypatch.setattr(audit_anchor, "settings", replace(anchor_settings, anchor_signing_key=""))
     events(client)
@@ -196,6 +206,45 @@ def test_recomputed_chain_is_detected_by_anchor(client, anchor_settings):
     rewrite_chain(new_payload={"forged": True})
     body = verify_api(client)
     assert body["chain_valid"] is True and body["valid"] is False and body["anchor"]["status"] == "mismatch"
+
+
+def test_rewrite_stays_detected_after_the_next_anchor(client, anchor_settings):
+    """書き換えのあとに定期のアンカーが作られても (偽の先頭に署名されても)、過去のアンカーとの照合で見つかる。"""
+    events(client)
+    anchor_now()
+    rewrite_chain(new_payload={"forged": True})
+    assert client.post(f"{API}/domains", headers=ADMIN, json={"name": "later"}).status_code == 201
+    assert anchor_now()["anchored"] == 1
+    body = verify_api(client)
+    assert body["chain_valid"] is True and body["valid"] is False and body["anchor"]["status"] == "mismatch"
+
+
+def test_file_anchor_detects_rewrite_when_db_anchors_are_replaced(client, anchor_settings):
+    """DB のアンカーを全部消して作り直しても、ファイルの過去のアンカーと一致しない。"""
+    events(client)
+    anchor_now()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM audit_anchors"))
+    rewrite_chain(new_payload={"forged": True})
+    assert client.post(f"{API}/domains", headers=ADMIN, json={"name": "later"}).status_code == 201
+    assert anchor_now()["anchored"] == 1
+    assert verify_api(client)["anchor"]["status"] == "mismatch"
+
+
+def test_many_anchors_are_all_compared(client, anchor_settings, monkeypatch):
+    monkeypatch.setattr(audit_anchor, "CHUNK", 2)
+    events(client, 1)
+    for i in range(5):
+        assert client.post(f"{API}/domains", headers=ADMIN, json={"name": f"m{i}"}).status_code == 201
+        assert anchor_now()["anchored"] == 1
+    assert verify_api(client)["anchor"]["status"] == "ok"
+    with engine.begin() as conn:
+        seq = conn.execute(text("SELECT min(seq) FROM audit_anchors")).scalar()
+        conn.execute(text("UPDATE audit_anchors SET hash = :h WHERE seq > :s"), {"h": "f" * 64, "s": seq + 10**6})
+    with SessionLocal() as db:
+        anchors = [Anchor.of_row(r) for r in db.scalars(select(AuditAnchor)).all()]
+        assert audit_anchor._first_mismatch(db, anchors) is None
+        assert audit_anchor._first_mismatch(db, [replace(anchors[0], hash="0" * 64), *anchors[1:]]) == anchors[0].seq
 
 
 def test_recomputed_chain_after_anchor_is_not_flagged_as_mismatch(client, anchor_settings):

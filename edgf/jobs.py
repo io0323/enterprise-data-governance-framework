@@ -19,7 +19,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -105,6 +105,7 @@ class Job:
     description: str
     fn: Callable[[Session, str], Mapping[str, Any]]
     default_interval: int
+    applies: Callable[[], bool] = field(default=lambda: True)  # 機能が無効なら、実行が止まっていても警告しない
 
     def _env(self, suffix: str) -> str | None:
         return os.environ.get(f"EDGF_JOB_{self.name.upper()}_{suffix}")
@@ -130,7 +131,7 @@ JOBS: dict[str, Job] = {j.name: j for j in (
     Job("approval_sla", "承認の SLA 超過の処理 (§16)", _approvals, HOUR),
     Job("review_campaigns", "レビューキャンペーンの作成と期限の処理 (§16 / §11)", _reviews, DAY),
     Job("kpi_snapshot", "KPI の日次のスナップショット (§17)", _kpi_snapshot, DAY),
-    Job("audit_anchor", "監査チェーンのアンカリング (§13)", _audit_anchor, HOUR),
+    Job("audit_anchor", "監査チェーンのアンカリング (§13)", _audit_anchor, HOUR, lambda: settings.anchor_enabled),
 )}
 
 
@@ -222,7 +223,7 @@ def status_of(db: Session, job: Job) -> dict[str, Any]:
 
 def _is_overdue(job: Job, last_success: datetime | None, installed_at: datetime, now: datetime) -> bool:
     """最後の成功 (一度も成功していなければ導入の日時) から、間隔の 3 倍を過ぎたか。"""
-    return job.enabled and now - (last_success or installed_at) > timedelta(seconds=job.interval * OVERDUE_FACTOR)
+    return job.enabled and job.applies() and now - (last_success or installed_at) > timedelta(seconds=job.interval * OVERDUE_FACTOR)
 
 
 def overdue_jobs(now: datetime | None = None) -> list[str]:
