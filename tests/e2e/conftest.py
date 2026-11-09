@@ -18,8 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 API = "/api/v1"
 # 不安定なテストの調査用: 失敗したテストの trace とスクリーンショットを残す。EDGF_E2E_REPEAT は全テストを N 回ずつ実行する
 TRACE_DIR = os.environ.get("EDGF_E2E_TRACE_DIR")
+TRACE_SNAPSHOTS = bool(os.environ.get("EDGF_E2E_TRACE_SNAPSHOTS"))  # 記録が重いと競合が再現しなくなるので、既定では DOM のスナップショットを取らない
 REPEAT = int(os.environ.get("EDGF_E2E_REPEAT") or 0)
-_artifacts: list[Path] = []
 ADMIN = {"sub": "root", "roles": ["admin"]}
 OWNER = {"sub": "asset-owner", "roles": ["owner"], "domains": ["sales"]}
 CONSUMER = {"sub": "consumer1", "roles": ["consumer"], "clearance": "internal"}
@@ -51,11 +51,11 @@ def pytest_runtest_makereport(item, call):
 @pytest.fixture(autouse=True)
 def _keep_artifacts_of_failures(request):
     """全テストより外側で片付ける。成功したテストの trace は消す。"""
+    before = set(Path(TRACE_DIR).iterdir()) if TRACE_DIR else set()
     yield
-    if not getattr(request.node, "e2e_failed", False):
-        for path in _artifacts:
+    if TRACE_DIR and not getattr(request.node, "e2e_failed", False):
+        for path in set(Path(TRACE_DIR).iterdir()) - before:
             path.unlink(missing_ok=True)
-    _artifacts.clear()
 
 
 def _free_port() -> int:
@@ -175,7 +175,7 @@ class Session:
         self.context.on("console", lambda m: self.console.append(m.text))
         self.page = self.context.new_page()
         if TRACE_DIR:
-            self.context.tracing.start(screenshots=True, snapshots=True)
+            self.context.tracing.start(screenshots=True, snapshots=TRACE_SNAPSHOTS)
 
     def open(self):
         self.page.goto(f"{self.base}/ui/")
@@ -206,7 +206,6 @@ class Session:
             screenshot, trace = name.with_suffix(".png"), name.with_suffix(".zip")
             self.page.screenshot(path=screenshot)
             self.context.tracing.stop(path=trace)
-            _artifacts.extend([screenshot, trace])
         self.context.close()
 
 
