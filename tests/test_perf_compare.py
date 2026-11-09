@@ -61,3 +61,11 @@ def test_main_exit_codes(tmp_path, capsys):
     bad.write_text(json.dumps({"scenarios": {"search": _row(500), "audit_write": _row(50, rps=300)}}), encoding="utf-8")
     assert compare.main([str(bad), "--baseline", str(base)]) == 1
     assert "悪化" in capsys.readouterr().err
+
+
+def test_committed_baseline_covers_every_scenario():
+    """perf.yml は基準値が無いと比較を省くので、基準値の有無と網羅はここで確認する。"""
+    baseline = json.loads((Path(__file__).resolve().parents[1] / "perf" / "baseline.json").read_text(encoding="utf-8"))
+    assert baseline["profile"] == "standard"
+    assert set(baseline["scenarios"]) == {"search", "asset_detail", "impact", "rag_authorize", "contract_check", "inbox", "products", "audit_write"}
+    assert all(row["requests"] > 0 and row["error_rate"] == 0 for row in baseline["scenarios"].values())
