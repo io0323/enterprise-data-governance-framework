@@ -65,7 +65,7 @@ def test_migrations_match_models_and_downgrade():
     reset_db()
     migrate.upgrade(engine)
     with engine.connect() as conn:
-        diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True}), Base.metadata)
+        diff = compare_metadata(MigrationContext.configure(conn, opts={"compare_type": True, "include_object": migrate.include_object}), Base.metadata)
     assert diff == []
     migrate.downgrade(engine, "base")
     assert set(inspect(engine).get_table_names()) <= {"alembic_version"}

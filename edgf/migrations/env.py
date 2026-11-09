@@ -13,6 +13,7 @@ from sqlalchemy.engine import Connection
 from edgf import models  # noqa: F401  (register tables on Base.metadata)
 from edgf.config import settings
 from edgf.db import Base, make_engine
+from edgf.migrate import include_object
 
 config = context.config
 if config.config_file_name:
@@ -31,6 +32,7 @@ def _configure(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        include_object=include_object,
         render_as_batch=connection.dialect.name == "sqlite",  # SQLite の ALTER 制約を回避
     )
 

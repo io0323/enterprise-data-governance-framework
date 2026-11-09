@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import String, cast, event, or_, select, text
 from sqlalchemy.orm import aliased
 
+from edgf import migrate
 from edgf.api import catalog
 from edgf.api.catalog import _LIKE_ESCAPE, _contains
 from edgf.db import SessionLocal, engine
@@ -223,10 +224,15 @@ def test_migration_and_status_list_the_same_indexes():
     assert set(migration.INDEXES) == SEARCH_INDEXES
 
 
+def test_only_the_conditional_indexes_are_excluded_from_model_comparison():
+    """モデルとの差分の検査を弱めていないこと: 除くのは条件付きの 6 個の索引だけ。"""
+    assert len(SEARCH_INDEXES) == 6
+    assert all(not migrate.include_object(None, name, "index", True, None) for name in SEARCH_INDEXES)
+    assert migrate.include_object(None, "ix_other", "index", True, None) and migrate.include_object(None, "ix_data_assets_name_trgm", "table", True, None)
+
+
 @only_postgres
 def test_downgrade_keeps_extension_and_upgrade_restores_indexes(client):
-    from edgf import migrate
-
     def state():
         with engine.connect() as conn:
             return (conn.execute(text("SELECT count(*) FROM pg_extension WHERE extname = 'pg_trgm'")).scalar_one(),

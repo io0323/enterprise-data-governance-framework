@@ -4,9 +4,9 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-# edgf/migrations/versions/0028_search_trgm_indexes.py が作る索引
-SEARCH_INDEXES = frozenset({"ix_data_assets_name_trgm", "ix_data_assets_qualified_name_trgm", "ix_data_assets_description_trgm", "ix_data_assets_tags_trgm",
-                            "ix_glossary_terms_name_trgm", "ix_glossary_terms_definition_trgm"})
+from edgf.migrate import CONDITIONAL_INDEXES
+
+SEARCH_INDEXES = CONDITIONAL_INDEXES  # edgf/migrations/versions/0028_search_trgm_indexes.py が作る索引
 DEGRADED = "degraded"
 
 
