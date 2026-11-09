@@ -30,7 +30,7 @@ from edgf.errors import ProblemError
 from edgf.models import AccessGrant, DataAsset, utcnow
 
 ASSET_RELATIONS = ("owner", "steward", "custodian")
-RELATIONS = frozenset({*ASSET_RELATIONS, "assignee"})
+RELATIONS = frozenset({*ASSET_RELATIONS, "assignee", "requester"})
 PRIVILEGED_READERS = frozenset({ADMIN, COMMITTEE})  # 全資産のメタデータを参照できる (監督・運用責任)
 RESTRICTED = "restricted"
 
@@ -91,7 +91,10 @@ PERMISSIONS: Mapping[str, Rule] = {
     # Lineage (§9): パイプラインによる自動収集
     "lineage.write": rule(roles=(ADMIN, OWNER, STEWARD, CUSTODIAN), description="リネージの登録・取込"),
     # Policy / Compliance (§13, §15)
-    "policy.reload": rule(roles=(COMMITTEE, ADMIN), approval=True, description="ポリシーの再読込 (公開)"),
+    "policy.reload": rule(roles=(COMMITTEE, ADMIN), description="ディスクの内容から Policy の変更を提案する (即時には反映しない)"),
+    "policy.propose": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER,),
+                           description="Policy の変更の提案 (ドメイン内の Owner は Domain Policy だけ)"),
+    "policy.publish": rule(roles=(COMMITTEE,), approval=True, description="承認済みの Policy の公開"),
     "policy.evaluate_all": rule(roles=(COMMITTEE, ADMIN), description="全資産の自動監査と Issue 化"),
     "exception.request": rule(roles=(ADMIN,), domain_roles=(OWNER, STEWARD), relations=("owner", "steward"),
                               description="ポリシー例外の申請"),
@@ -168,6 +171,22 @@ PERMISSIONS: Mapping[str, Rule] = {
     "mesh.subscription.read": rule(roles=(ADMIN, COMMITTEE), description="全利用者の利用登録の参照"),
     "cdm.import": rule(roles=(ADMIN, COMMITTEE), approval=True,
                        description="外部の CDM 定義の版の取り込み (作成・編集の機能は持たない)"),
+    # 汎用の承認エンジン (§16 Approval)。decide の実際の判定は種別とステップごとのルール (approval_types.py) で行う
+    "approval.request": rule(authenticated=True, description="承認の申請 (種別ごとの申請条件は approval_types で定義する)"),
+    "approval.decide": rule(roles=(COMMITTEE,), domain_roles=(OWNER,), relations=("owner",), approval=True,
+                            description="承認の判断 (種別とステップごとのルールで判定する)"),
+    "approval.cancel": rule(roles=(ADMIN,), relations=("requester",), description="承認の申請の取り消し (申請者本人、admin)"),
+    "approval.read": rule(roles=(ADMIN, COMMITTEE), description="全案件の参照 (ABAC で絞り込む)"),
+    # イベント配信 (§16)
+    "webhook.manage": rule(roles=(ADMIN,), description="Webhook の配信先の登録・更新・参照"),
+    "outbox.redeliver": rule(roles=(ADMIN,), description="デッドレターの参照と手動の再送"),
+    # 定期レビュー (§16 Review / §11 四半期の棚卸)
+    "review.decide": rule(relations=("owner",), approval=True, description="棚卸と証明の判断 (対象資産の Owner)"),
+    "review.read": rule(roles=(ADMIN, COMMITTEE), description="キャンペーンと全項目の参照"),
+    "policy.review": rule(roles=(COMMITTEE,), approval=True, description="Policy の年次見直しの記録"),
+    # ジョブ (§16 / §19 Observability)
+    "jobs.run": rule(roles=(ADMIN,), description="ジョブの手動実行 (通常は外部の cron や CronJob から実行する)"),
+    "jobs.read": rule(roles=(ADMIN, COMMITTEE), description="ジョブの実行状況の参照"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -201,7 +220,11 @@ def relations_of(principal: Principal, asset: DataAsset | None) -> set[str]:
 
 def is_allowed(principal: Principal, action: str, *, asset: DataAsset | None = None, domain: str | None = None,
                relations: Iterable[str] = ()) -> bool:
-    r = PERMISSIONS[action]
+    return rule_allows(principal, PERMISSIONS[action], asset=asset, domain=domain, relations=relations)
+
+
+def rule_allows(principal: Principal, r: Rule, *, asset: DataAsset | None = None, domain: str | None = None,
+                relations: Iterable[str] = ()) -> bool:
     if r.authenticated or principal.roles & r.roles:
         return True
     target_domain = asset.domain if asset is not None and domain is None else domain
@@ -228,6 +251,11 @@ def deny(db: Session, principal: Principal, action: str, *, entity_type: str, en
     if required is not None:
         ext["required"] = required.as_dict()
     raise ProblemError(403, reason, type_="forbidden", **ext)
+
+
+def has_global_role(principal: Principal, action: str) -> bool:
+    """ドメイン内ロールを除いた判定。全ドメイン (*) に所属する Owner でも全社の操作は許さない場合に使う。"""
+    return bool(principal.roles & PERMISSIONS[action].roles)
 
 
 def require(db: Session, principal: Principal, action: str, *, asset: DataAsset | None = None,

@@ -719,6 +719,166 @@ class CdmVersion(Base):
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ApprovalRequest(Base):
+    """§16 Approval: 汎用の承認エンジンの案件。承認のステップは作成時に確定して保持する。"""
+    __tablename__ = "approval_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    type: Mapped[str] = mapped_column(String(50), index=True)
+    target_type: Mapped[str] = mapped_column(String(50))
+    target_id: Mapped[str] = mapped_column(String(300), index=True)
+    asset_id: Mapped[str | None] = mapped_column(ForeignKey("data_assets.id"), index=True)  # 承認者と ABAC の判定に使う
+    requested_by: Mapped[str] = mapped_column(String(200), index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    steps: Mapped[list] = mapped_column(JSON, default=list)  # [{name, rule, quorum, domain}]
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ApprovalDecision(Base):
+    """判断の記録。追記のみで、更新も削除もしない。1 人が同じ案件で判断できるのは 1 回だけ。"""
+    __tablename__ = "approval_decisions"
+    __table_args__ = (UniqueConstraint("request_id", "decided_by", name="uq_approval_decision"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), index=True)
+    step: Mapped[int] = mapped_column(Integer)
+    decided_by: Mapped[str] = mapped_column(String(200))
+    approve: Mapped[bool] = mapped_column(Boolean)
+    comment: Mapped[str] = mapped_column(Text, default="")
+    decided_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PolicyBundle(Base):
+    """§16 Policy / §19 Integrity: Policy の正。YAML 一式を版として保持し、実行時は active の版だけを評価する。"""
+    __tablename__ = "policy_bundles"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    files: Mapped[dict] = mapped_column(JSON)  # 相対パス → YAML の本文
+    content_hash: Mapped[str] = mapped_column(String(64))
+    base_version: Mapped[int | None] = mapped_column(Integer)
+    base_hash: Mapped[str | None] = mapped_column(String(64))  # 提案の元にした active の版 (公開時に変わっていれば拒否する)
+    scope: Mapped[str] = mapped_column(String(20), default="global")  # global / domain
+    domains: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    proposed_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    approval_id: Mapped[str | None] = mapped_column(ForeignKey("approval_requests.id"))
+    impact: Mapped[dict] = mapped_column(JSON, default=dict)  # 影響評価 (dry-run) の結果
+    rollback_of: Mapped[int | None] = mapped_column(Integer)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class OutboxEvent(Base):
+    """§16 Transactional Outbox: 状態変更と同じトランザクションで書き込むイベント (CloudEvents 1.0 の内容)。"""
+    __tablename__ = "outbox_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)  # CloudEvents の id (受信側の冪等キー)
+    type: Mapped[str] = mapped_column(String(100), index=True)
+    subject: Mapped[str] = mapped_column(String(300))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    request_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    fanned_out_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+
+class WebhookEndpoint(Base):
+    """配信先。署名の秘密鍵は持たず、外部の参照 (secret_ref) だけを持つ。"""
+    __tablename__ = "webhook_endpoints"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    url: Mapped[str] = mapped_column(String(2000))
+    secret_ref: Mapped[str] = mapped_column(String(200))
+    event_types: Mapped[list] = mapped_column(JSON, default=list)  # 空なら全種別。末尾の * は前方一致
+    description: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WebhookDelivery(Base):
+    """イベント × 配信先の配信状況。配信は at-least-once で、最後まで届かなければ dead (デッドレター) に移す。"""
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (UniqueConstraint("event_id", "endpoint_id", name="uq_webhook_delivery"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_id: Mapped[str] = mapped_column(ForeignKey("outbox_events.id"), index=True)
+    endpoint_id: Mapped[str] = mapped_column(ForeignKey("webhook_endpoints.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending / delivered / dead
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(200))  # ステータスや例外の種類だけ (本文や秘密は含めない)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dead_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ReviewCampaign(Base):
+    """§16 Review / §11 定期棚卸。同じ種別と期間のキャンペーンは 1 つだけ。"""
+    __tablename__ = "review_campaigns"
+    __table_args__ = (UniqueConstraint("kind", "period", name="uq_review_campaign"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(30))  # access_review / ownership_attestation / policy_review
+    period: Mapped[str] = mapped_column(String(10))  # 2026-Q4 / 2026
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open / closed
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    grace_until: Mapped[datetime] = mapped_column(DateTime)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ReviewItem(Base):
+    """レビューの 1 項目。判断は承認エンジンの案件 (approval_id) で行う。"""
+    __tablename__ = "review_items"
+    __table_args__ = (UniqueConstraint("campaign_id", "target_type", "target_id", name="uq_review_item"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("review_campaigns.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(30))  # access_grant / subscription / asset
+    target_id: Mapped[str] = mapped_column(String(36))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), unique=True)
+    # pending / kept / revoked / auto_revoked / attested / disputed / unattested / cancelled
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PolicyReview(Base):
+    """§16 Policy の年次見直しの記録。内容を変えなくても、見直したことを証跡に残す。"""
+    __tablename__ = "policy_reviews"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    policy_id: Mapped[str] = mapped_column(String(50), index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(200))
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+class JobLease(Base):
+    """§16 / §19 ジョブのリース。同じジョブが同時に 1 つしか実行されないようにする (外部の依存を増やさず DB で行う)。"""
+    __tablename__ = "job_leases"
+    name: Mapped[str] = mapped_column(String(50), primary_key=True)
+    holder: Mapped[str] = mapped_column(String(100))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class JobRun(Base):
+    """ジョブの実行の記録 (リース・開始・終了・結果・件数)。"""
+    __tablename__ = "job_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job: Mapped[str] = mapped_column(String(50), index=True)
+    holder: Mapped[str] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)  # running / succeeded / failed
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(200))  # 例外の種類だけ (内部情報を残さない)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

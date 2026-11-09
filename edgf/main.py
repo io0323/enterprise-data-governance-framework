@@ -7,14 +7,14 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from edgf import __version__
-from edgf.api import ai, audit, catalog, glossary, issues, kpi, lineage, mdm, mesh, ops, policy, privacy, quality, refdata
+from edgf.api import ai, approvals, audit, catalog, glossary, issues, jobs, kpi, lineage, mdm, mesh, ops, policy, privacy, quality, refdata, reviews, webhooks
 from edgf.auth import build_authenticator
 from edgf.config import Settings, settings
 from edgf.deps import get_principal
 from edgf.errors import PROBLEM_RESPONSES, install_problem_handlers
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from edgf.services.mdm_rules import get_entities
-from edgf.services.policy import get_policies
+from edgf.services.policy_bundles import bootstrap_on_startup
 from edgf.services.subject_ref import validate_subject_key
 
 log = logging.getLogger("edgf")
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         from edgf import db, migrate
         migrate.upgrade(db.engine)
         log.info("database migrated to head (EDGF_AUTO_MIGRATE)")
-    get_policies(reload=True)  # 起動時にポリシー構文を検証 (fail fast)
+    bootstrap_on_startup()  # active の版が無いときだけディスクから取り込む。不正なら fail fast
     get_entities(reload=True)  # MDM のエンティティ定義も同様
     log.info("edgf started", extra={"fields": {"version": __version__}})
     yield
@@ -50,7 +50,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     install_problem_handlers(app)
     app.add_middleware(RequestContextMiddleware)
     for r in (catalog.router, glossary.router, quality.router, issues.router,
-              lineage.router, policy.router, audit.router, kpi.router, privacy.router, mdm.router, refdata.router, ai.router, mesh.router):
+              lineage.router, policy.router, audit.router, kpi.router, privacy.router, mdm.router, refdata.router, ai.router, mesh.router, approvals.router, webhooks.router, reviews.router, jobs.router):
         # /api/v1 はすべて認証必須 (認可は各エンドポイントで edgf.authz が判定)
         app.include_router(r, prefix="/api/v1", responses=PROBLEM_RESPONSES, dependencies=[Depends(get_principal)])
     app.include_router(ops.router)

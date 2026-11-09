@@ -15,7 +15,7 @@ from edgf.enums import ContractStatus, EscalationLevel, ProductStatus
 from edgf.errors import ProblemError
 from edgf.models import (ContractVersion, DataAsset, DataContract, DataProduct, OutputPort, PrivacyPurpose, QualityRule,
                          fit_identifier, to_naive_utc, utcnow)
-from edgf.services import audit, issues, mesh_cdm, mesh_compat, mesh_subscriptions
+from edgf.services import audit, issues, mesh_cdm, mesh_compat, mesh_subscriptions, outbox
 from edgf.services.mesh import MeshStateError, MeshValidationError
 from edgf.services.mesh_compat import Bump
 from edgf.services.quality import latest_run
@@ -198,6 +198,8 @@ def publish(db: Session, actor: str, contract: DataContract, row: ContractVersio
     if baseline is not None and row.major > baseline.major:
         result.update(_on_new_major(db, actor, contract, row, product, asset, now))
     check_drift(db, actor, asset)
+    outbox.emit(db, "contract.published", row.id, {"contract_id": contract.id, "contract_version_id": row.id, "version": row.version,
+                                                   "product_id": product.id, "output_port_id": port.id, "breaking": [c["code"] for c in changes if c["breaking"]]})
     return result
 
 

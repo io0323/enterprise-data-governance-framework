@@ -5,16 +5,22 @@ OPA 等の外部ポリシーエンジンへ置換可能なよう、評価結果�
 """
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from edgf.config import settings
-from edgf.models import DataAsset, PolicyException, QualityRule, utcnow, term_asset
+from edgf.db import SessionLocal
+from edgf.enums import BundleStatus
+from edgf.models import DataAsset, PolicyBundle, PolicyException, QualityRule, utcnow, term_asset
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
@@ -62,41 +68,104 @@ class Policy:
                 "domain": self.domain, "when": self.when, "check": self.check, "design_ref": self.design_ref, "target": self.target}
 
 
-def load_policies(policy_dir: Path | None = None) -> list[Policy]:
+def read_disk_files(policy_dir: Path | None = None) -> dict[str, str]:
+    """ディスクの Policy の YAML 一式 (相対パス → 本文)。実行時の正ではなく、提案と初回の取り込みの元にする。"""
     base = Path(policy_dir or settings.policy_dir)
-    files = sorted(base.glob("*.yaml")) + sorted((base / "domains").glob("*.yaml"))
+    return {str(f.relative_to(base)): f.read_text(encoding="utf-8")
+            for f in [*sorted(base.glob("*.yaml")), *sorted((base / "domains").glob("*.yaml"))]}
+
+
+def parse_files(files: Mapping[str, str]) -> list[Policy]:
+    """YAML 一式を検証して読み込む。Global Policy の上書きと、未知の check type はここで拒否する。"""
     policies: dict[str, Policy] = {}
-    for f in files:
-        doc = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    top_level = sorted(k for k in files if "/" not in k)
+    for name in [*top_level, *sorted(k for k in files if "/" in k)]:
+        try:
+            doc = yaml.safe_load(files[name]) or {}
+        except yaml.YAMLError as e:
+            raise PolicyLoadError(f"{name}: YAML を解釈できません") from e
+        if not isinstance(doc, dict):
+            raise PolicyLoadError(f"{name}: オブジェクトで指定してください")
         scope = doc.get("scope", "global")
         domain = doc.get("domain")
         if scope == "domain" and not domain:
-            raise PolicyLoadError(f"{f.name}: domain scope requires 'domain'")
+            raise PolicyLoadError(f"{name}: domain scope requires 'domain'")
         for p in doc.get("policies", []):
-            pid = p["id"]
+            try:
+                pid, check_type, policy_name = p["id"], p["check"]["type"], p["name"]
+            except (KeyError, TypeError) as e:
+                raise PolicyLoadError(f"{name}: ポリシーには id / name / check.type が必要です") from e
             if pid in policies:
                 # Federated Governance: ドメインは Global Policy を上書き(緩和)できない
-                raise PolicyLoadError(f"{f.name}: duplicate policy id {pid} (override is not allowed)")
+                raise PolicyLoadError(f"{name}: duplicate policy id {pid} (override is not allowed)")
             target = p.get("target", ASSET)
-            check_type = p["check"]["type"]
             if target not in (ASSET, PRODUCT):
-                raise PolicyLoadError(f"{f.name}: unknown target {target}")
+                raise PolicyLoadError(f"{name}: unknown target {target}")
             if check_type not in (PRODUCT_CHECK_TYPES if target == PRODUCT else CHECK_TYPES):
-                raise PolicyLoadError(f"{f.name}: unknown check type {check_type} for target {target}")
-            policies[pid] = Policy(id=pid, name=p["name"], severity=p.get("severity", "medium"), check=p["check"],
+                raise PolicyLoadError(f"{name}: unknown check type {check_type} for target {target}")
+            policies[pid] = Policy(id=pid, name=policy_name, severity=p.get("severity", "medium"), check=p["check"],
                                    scope=scope, domain=domain, when=p.get("when", {}), design_ref=p.get("design_ref", ""),
                                    target=target)
     return list(policies.values())
 
 
+def load_policies(policy_dir: Path | None = None) -> list[Policy]:
+    return parse_files(read_disk_files(policy_dir))
+
+
+def content_hash(files: Mapping[str, str]) -> str:
+    return hashlib.sha256(json.dumps(dict(files), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 _cache: list[Policy] | None = None
+_cache_hash: str | None = None
 
 
-def get_policies(reload: bool = False) -> list[Policy]:
-    global _cache
-    if _cache is None or reload:
-        _cache = load_policies()
+def _active(db: Session) -> tuple[str, dict[str, str]] | None:
+    row = db.execute(select(PolicyBundle.content_hash).where(PolicyBundle.status == BundleStatus.ACTIVE.value)).first()
+    if row is None:
+        return None
+    if row[0] == _cache_hash and _cache is not None:
+        return row[0], {}
+    return row[0], db.scalar(select(PolicyBundle.files).where(PolicyBundle.status == BundleStatus.ACTIVE.value))
+
+
+def _resolve(db: Session) -> list[Policy]:
+    """active の版の Policy を返す。公開されると内容ハッシュが変わるので、複数のプロセスでも追従する。"""
+    global _cache, _cache_hash
+    active = _active(db)
+    if active is None:
+        # 起動時にスキーマが無く取り込めなかった場合 (後からマイグレーションした場合) は、ここで取り込む
+        from edgf.services import policy_bundles
+        bundle = policy_bundles.bootstrap(db)
+        active = bundle.content_hash, bundle.files
+    digest, files = active
+    if digest != _cache_hash or _cache is None:
+        _cache, _cache_hash = parse_files(files), digest
     return _cache
+
+
+def get_policies(reload: bool = False, *, db: Session | None = None) -> list[Policy]:
+    """実行時に評価する Policy。db を渡すとそのセッションで読む (評価の中ではこちらを使う)。
+
+    db を渡さないのは /ready の構文の確認だけ。DB に届かなくても、手元の情報で判定する (参照は fail-open。§19)。
+    """
+    global _cache, _cache_hash
+    if reload:
+        _cache, _cache_hash = None, None
+    if db is not None:
+        return _resolve(db)
+    try:
+        with SessionLocal() as session:
+            found = _active(session)
+            if found is None:
+                return load_policies()
+            digest, files = found
+            if digest != _cache_hash or _cache is None:
+                _cache, _cache_hash = parse_files(files), digest
+            return _cache
+    except SQLAlchemyError:
+        return _cache if _cache is not None else load_policies()
 
 
 def _run_check(db: Session, asset: Any, check: dict) -> tuple[bool | None, str]:
@@ -157,7 +226,7 @@ def _active_exceptions(db: Session, asset_id: str) -> set[str]:
 def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None = None) -> list[dict[str, Any]]:
     excepted = _active_exceptions(db, asset.id)
     results = []
-    for p in policies or get_policies():
+    for p in get_policies(db=db) if policies is None else policies:
         if p.target != ASSET or not p.applies_to(asset):
             continue
         ok, msg = _run_check(db, asset, p.check)
@@ -172,7 +241,7 @@ def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None 
 def evaluate_product(db: Session, product: Any, policies: list[Policy] | None = None) -> list[dict[str, Any]]:
     """Data Product の出荷基準を評価する。ポリシー例外は適用しない (緩和の経路を作らない)。"""
     results = []
-    for p in policies or get_policies():
+    for p in get_policies(db=db) if policies is None else policies:
         if p.target != PRODUCT or not p.applies_to(product):
             continue
         ok, msg = _run_check(db, product, p.check)
@@ -192,3 +261,19 @@ def evaluate_all(db: Session) -> dict:
                           "violations": [r for r in res if r["status"] == "fail"], "results": res})
     return {"compliance_rate": round(compliant / applicable, 6) if applicable else 1.0,
             "applicable_checks": applicable, "compliant_checks": compliant, "assets": per_asset}
+
+
+def evaluate_and_open_issues(db: Session, actor: str) -> dict:
+    """全資産の自動監査と、違反の Issue 化 (重複起票なし)。"""
+    from edgf.services import issues
+
+    report = evaluate_all(db)
+    opened = 0
+    for a in report["assets"]:
+        asset = db.get(DataAsset, a["asset_id"])
+        for v in a["violations"]:
+            if issues.open_issue(db, actor, asset=asset, kind="policy", severity=v["severity"], source_ref=f"policy:{v['policy_id']}",
+                                 title=f"[POLICY] {a['qualified_name']}: {v['policy_id']} {v['name']}", description=v["message"]):
+                opened += 1
+    report["issues_opened"] = opened
+    return report

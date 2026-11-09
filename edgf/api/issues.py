@@ -13,7 +13,7 @@ from edgf.enums import IssueStatus
 from edgf.models import DataAsset, Issue, utcnow
 from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import IssueIn, IssueOut, IssueUpdate
-from edgf.services import audit, issues
+from edgf.services import audit, issues, outbox
 
 router = APIRouter(prefix="/issues", tags=["issues"])
 
@@ -78,6 +78,7 @@ def update_issue(issue_id: str, body: IssueUpdate, db: Session = Depends(get_ses
         if body.status in (IssueStatus.OPEN, IssueStatus.IN_PROGRESS):
             issue.resolved_at = None
     db.flush()
+    outbox.emit(db, "issue.updated", issue.id, {"issue_id": issue.id, "asset_id": issue.asset_id, "status": issue.status})
     audit.record(db, principal.audit_actor, "issue.update", "issue", issue.id, body.model_dump(exclude_unset=True, mode="json"))
     return issue
 

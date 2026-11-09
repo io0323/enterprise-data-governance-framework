@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus,
-                        ContractStatus, ProductStatus, RemediationStatus, SubscriptionStatus)
+                        ApprovalStatus, ContractStatus, ProductStatus, RemediationStatus, SubscriptionStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -1095,3 +1095,159 @@ class CdmVersionOut(ORM):
     source_uri: str | None
     imported_by: str
     imported_at: datetime
+
+
+# ---------- Governance Process (§16) ----------
+class ApprovalIn(MeshInput):
+    """申請。申請できる種別は approval_types で定義する (access_request / external_share)。"""
+    type: str = Field(max_length=50)
+    asset_id: str = Field(max_length=36)
+    reason: str = Field(min_length=1, max_length=1000, description="申請の理由。個人情報を含めないこと")
+    purpose: str = Field(min_length=1, max_length=1000, description="利用目的 (社外提供は提供の目的)")
+    expires_at: datetime = Field(description="閲覧や提供の期限 (最大 365 日。恒久は不可)")
+    recipient: str | None = Field(default=None, max_length=200, description="external_share: 提供先の組織。個人情報を含めないこと")
+
+
+class ApprovalDecisionIn(MeshInput):
+    approve: bool
+    comment: str = Field(default="", max_length=1000, description="却下のときは必須。個人情報を含めないこと")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ApprovalDecisionIn:
+        if not self.approve and not self.comment.strip():
+            raise ValueError("却下には comment が必要です")
+        return self
+
+
+class ApprovalDecisionOut(ORM):
+    step: int
+    decided_by: str
+    approve: bool
+    comment: str
+    decided_at: datetime
+
+
+class ApprovalOut(ORM):
+    id: str
+    type: str
+    target_type: str
+    target_id: str
+    asset_id: str | None
+    requested_by: str
+    reason: str
+    payload: dict[str, Any]
+    steps: list[dict[str, Any]]
+    current_step: int
+    status: ApprovalStatus
+    due_at: datetime
+    created_at: datetime
+    decided_at: datetime | None
+    decisions: list[ApprovalDecisionOut] = Field(default_factory=list)
+
+
+class PolicyProposalIn(MeshInput):
+    changes: dict[str, str | None] = Field(description="相対パス → YAML の本文。null はファイルの削除。指定しないファイルは active の版のまま")
+    reason: str = Field(min_length=1, max_length=1000, description="変更の理由")
+
+
+class PolicyRollbackIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000, description="切り戻しの理由")
+
+
+class PolicyBundleOut(ORM):
+    version: int
+    status: str
+    content_hash: str
+    base_version: int | None
+    scope: str
+    domains: list[str]
+    reason: str
+    proposed_by: str
+    created_at: datetime
+    approval_id: str | None
+    rollback_of: int | None
+    approved_at: datetime | None
+    published_by: str | None
+    published_at: datetime | None
+    superseded_at: datetime | None
+
+
+class PolicyBundleDetail(PolicyBundleOut):
+    files: dict[str, str]
+
+
+class WebhookIn(MeshInput):
+    url: str = Field(min_length=1, max_length=2000, description="配信先。本番では https のみ")
+    secret_ref: str = Field(max_length=200, description="署名の秘密鍵の外部参照 (env:<環境変数名>)")
+    event_types: list[str] = Field(default_factory=list, max_length=100, description="空なら全種別。末尾の * は前方一致 (例: edgf.issue.*)")
+    description: str = Field(default="", max_length=1000)
+
+
+class WebhookUpdate(MeshInput):
+    url: str | None = Field(default=None, min_length=1, max_length=2000)
+    secret_ref: str | None = Field(default=None, max_length=200)
+    event_types: list[str] | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=1000)
+    active: bool | None = None
+
+
+class WebhookOut(ORM):
+    id: str
+    url: str
+    secret_ref: str
+    event_types: list[str]
+    description: str
+    active: bool
+    created_by: str
+    created_at: datetime
+
+
+class DeliveryOut(ORM):
+    id: str
+    event_id: str
+    endpoint_id: str
+    status: str
+    attempts: int
+    next_attempt_at: datetime
+    last_error: str | None
+    delivered_at: datetime | None
+    dead_at: datetime | None
+
+
+class ReviewDecisionIn(MeshInput):
+    keep: bool = Field(description="棚卸: 継続か取り消しか。証明: 正しいか修正が必要か")
+    comment: str = Field(default="", max_length=1000, description="取り消しや修正が必要なときは必須")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ReviewDecisionIn:
+        if not self.keep and not self.comment.strip():
+            raise ValueError("取り消しや修正が必要なときは comment が必要です")
+        return self
+
+
+class ReviewCampaignOut(ORM):
+    id: str
+    kind: str
+    period: str
+    status: str
+    due_at: datetime
+    grace_until: datetime
+    item_count: int
+    created_at: datetime
+    closed_at: datetime | None
+
+
+class ReviewItemOut(ORM):
+    id: str
+    campaign_id: str
+    target_type: str
+    target_id: str
+    asset_id: str
+    approval_id: str
+    status: str
+    decided_by: str | None
+    decided_at: datetime | None
+
+
+class PolicyReviewIn(MeshInput):
+    note: str = Field(default="", max_length=1000)
