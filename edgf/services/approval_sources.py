@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -46,9 +46,8 @@ class EngineSource:
     kind = "approval"
 
     def pending_for(self, db: Session, principal: Principal) -> Iterable[InboxItem]:
-        for req in approvals.pending(db):
-            asset = db.get(DataAsset, req.asset_id) if req.asset_id else None
-            if approvals.can_decide(db, principal, req) and (asset is None or authz.can_read(db, principal, asset)):
+        for req, asset in approvals.decidable_pending(db, principal):
+            if asset is None or authz.can_read(db, principal, asset):
                 yield InboxItem(self.kind, req.id, f"{req.type}: {req.target_id}", f"POST /api/v1/approvals/{req.id}/decision",
                                 asset_id=req.asset_id, requested_by=req.requested_by, due_at=req.due_at, created_at=req.created_at)
 
@@ -152,7 +151,7 @@ class CdmSource:
     def pending_for(self, db: Session, principal: Principal) -> Iterable[InboxItem]:
         stmt = select(Issue).where(Issue.source_ref.like("mesh-cdm:%"), Issue.status.in_(issues.OPEN_STATES))
         if not principal.has_role(COMMITTEE):
-            stmt = stmt.where(or_(Issue.assignee == principal.subject))
+            stmt = stmt.where(Issue.assignee == principal.subject)
         for issue in db.scalars(stmt):
             asset = db.get(DataAsset, issue.asset_id) if issue.asset_id else None
             if asset is None or authz.can_read(db, principal, asset):

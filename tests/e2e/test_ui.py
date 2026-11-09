@@ -138,10 +138,10 @@ def test_lineage_graph_and_redaction(session_of):
     s.go("#/lineage/sales.internal", "svg.lineage")
     s.page.wait_for_selector("text=通知先の Owner")
     svg = s.page.locator("svg.lineage").text_content()
-    assert "sales.public" in svg and "ext.unregistered" in svg and "sales.restricted" in svg
+    assert "sales.public" in svg and "ext.unregistered" in svg and "sales.restricted" not in svg
     assert "閲覧権限なし" in svg and "未登録" in svg and "CDE" in svg
     hidden = s.page.locator("svg.lineage .node-redacted")
-    assert hidden.count() == 1 and s.page.locator("svg.lineage a[href*='sales.restricted']").count() == 0
+    assert hidden.count() == 1 and "sales.restricted" not in s.page.inner_text("main")
     # 深さの切り替え
     s.page.select_option("select[name=depth]", "1")
     s.page.click("main form button")

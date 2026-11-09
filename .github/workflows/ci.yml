@@ -74,3 +74,47 @@ jobs:
         env:
           EDGF_E2E: "1"
         run: pytest -q tests/e2e
+
+  restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: edgf_drill
+          POSTGRES_USER: edgf
+          POSTGRES_PASSWORD: edgf-ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U edgf"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,postgres]"
+      - run: sudo apt-get install -y postgresql-client-16
+      - name: バックアップと復元の訓練 (pg_dump → 別の DB に復元 → /audit/verify とアンカーの一致)
+        env:
+          EDGF_DATABASE_URL: postgresql+psycopg://edgf:edgf-ci-only@localhost:5432/edgf_drill
+        run: python scripts/ops/restore_drill.py
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[postgres,security]"
+      # pip-audit は深刻度を出さないので、既知の脆弱性はすべて失敗にする。誤検知の除外は下に理由を書いて --ignore-vuln で指定する
+      - name: 依存関係の脆弱性 (pip-audit)
+        run: pip-audit --skip-editable
+      # 深刻度 High 以上で失敗する。誤検知はコードに # nosec <ID> と理由を書いて除外する
+      - name: 静的解析 (bandit)
+        run: bandit -q -r edgf scripts --severity-level high

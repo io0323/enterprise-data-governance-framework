@@ -3,6 +3,29 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 14)
+
+**ABAC の漏れを修正しました(セキュリティの修正として承認済みの挙動の変更です)。** 閲覧できない資産の**名前**は、Lineage 系のすべての API で返さなくなりました。
+
+| API | 変更 |
+|---|---|
+| `GET /lineage/{name}/upstream`, `/downstream` | 閲覧できない資産の名前を不透明なラベル(`redacted-1` など)に置き換え、接するエッジの `job` と `transformation` を `null` にします。項目は削っていません。**非推奨**で、`Deprecation` と `Link`(`rel="successor-version"`)ヘッダで `/graph` を案内します |
+| `GET /lineage/{name}/graph`, `/impact`、`POST /mesh/contracts/{id}/check` の `impact` | 名前と深さではなく、ラベルと深さだけを返します。通知先の Owner(`owners_to_notify`)とリスクは引き続き返します |
+| `GET /ai/lineage/models/{id}`, `/ai/lineage/assets/{id}/models` | 同様にラベルに置き換えます。`origins` と `upstream_edges` で名前が出ていたのも修正しました |
+| `GET /kpi/domains` | 閲覧できる資産があるか所属するドメインだけを返し、集計も閲覧できる資産の範囲で行います |
+
+ラベルは応答ごとに振り直す番号で、応答の外では意味を持ちません。
+
+次の変更は、不正な入力の拒否と追加の情報だけで、正常な利用には影響しません。
+
+| 対象 | 変更 |
+|---|---|
+| 全 API | 本文が `EDGF_MAX_BODY_BYTES`(既定 10 MiB)を超えると 413(`payload-too-large`)。JSON の入れ子が 64 段を超えると 422(`json-too-deep`。これまでは応答の直列化で 500 になることがありました) |
+| jwt モード | 16 KiB を超えるトークンは署名の検証の前に 401 |
+| `GET /audit/verify` | アンカリングを使っているときだけ、`audit.read` を持つ利用者に `chain_valid` と `anchor` を追加で返します。`valid` はアンカーとの不一致でも false になります |
+| `GET /audit/anchors` | 新規(`audit.read`) |
+| ジョブ | `audit_anchor` を追加しました(既定で 1 時間ごと。`EDGF_ANCHOR_ENABLED=true` のときだけ動作します) |
+
 ## 変更点(Phase 12)
 
 **`POST /policies/reload` の意味が変わりました(承認済みの挙動の変更です)。** これまではディスクの内容を即時に反映していましたが、**提案を作るだけ**になりました(`202`、応答は `proposal_version` と `approval_id`)。承認と公開を経るまで、実行時の評価は変わりません。**Policy を即時に反映する手段はありません。** 詳しくは「[Governance Process](#governance-process16)」を参照してください。
@@ -20,7 +43,7 @@
 | §16 | Issue管理・エスカレーション(Steward→Owner→Committee)・SLA超過時の自動エスカレーション | `/issues` |
 | §9 | OpenLineage互換の取込・上流/下流トレース・影響分析(通知先Owner・リスク判定) | `/lineage/...` |
 | §13 / §15 | Policy as Code(Global/Domain YAML、上書き禁止)・自動監査・期限付き例外の承認(職務分離あり) | `/policies/...` |
-| §13 / §19 | ハッシュチェーン監査ログ・改ざんの検知 | `/audit/events`, `/audit/verify` |
+| §13 / §19 | ハッシュチェーン監査ログ・改ざんの検知・Ed25519 のアンカリング | `/audit/events`, `/audit/verify`, `/audit/anchors` |
 | §17 / §20 | KPI(全社・ドメイン別)・成熟度の目安 | `/kpi`, `/kpi/domains` |
 | §19 | スキーマ版管理(Alembic)・統一エラーモデル(RFC 9457)・ページネーション・構造化ログ/request_id・liveness/readiness | `/health`, `/ready` |
 | §12 / §10 | PII Inventory(カラム単位)・Consent Registry・Right to Erasure ワークフロー・匿名化/仮名化の管理(PRV-003〜005) | `/privacy/...` |
@@ -246,7 +269,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 
 - AI 資産は、宣言値ではなく上流から継承した**実効機密度**で判定します(後述の「統制属性の継承」)。
 - clearance は claim(`EDGF_CLAIM_CLEARANCE`)で与えます。無い場合はロールから導きます(admin/committee=restricted、owner/steward/custodian=confidential、consumer=internal、consent_collector=public)。
-- 閲覧できない資産は、一覧(資産・保持期限・Issue・ポリシー例外・用語の紐付け先)から件数を含めて除外し、個別に取得しようとすると 403 になります。影響分析では名前と深さだけを返し、詳細を伏せます(通知先 Owner は変更管理に必要なので返します)。
+- 閲覧できない資産は、一覧(資産・保持期限・Issue・ポリシー例外・用語の紐付け先)から件数を含めて除外し、個別に取得しようとすると 403 になります。影響分析とリネージでは名前をラベルに置き換えて深さだけを返し、詳細を伏せます(通知先 Owner は変更管理に必要なので返します)。
 - Owner による閲覧承認: `POST /assets/{id}/access-grants`(`subject`, `purpose`, `expires_at`。期限は最大 365 日)。取り消しは `DELETE /assets/{id}/access-grants/{grant_id}` で、Owner と Committee が行えます。
 
 ## Data Privacy(§12 / §10)
@@ -849,6 +872,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 | `approval_sla` | 1 時間 | 承認の SLA 超過の処理 |
 | `review_campaigns` | 1 日 | レビューキャンペーンの作成と期限の処理 |
 | `kpi_snapshot` | 1 日 | KPI の日次のスナップショット(同じ日に 2 回実行しても 1 日分) |
+| `audit_anchor` | 1 時間 | 監査チェーンのアンカリング(`EDGF_ANCHOR_ENABLED=true` のときだけ動作) |
 
 ```cron
 # cron の例 (環境変数は EDGF_DATABASE_URL などを設定しておく)
@@ -863,6 +887,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 20 2 * * *  python -m edgf.jobs run consent_expire
 30 2 * * *  python -m edgf.jobs run review_campaigns
 40 2 * * *  python -m edgf.jobs run kpi_snapshot
+25 * * * *  python -m edgf.jobs run audit_anchor
 ```
 
 ```yaml
@@ -985,7 +1010,7 @@ IdP に、次の内容で公開クライアントを登録します。設定例�
 | API | 内容 | 認可 |
 |---|---|---|
 | `GET /kpi/history?scope=&domain=&from=&to=` | KPI の推移(古い順、ページング)。`scope` は `enterprise` か `domains` | 認証済みの全員。ドメイン別は、閲覧できる資産があるか所属するドメインだけ |
-| `GET /lineage/{name}/graph?depth=` | グラフの描画用のノードとエッジ | 認証済みの全員。閲覧できない資産は名前と深さだけで、接するエッジの `job` も伏せる |
+| `GET /lineage/{name}/graph?depth=` | グラフの描画用のノードとエッジ | 認証済みの全員。閲覧できない資産は名前をラベルに置き換えて深さだけを返し、接するエッジの `job` も伏せる |
 | `GET /mesh/products/overview` | DATSIS の合否、Contract の版(閲覧できる Output Port だけ)、有効な利用登録の数 | 認証済みの全員 |
 | `GET /mesh/products?asset_id=` | 資産を Output Port に持つ Product(既存の API への絞り込みの追加) | 閲覧できない資産なら結果は空 |
 
@@ -1002,6 +1027,82 @@ EDGF_E2E_KEYCLOAK=http://localhost:8000 pytest -q tests/e2e_keycloak # docker-co
 
 CI では `playwright` ジョブが常に実行されます。Keycloak との E2E は手動で起動します(`.github/workflows/e2e-keycloak.yml`)。
 
+## 性能
+
+条件は PostgreSQL 16、資産 10 万件(restricted 5%)、ドメイン 50、Lineage 深さ 10 の分岐、Product 500、承認待ち 1,000 件です。手順、原因、判断の記録は [docs/operations/performance.md](docs/operations/performance.md) にあります。
+
+| シナリオ | 目標 | 手元の実測 p95 | CI の実測 p95(3 回の範囲) | 判定 |
+|---|---|---|---|---|
+| 検索 | p95 300ms | 150ms | 410〜460ms | **手元は達成、CI は 3 回とも未達** |
+| 資産詳細 | p95 200ms | 6ms | 6〜11ms | 達成 |
+| 影響分析(深さ 10) | p95 1s | 590ms | 620〜1,200ms | **手元は達成、CI は 3 回中 2 回未達** |
+| RAG 認可(50 ヒット) | p95 150ms | 27ms | 36〜66ms | 達成 |
+| Contract check | p95 1s | 300ms | 410〜570ms | 達成 |
+| inbox(1,000 件) | p95 500ms | 280ms | 330〜500ms | 達成 |
+| Product 一覧(500 件) | p95 2s | 240ms | 250〜320ms | 達成 |
+| 監査の書き込み | 200 件/秒以上 | 277 件/秒 | 214〜329 件/秒 | 達成 |
+
+手元は開発機(macOS、Docker 上の PostgreSQL)で各 20 秒、CI は GitHub Actions の `ubuntu-24.04` で各 30 秒です。CI は負荷の発生、4 ワーカーの API、PostgreSQL が同じランナーに同居します。どちらもエラーは 0 件です。本番相当の環境での測定はしていません。
+
+**100 万件のプロファイルは用意しましたが、未検証です**(`perf.yml` を `profile=million` で手動実行します)。設計書 §19 の「資産数百万件、毎秒万件級」と水平拡張も未検証です。
+
+性能の CI(`.github/workflows/perf.yml`)は手動と週次で動き、`perf/baseline.json` より p95 が 30% 以上悪化すると失敗します。基準値は同じコミットの 2 回の実行で、シナリオごとに悪い方の値です。同じコミットでもランナーの差で p95 が最大 47% 変わるので、小さな悪化は検知できません。基準値を更新するには、実行結果の artifact を `perf/baseline.json` として commit します。
+
+## セキュリティテストの範囲
+
+| 対象 | 内容 | テスト |
+|---|---|---|
+| ルートの網羅 | `app.routes` を列挙し、GET / HEAD / OPTIONS 以外のすべてが `PERMISSIONS` で保護されていること。無ければ失敗 | `tests/test_security_authz.py` |
+| 認可の総当たり | `PERMISSIONS` × 6 ロール × ドメインの内外 × 関係で、許可と拒否が権限表どおりで、拒否が `authz.denied` で監査に残ること。全更新系ルートを無関係の利用者で呼ぶ | `tests/test_security_authz.py` |
+| ABAC の漏洩 | restricted 資産に目印(名前、説明、カラム名、transformation など)を入れ、権限の無い利用者で全 GET ルートを呼び、本文とヘッダに無いこと。パラメータは自動で埋める | `tests/test_security_leak.py` |
+| JWT への攻撃 | `alg=none`、HS256 / RS256 の取り違え、`kid` の差し替え、期限切れ、`nbf`、`iss` / `aud` の不一致、巨大なトークン、署名の改ざん | `tests/test_security_input.py` |
+| 入力の異常 | 本文の上限、深い入れ子、不正な文字コード、制御文字、SQL のメタ文字 | `tests/test_security_input.py` |
+| 秘密の混入 | トークン、秘密鍵、生の識別子がログと監査に出ないこと | `tests/test_security_input.py` |
+| 依存関係 | `pip-audit`(既知の脆弱性はすべて失敗。深刻度を出力しないため) | CI の `security` |
+| 静的解析 | `bandit`(深刻度 High 以上で失敗。誤検知は `# nosec <ID>` と理由で除外) | CI の `security` |
+
+Product の名前と説明、ポートの名前は公開する設計(Phase 11)なので、ABAC の漏洩の検査の対象外です。ポートの裏の資産、アドレス、Contract のスキーマは検査します。
+
+## 監査チェーンのアンカリング(§13 / §19 Integrity)
+
+ハッシュチェーンだけでは、DB を書き換えられる者による末尾の削除や全行の計算し直しを検知できません。定期ジョブ(`audit_anchor`)がチェーンの先頭(seq、hash、時刻)に Ed25519 で署名し、DB の外に書き出します。
+
+| 書き出し先 | 設定 | 内容 |
+|---|---|---|
+| ファイル | `EDGF_ANCHOR_FILE` | 追記のみの JSON Lines。**削除の防止はストレージの設定(WORM)に依存します** |
+| Outbox | `EDGF_ANCHOR_OUTBOX`(既定 true) | `audit.anchor` イベント。受信側が保管すれば別の場所に控えが残ります |
+| RFC 3161 | `EDGF_ANCHOR_TSA_URL`(任意) | TSA のトークンを記録します。失敗してもアンカーは残し、結果に記録します |
+
+有効にするには `EDGF_ANCHOR_ENABLED=true` と `EDGF_ANCHOR_SIGNING_KEY`(32 バイトの base64)を設定します。production で有効なのに鍵が無ければ起動を拒否します。鍵の更新後は古い公開鍵を `EDGF_ANCHOR_VERIFY_KEYS` に残します。
+
+`GET /audit/verify` はチェーンの検証に加えて、DB とファイルの**すべての**アンカーを照合します。最新のものだけでは、書き換えのあとに作られたアンカーが偽の先頭に署名するので足りません。
+
+| `anchor.status` | 意味 | `valid` |
+|---|---|---|
+| `ok` | すべて一致 | チェーンが正しければ true |
+| `none` | アンカーがまだ無い | チェーンが正しければ true |
+| `unverifiable` | 公開鍵が設定されていない | チェーンが正しければ true |
+| `tail_truncated` | チェーンの先頭の seq がアンカーより小さい(末尾の削除、古いバックアップからの復元) | false |
+| `mismatch` | アンカーの seq のハッシュが違う(チェーンの計算し直しを含む、アンカー以前の改ざん) | false |
+| `signature_invalid` | DB のアンカーの署名が合わない | false |
+| `file_tampered` | ファイルが読めない、署名が合わない、DB の記録にある行が無い | false |
+
+`valid` は認証済みの全員が見られます(従来どおり)。アンカーの詳細と `GET /audit/anchors` は `audit.read`(admin、committee)、手動の実行は `jobs.run`(admin)です。
+
+外部の監査人は、公開鍵だけでファイルを検証できます。
+
+```sh
+python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
+```
+
+**検知できないもの**: 最新のアンカーより後の行の改ざんは、次のアンカーまでチェーンの検証の範囲です(計算し直されると見つかりません)。署名鍵が漏れた場合と、ファイルと DB を同時に消された場合(WORM の設定が無い場合)も検知できません。RFC 3161 のトークンの証明書チェーンは、保管後に `openssl ts -verify` で検証します。
+
+## 運用手順書
+
+バックアップと復元、鍵の保管と復旧、ジョブの再開、デッドレターの処理、dev モードが無効であることの確認は [docs/operations/runbook.md](docs/operations/runbook.md) にあります。CI の `restore` ジョブが pg_dump から別の DB への復元、`/audit/verify` の valid、アンカーの一致を毎回確認します。
+
+設計書の章と実装、テストの対応は [docs/traceability.md](docs/traceability.md) にあります。
+
 ## API の共通仕様
 
 - **エラー**: すべて RFC 9457 Problem Details(`application/problem+json`)で返します。
@@ -1009,6 +1110,7 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
   クライアントは `type` で分岐してください(例: `not-found`, `conflict`, `unauthenticated`, `forbidden`(拡張 `action`, `required`), `auth-unavailable`, `validation-error`(拡張 `errors`), `certification-blocked`(拡張 `blockers`), `integrity-conflict`, `not-ready`(拡張 `checks`), `invalid-value`, `database-unavailable`, `audit-chain-contention`, `mdm-asset-missing`, `training-prerequisites-failed`(拡張 `blockers`), `contract-version-bump-required`(拡張 `required_bump`, `actual_bump`, `changes`), `contract-not-conforming`(拡張 `violations`), `contract-retire-blocked`(拡張 `blockers`), `product-publish-blocked`(拡張 `blockers`), `model-approval-blocked`(拡張 `blockers`), `audit-payload-rejected`(拡張 `field`, `kind`), `internal-error`)。500 の応答には内部情報を含めず、`request_id` でログと突き合わせます。
 - **ページネーション**: 一覧 API はすべて `limit`(1〜1000、既定 100。品質実行履歴のみ既定 20)と `offset` を受け付けます。後方互換のため本文は配列のままで、総件数は `X-Total-Count`、前後ページは `Link`(`rel="next"`/`"prev"`)ヘッダで返します。
 - **request_id**: `X-Request-ID` を受け取れば引き継ぎ(英数字と `._:-`、128 文字以内)、なければ採番してレスポンスヘッダとすべてのログ行に付けます。監査イベントにも記録し、ハッシュの対象に含めます(`GET /audit/events?request_id=...` で突き合わせできます)。
+- **入力の上限**: 本文は `EDGF_MAX_BODY_BYTES`(既定 10 MiB)まで(超えると 413 `payload-too-large`)。JSON の入れ子は 64 段まで(超えると 422 `json-too-deep`)。
 - **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
 
 ## アーキテクチャ上の判断
@@ -1028,6 +1130,9 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 | `PyJWT[crypto]` | 必須 | JWT の検証と JWKS の取得・キャッシュ(MIT。暗号処理は `cryptography`)。依存が少なく、JWKS のキャッシュと未知の `kid` での再取得(鍵ローテーション)を標準で備え、特定の IdP SDK を使わずに OIDC 準拠の検証ができるため |
 | (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています。Phase 10 と Phase 11 でも依存は追加していません(ODCS の YAML は既存の `pyyaml` で処理します) |
 | `pytest-cov` | 開発 | カバレッジ計測(services/ 95% 以上を CI で検査) |
+| `cryptography` | 必須(直接指定に変更) | `PyJWT[crypto]` の依存として導入済み。Phase 14 で監査アンカーの Ed25519 署名に直接使い、既知の脆弱性を避けるため 50 以上を指定します |
+| `locust` | 任意(`perf`) | 負荷試験(MIT)。Python でシナリオを書け、結果を CSV で比較できます |
+| `pip-audit` / `bandit` | 任意(`security`) | 依存関係の脆弱性と静的解析(Apache-2.0)。CI で実行します |
 
 ## 既知の制約と次フェーズ
 
@@ -1050,7 +1155,8 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 - manifest のハッシュ、件数、`k`、Unlearning の証跡はすべて Data Plane の申告で、Control Plane は検証しません。Card の自由記述に貼られた値は検出できません(項目の長さの上限と運用で抑えています。監査ログには本文を残しません)
 - 継承の計算は Lineage を都度辿ります。リネージの削除 API は無いので、DB を直接修正した場合は `POST /ai/inheritance/recompute` を実行してください。Phase 10 より前の `data_class=ai` の資産も、この API で実効値を作ります(それまで ABAC は宣言値で判定します)。未登録の上流は `unregistered_upstream` で示しますが、機密度が不明なので実効値には反映できません
 - Phase 10 より前の `data_class=ai` の資産は、AI-001 が承認の記録を求めるようになったので不合格になります(`ai_kind` の設定と承認が必要です)
-- `POST /ai/rag/authorize` はヒットごとに ABAC を判定し、呼び出しごとに Lineage を辿ります。性能は Phase 14 の負荷試験で確認します
+- **検索は CI のランナーで p95 300ms の目標に届いていません**(410〜460ms。手元は 150ms)。`X-Total-Count` のために全行に部分一致をかけるのが原因で、索引で解消するには `pg_trgm`(PostgreSQL の拡張)が必要です。影響分析も CI では 1 秒を超えることがあります(620〜1,200ms。手元は 590ms)
+- `POST /ai/rag/authorize` はヒットごとに ABAC を判定し、呼び出しごとに Lineage を辿ります。50 ヒットで p95 150ms の目標を満たしています(資産 10 万件で測定。100 万件は未検証)
 - **PostgreSQL 16 で検証済みです**(CI で SQLite と PostgreSQL の両方について pytest とマイグレーションの往復を毎回実行します)。残っている差異は次のとおりです
   - `ilike` の非 ASCII: PostgreSQL は `É` と `é` を同一視しますが、SQLite は ASCII だけです。検索結果が DB で変わるのはこの場合だけです
   - 照合順序: 一覧の並びは DB の照合順序に従います。ページングは一意キーで安定していますが、`postgres:16-alpine` 以外(glibc の `en_US.UTF-8` など)では大文字小文字や記号の順序が変わることがあります
@@ -1064,7 +1170,7 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 - 判定は型と制約の宣言だけを見ます。値の意味の変更(単位の変更など)は検出できません
 - 公開後に Output Port の資産を別のドメインへ移しても拒否しません(Catalog の更新は止めません)。MESH-001 が不合格になり、次の判定で分かります。公開済みの Product を自動で非公開にはしません。DATSIS の結果は `/kpi` と `GET /mesh/products/{id}/datsis` で確認してください
 - Product の Owner が自分で利用登録すると、自分では承認できないので `pending` のままです。Owner は自分の Product の利用登録を必要としない想定です
-- `POST /mesh/contracts/{id}/check` は呼び出しごとに Lineage を辿ります。性能は Phase 14 の負荷試験で確認します
+- `POST /mesh/contracts/{id}/check` は呼び出しごとに Lineage を辿ります。p95 1 秒の目標を満たしています(資産 10 万件で測定。100 万件は未検証)
 - 拒否した破壊的変更の件数は監査ログから集計するので、KPI の計算は監査ログの件数に比例します
 - **MDM Hub の参照実装はありません**。候補の絞り込み、値の保存と履歴、再構成の実行、利用システムへの配信(§8 Synchronization、逆流更新の変更申請を含む)は Data Plane の責務で、本リポジトリには含みません
 - Golden Record どうしのマージ(ソースを経由しない統合)は未実装です。裁定と自動マージはソース単位です
@@ -1073,13 +1179,12 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 - Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
 - **UI のアクセシビリティ**は WCAG 2.2 AA の基本(キーボード操作、ランドマーク、ラベル、フォーカスの表示、配色)に沿って作り、キーボード操作と構造を E2E で確認しています。支援技術での確認と、適合の監査は行っていません
 - UI はポップアップが必要で、再読み込みすると再ログインになります(トークンをメモリにだけ持つため)。トークンエンドポイントは issuer と同じオリジンにある必要があります(CSP の `connect-src` が issuer だけを許可するため)。トークンの自動更新はありません
-- 既存の `GET /kpi/domains` はドメインごとの ABAC の絞り込みをしていません(互換性のため変更していません)。UI のドメイン別の表示は絞り込みのある `/kpi/history` を使います。ドメイン別の値は、閲覧できない資産も含めた集計です
-- 既存の `GET /lineage/{name}/upstream` と `/downstream` は名前を伏せず、`transformation` も返します(互換性のため変更していません)。UI は `/graph` を使います
+- `/kpi/history` のドメイン別の値は日次のスナップショットで、閲覧できない資産も含めた集計です(行そのものは ABAC で絞り込みます)。閲覧できる範囲で集計したい場合は `/kpi/domains` を使ってください
 - ダッシュボードの目標のうち、**Catalog 登録率(§1.8)は計測できません**(未登録の資産を検出する手段が無いため)。§20 の Level 3 の判定も、登録率の代わりにメタデータ充足率を使っています
-- `/mesh/products/overview` は Product ごとに DATSIS を評価するので、件数に比例して遅くなります。性能は Phase 14 の負荷試験で確認します
+- `/mesh/products/overview` は 500 件で p95 2 秒の目標を満たしています(1 リクエストの間だけのスナップショットを使い、キャッシュは持ちません)。件数が増えると比例して遅くなります
 - **Policy の起案者は admin、Committee、ドメイン内の Owner です**。§16 の「起案(Steward/Owner)」のうち Steward は含みません
 - Policy の影響評価は全資産を評価するので、資産の数に比例して提案に時間がかかります。評価の結果は提案の時点のものです(公開までに資産が変わっても再計算しません)
-- inbox は案件を集めてからページングするので、案件の数に比例して遅くなります。性能は Phase 14 の負荷試験で確認します
+- inbox は案件を集めてからページングします。1,000 件で p95 500ms の目標を満たしています(案件の数に比例して遅くなります)
 - 対象資産の Owner と Custodian が同じ人だと、その資産の承認を判断できません(Custodian は承認者になれないため)。Owner か Custodian を変更してください
 - ジョブのリースは更新しません。`EDGF_JOB_LEASE_SECONDS` より長く動くジョブは、別のプロセスと重なることがあります(各ジョブが冪等なので結果は壊れません)。配信ジョブは 1 回に 200 件までです
 - イベントの順序は保証しません。`outbox_events` と `webhook_deliveries` の削除(保持期間)は未実装です

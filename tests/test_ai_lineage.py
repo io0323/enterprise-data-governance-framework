@@ -94,8 +94,9 @@ def test_impacted_models_redact_unreadable(chain):
     secret_model = ai_asset(client, "ai.secret_model", "model", sensitivity="restricted")
     model_version(client, secret_model["id"], [chain["v2"]["id"]], version="s1")
     rows = _impacted(client, chain["other"]["id"], U("reader", clearance="internal")).json()
-    hidden = next(r for r in rows if r["qualified_name"] == "ai.secret_model")
-    assert hidden == {"qualified_name": "ai.secret_model", "status": "draft", "redacted": True}
+    hidden = next(r for r in rows if r.get("redacted"))
+    assert hidden == {"qualified_name": "redacted-1", "status": "draft", "redacted": True}
+    assert "ai.secret_model" not in str(rows)
     assert next(r for r in rows if r["qualified_name"] == "ai.model")["version"] == "m2"
     # 起点が読めなければ 403
     secret = asset(client, "crm.secret", sensitivity="restricted")
@@ -112,7 +113,8 @@ def test_trace_redacts_unreadable_sources(client):
     assert client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=U("reader", clearance="internal")).status_code == 403
     # モデルの当事者には系譜を返すが、閲覧できない構成元の詳細は伏せる
     t = client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=U("ai-owner")).json()
-    assert t["sources"] == [{"qualified_name": "crm.secret", "redacted": True}]
+    assert t["sources"] == [{"qualified_name": "redacted-1", "redacted": True}]
+    assert "crm.secret" not in str(t) and t["origins"] == ["redacted-1"]
     assert t["datasets"][0]["version"] == "v1"
     full = client.get(f"{API}/ai/lineage/models/{mv['id']}", headers=ADMIN).json()
     assert full["sources"][0]["kind"] == "asset"

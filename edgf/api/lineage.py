@@ -1,7 +1,10 @@
 """§9 Data Lineage API (OpenLineage互換取込)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from collections.abc import Iterable
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from sqlalchemy import select
@@ -50,15 +53,68 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
     return {"accepted": True, "edges": count}
 
 
+CHUNK = 500
+
+
+class NameRedactor:
+    """閲覧できない資産 (ABAC) の名前を、応答ごとの不透明なラベルに置き換える。
+
+    同じ資産は同じラベルになるので、グラフの繋がりは保たれる。ラベルは応答の外では意味を持たない。
+    未登録の名前は資産が無く ABAC の対象にならないので、そのまま返す。
+    """
+
+    def __init__(self, db: Session, principal: Principal) -> None:
+        self.db, self.principal = db, principal
+        self._hidden: dict[str, bool] = {}
+        self._labels: dict[str, str] = {}
+
+    def preload(self, names: Iterable[str]) -> None:
+        """まとめて判定する (名前ごとに問い合わせると N+1 になる)。readable_clause は can_read と同じ判定。"""
+        pending = sorted({n for n in names if n not in self._hidden})
+        for start in range(0, len(pending), CHUNK):
+            chunk = pending[start:start + CHUNK]
+            registered = set(self.db.scalars(select(DataAsset.qualified_name).where(DataAsset.qualified_name.in_(chunk))))
+            readable = set(self.db.scalars(select(DataAsset.qualified_name).where(DataAsset.qualified_name.in_(chunk), authz.readable_clause(self.principal))))
+            self._hidden.update({name: name in registered and name not in readable for name in chunk})
+
+    def hidden(self, name: str) -> bool:
+        if name not in self._hidden:
+            self.preload([name])
+        return self._hidden[name]
+
+    def label(self, name: str) -> str:
+        if not self.hidden(name):
+            return name
+        return self._labels.setdefault(name, f"redacted-{len(self._labels) + 1}")
+
+
+def _traversal(db: Session, principal: Principal, response: Response, qualified_name: str, direction: str, depth: int) -> dict:
+    """非推奨の API。項目は削らず、閲覧できない資産に接するエッジの値だけを伏せる。移行先は /graph。"""
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = f'</api/v1/lineage/{quote(qualified_name, safe="")}/graph>; rel="successor-version"'
+    names = NameRedactor(db, principal)
+    traversed = lineage.traverse(db, qualified_name, direction, depth)
+    names.preload([qualified_name, *(e["from"] for e in traversed), *(e["to"] for e in traversed)])
+    edges = []
+    for edge in traversed:
+        secret = names.hidden(edge["from"]) or names.hidden(edge["to"])
+        edges.append({**edge, "from": names.label(edge["from"]), "to": names.label(edge["to"]),
+                      "job": None if secret else edge["job"], "transformation": None if secret else edge["transformation"]})
+    return {"asset": names.label(qualified_name), "edges": edges}
+
+
 @router.get("/{qualified_name}/upstream")
-def upstream(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Session = Depends(get_session)):
-    """Traceability: 任意データから起点まで遡及。"""
-    return {"asset": qualified_name, "edges": lineage.traverse(db, qualified_name, "upstream", depth)}
+def upstream(qualified_name: str, response: Response, depth: int = Query(10, ge=1, le=50), db: Session = Depends(get_session),
+             principal: Principal = Depends(get_principal)):
+    """Traceability: 任意データから起点まで遡及 (非推奨。/graph を使ってください)。"""
+    return _traversal(db, principal, response, qualified_name, "upstream", depth)
 
 
 @router.get("/{qualified_name}/downstream")
-def downstream(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Session = Depends(get_session)):
-    return {"asset": qualified_name, "edges": lineage.traverse(db, qualified_name, "downstream", depth)}
+def downstream(qualified_name: str, response: Response, depth: int = Query(10, ge=1, le=50), db: Session = Depends(get_session),
+               principal: Principal = Depends(get_principal)):
+    """非推奨。/graph を使ってください。"""
+    return _traversal(db, principal, response, qualified_name, "downstream", depth)
 
 
 @router.get("/{qualified_name}/graph")
@@ -66,36 +122,35 @@ def graph(qualified_name: str, depth: int = Query(3, ge=1, le=50), db: Session =
           principal: Principal = Depends(get_principal)):
     """UI の描画用のグラフ。閲覧できない資産 (ABAC) は名前と深さだけを返し、そこに接するエッジの job も伏せる。"""
     result = lineage.graph(db, qualified_name, depth)
-    ids = [n["asset_id"] for n in result["nodes"] if n["asset_id"]]
-    assets = {a.id: a for a in db.scalars(select(DataAsset).where(DataAsset.id.in_(ids)))} if ids else {}
-    hidden = set()
+    names = NameRedactor(db, principal)
+    names.preload(n["qualified_name"] for n in result["nodes"])
     nodes = []
     for node in result["nodes"]:
-        asset = assets.get(node["asset_id"])
-        if asset is not None and not authz.can_read(db, principal, asset):
-            hidden.add(node["qualified_name"])
-            node = {"qualified_name": node["qualified_name"], "level": node["level"], "registered": True, "redacted": True}
+        if names.hidden(node["qualified_name"]):
+            node = {"qualified_name": names.label(node["qualified_name"]), "level": node["level"], "registered": True, "redacted": True}
         nodes.append(node)
     result["nodes"] = nodes
-    result["edges"] = [{"from": e["from"], "to": e["to"], "job": None if {e["from"], e["to"]} & hidden else e["job"]} for e in result["edges"]]
+    result["edges"] = [{"from": names.label(e["from"]), "to": names.label(e["to"]),
+                        "job": None if names.hidden(e["from"]) or names.hidden(e["to"]) else e["job"]} for e in result["edges"]]
+    result["asset"] = names.label(qualified_name)
     return result
 
 
 def redacted_impact(db: Session, principal: Principal, qualified_name: str, depth: int = 10) -> dict:
-    """閲覧できない下流資産 (ABAC) は名前と深さだけを返し、詳細を伏せる。
+    """閲覧できない下流資産 (ABAC) は深さだけを返し、名前も詳細も伏せる。
 
     通知先 Owner (owners_to_notify) とリスク判定は変更管理 (§16 Change) に必要なため全資産で算出する。
     """
     result = lineage.impact_analysis(db, qualified_name, depth)
-    ids = [i["asset_id"] for i in result["impacted"] if i["asset_id"]]
-    assets = {a.id: a for a in db.scalars(select(DataAsset).where(DataAsset.id.in_(ids)))} if ids else {}
-    redacted = []
-    for i in result["impacted"]:
-        a = assets.get(i["asset_id"])
-        if a is not None and not authz.can_read(db, principal, a):
-            i = {"qualified_name": i["qualified_name"], "depth": i["depth"], "registered": True, "redacted": True}
-        redacted.append(i)
-    result["impacted"] = redacted
+    names = NameRedactor(db, principal)
+    names.preload([qualified_name, *(i["qualified_name"] for i in result["impacted"])])
+    impacted = []
+    for item in result["impacted"]:
+        if names.hidden(item["qualified_name"]):
+            item = {"qualified_name": names.label(item["qualified_name"]), "depth": item["depth"], "registered": True, "redacted": True}
+        impacted.append(item)
+    result["impacted"] = impacted
+    result["changed_asset"] = names.label(qualified_name)
     return result
 
 

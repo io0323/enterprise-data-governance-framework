@@ -223,8 +223,9 @@ def _active_exceptions(db: Session, asset_id: str) -> set[str]:
         PolicyException.asset_id == asset_id, PolicyException.status == "approved", PolicyException.expires_at > now)))
 
 
-def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None = None) -> list[dict[str, Any]]:
-    excepted = _active_exceptions(db, asset.id)
+def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None = None, *, excepted: set[str] | None = None) -> list[dict[str, Any]]:
+    """excepted は有効な例外の一括読み込みの結果 (省略時は問い合わせる)。"""
+    excepted = _active_exceptions(db, asset.id) if excepted is None else excepted
     results = []
     for p in get_policies(db=db) if policies is None else policies:
         if p.target != ASSET or not p.applies_to(asset):

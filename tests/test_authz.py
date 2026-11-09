@@ -243,7 +243,7 @@ def test_related_lists_are_filtered(client, world):
 
     client.post(f"{API}/lineage/edges", headers=ADMIN, json={"source": "sales.kpi", "target": "sales.payroll"})
     imp = client.get(f"{API}/lineage/sales.kpi/impact", headers=CONSUMER).json()
-    assert imp["impacted"] == [{"qualified_name": "sales.payroll", "depth": 1, "registered": True, "redacted": True}]
+    assert imp["impacted"] == [{"qualified_name": "redacted-1", "depth": 1, "registered": True, "redacted": True}]
     assert imp["owners_to_notify"] == ["o1"]  # 変更管理の通知先は伏せない
     assert client.get(f"{API}/lineage/sales.kpi/impact", headers=COMMITTEE).json()["impacted"][0]["owner"] == "o1"
 

@@ -87,6 +87,15 @@ class Settings:
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)
     mdm_review_sla_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MDM_REVIEW_SLA_DAYS", "7")))
+    # §19 Security: リクエスト本文の上限 (バイト)。超えると 413 Problem を返す
+    max_body_bytes: int = field(default_factory=lambda: int(os.getenv("EDGF_MAX_BODY_BYTES", str(10 * 1024 * 1024))))
+    # §13 監査チェーンのアンカリング (edgf/services/audit_anchor.py)。署名鍵は 32 バイトの base64
+    anchor_enabled: bool = field(default_factory=lambda: _env_bool("EDGF_ANCHOR_ENABLED"))
+    anchor_signing_key: str = field(default_factory=lambda: os.getenv("EDGF_ANCHOR_SIGNING_KEY", ""))
+    anchor_verify_keys: tuple[str, ...] = field(default_factory=lambda: _env_list("EDGF_ANCHOR_VERIFY_KEYS"))
+    anchor_file: str = field(default_factory=lambda: os.getenv("EDGF_ANCHOR_FILE", ""))
+    anchor_outbox: bool = field(default_factory=lambda: _env_bool("EDGF_ANCHOR_OUTBOX", True))
+    anchor_tsa_url: str = field(default_factory=lambda: os.getenv("EDGF_ANCHOR_TSA_URL", ""))
     # IdP 側のロール/グループ名 → edgf ロール (例: "dg-committee=committee,dg-admins=admin")
     role_map: tuple[tuple[str, str], ...] = field(default_factory=lambda: _env_pairs("EDGF_ROLE_MAP"))
 

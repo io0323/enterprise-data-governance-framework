@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from http import HTTPStatus
 from typing import Any
 
@@ -17,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from edgf.observability import REQUEST_ID_HEADER, current_request_id
 
@@ -91,6 +93,78 @@ def problem_response(request: Request, status: int, detail: str | None = None, *
     if rid:
         resp.headers[REQUEST_ID_HEADER] = rid
     return resp
+
+
+MAX_JSON_DEPTH = 64  # API の入力で意味のある入れ子はこれより十分に浅い。深いと応答の直列化で失敗する
+_JSON_TOKEN = re.compile(rb'["\\\[\]{}]')
+
+
+class _JsonDepth:
+    """JSON の入れ子の深さを、パースせずに数える (受信の断片にまたがってもよい)。"""
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.in_string = False
+        self.escaped = False  # 断片の末尾がエスケープの途中だった
+
+    def feed(self, chunk: bytes) -> int:
+        start = 1 if self.escaped and chunk else 0
+        self.escaped = self.escaped and not chunk
+        deepest = self.depth
+        position = start
+        while True:
+            m = _JSON_TOKEN.search(chunk, position)
+            if m is None:
+                return deepest
+            token = m.group()
+            position = m.end()
+            if token == b"\\":
+                if self.in_string:
+                    if position >= len(chunk):
+                        self.escaped = True
+                    position += 1
+            elif token == b'"':
+                self.in_string = not self.in_string
+            elif not self.in_string:
+                self.depth += 1 if token in (b"[", b"{") else -1
+                deepest = max(deepest, self.depth)
+
+
+class BodyLimitMiddleware:
+    """本文の大きさと JSON の入れ子を制限する。Content-Length を信用せず、受信した量を数える (chunked でも超えられない)。"""
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    def _too_large(self) -> ProblemError:
+        return ProblemError(413, f"リクエストの本文が上限 ({self.max_bytes} バイト) を超えています", type_="payload-too-large")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = dict(scope.get("headers") or []).get(b"content-length", b"")
+        if declared.isdigit() and int(declared) > self.max_bytes:
+            error = self._too_large()
+            await problem_response(Request(scope), 413, error.detail, type_=error.type_)(scope, receive, send)
+            return
+        received = 0
+        content_type = dict(scope.get("headers") or []).get(b"content-type", b"").lower()
+        depth = _JsonDepth() if b"json" in content_type else None
+
+        async def counting_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise self._too_large()  # 本文を読む FastAPI の中で発生するので、通常の例外処理で Problem になる
+                if depth is not None and depth.feed(message.get("body", b"")) > MAX_JSON_DEPTH:
+                    raise ProblemError(422, f"JSON の入れ子が上限 ({MAX_JSON_DEPTH} 段) を超えています", type_="json-too-deep")
+            return message
+
+        await self.app(scope, counting_receive, send)
 
 
 async def _http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:

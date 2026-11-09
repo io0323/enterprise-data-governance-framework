@@ -1,0 +1,79 @@
+{
+  "profile": "standard",
+  "seconds": 30,
+  "note": "GitHub Actions ubuntu-24.04 の同じコミットの 2 回の実行で、シナリオごとに悪い方の値 (ランナーの差で p95 が最大 47% 変わるため)",
+  "scenarios": {
+    "search": {
+      "p50_ms": 230.0,
+      "p95_ms": 460.0,
+      "p99_ms": 570.0,
+      "rps": 19.58,
+      "error_rate": 0.0,
+      "requests": 568,
+      "users": 5
+    },
+    "asset_detail": {
+      "p50_ms": 7.0,
+      "p95_ms": 11.0,
+      "p99_ms": 13.0,
+      "rps": 743.96,
+      "error_rate": 0.0,
+      "requests": 21591,
+      "users": 5
+    },
+    "impact": {
+      "p50_ms": 840.0,
+      "p95_ms": 1200.0,
+      "p99_ms": 1300.0,
+      "rps": 6.93,
+      "error_rate": 0.0,
+      "requests": 201,
+      "users": 5
+    },
+    "rag_authorize": {
+      "p50_ms": 47.0,
+      "p95_ms": 66.0,
+      "p99_ms": 110.0,
+      "rps": 130.14,
+      "error_rate": 0.0,
+      "requests": 3776,
+      "users": 5
+    },
+    "contract_check": {
+      "p50_ms": 190.0,
+      "p95_ms": 570.0,
+      "p99_ms": 630.0,
+      "rps": 16.67,
+      "error_rate": 0.0,
+      "requests": 484,
+      "users": 5
+    },
+    "inbox": {
+      "p50_ms": 220.0,
+      "p95_ms": 500.0,
+      "p99_ms": 580.0,
+      "rps": 19.93,
+      "error_rate": 0.0,
+      "requests": 578,
+      "users": 5
+    },
+    "products": {
+      "p50_ms": 200.0,
+      "p95_ms": 320.0,
+      "p99_ms": 330.0,
+      "rps": 8.55,
+      "error_rate": 0.0,
+      "requests": 248,
+      "users": 2
+    },
+    "audit_write": {
+      "p50_ms": 60.0,
+      "p95_ms": 160.0,
+      "p99_ms": 310.0,
+      "rps": 214.12,
+      "error_rate": 0.0,
+      "requests": 6214,
+      "users": 16
+    }
+  }
+}

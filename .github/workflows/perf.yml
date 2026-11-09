@@ -1,0 +1,72 @@
+name: Performance
+
+# Pull Request ごとには動かさない。基準値の 30% 以上の悪化で失敗する。
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "standard = 資産 10 万件、million = 100 万件 (基準値と比べない)"
+        type: choice
+        default: standard
+        options: [standard, million]
+      seconds:
+        description: シナリオごとの秒数
+        default: "30"
+  schedule:
+    - cron: "0 18 * * 0"  # 毎週月曜 3:00 (JST)
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: edgf_perf
+          POSTGRES_USER: edgf
+          POSTGRES_PASSWORD: edgf-ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U edgf"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      EDGF_DATABASE_URL: postgresql+psycopg://edgf:edgf-ci-only@localhost:5432/edgf_perf
+      PROFILE: ${{ inputs.profile || 'standard' }}
+      SECONDS_PER_SCENARIO: ${{ inputs.seconds || '30' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[perf,postgres]"
+      - name: 合成データの投入
+        run: |
+          if [ "$PROFILE" = million ]; then ASSETS=1000000; else ASSETS=100000; fi
+          python scripts/perf/seed.py --reset --assets "$ASSETS"
+      - name: サーバの起動
+        run: |
+          sh scripts/perf/serve.sh > server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fs http://127.0.0.1:8100/health > /dev/null && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+      - name: 負荷試験
+        run: python scripts/perf/run.py --host http://127.0.0.1:8100 --seconds "$SECONDS_PER_SCENARIO" --profile "$PROFILE" --output "perf/results/$PROFILE.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-${{ env.PROFILE }}
+          path: |
+            perf/results/*.json
+            server.log
+      - name: 基準値との比較
+        if: env.PROFILE == 'standard' && hashFiles('perf/baseline.json') != ''  # 基準値の有無は tests/test_perf_compare.py で確認する
+        run: python scripts/perf/compare.py perf/results/standard.json

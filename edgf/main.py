@@ -11,8 +11,9 @@ from edgf.api import ai, approvals, audit, catalog, glossary, issues, jobs, kpi,
 from edgf.auth import build_authenticator
 from edgf.config import Settings, settings
 from edgf.deps import get_principal
-from edgf.errors import PROBLEM_RESPONSES, install_problem_handlers
+from edgf.errors import PROBLEM_RESPONSES, BodyLimitMiddleware, install_problem_handlers
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
+from edgf.services.audit_anchor import validate_anchor_settings
 from edgf.services.mdm_rules import get_entities
 from edgf.ui import routes as ui_routes
 from edgf.services.policy_bundles import bootstrap_on_startup
@@ -38,6 +39,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     configure_logging(s.log_level, s.log_format)
     authenticator = build_authenticator(s)  # 設定不備・production での dev モードはここで停止 (fail fast)
     validate_subject_key(s)  # production で EDGF_SUBJECT_KEY が無ければ停止
+    validate_anchor_settings(s)  # production でアンカリングが有効なのに署名鍵が無ければ停止
     app = FastAPI(
         title="Enterprise Data Governance Framework",
         version=__version__,
@@ -49,7 +51,8 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     app.state.authenticator = authenticator
     app.state.auth_mode = authenticator.mode
     install_problem_handlers(app)
-    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(BodyLimitMiddleware, max_bytes=s.max_body_bytes)
+    app.add_middleware(RequestContextMiddleware)  # 後に追加したものが外側になる (413 にも request_id を付ける)
     for r in (catalog.router, glossary.router, quality.router, issues.router,
               lineage.router, policy.router, audit.router, kpi.router, privacy.router, mdm.router, refdata.router, ai.router, mesh.router, approvals.router, webhooks.router, reviews.router, jobs.router):
         # /api/v1 はすべて認証必須 (認可は各エンドポイントで edgf.authz が判定)

@@ -49,6 +49,8 @@ ASYMMETRIC_ALGORITHMS = frozenset({"RS256", "RS384", "RS512", "PS256", "PS384", 
 
 # 監査の actor 列は 200 文字。dev モードは "dev:" を付けて記録するので 196 文字まで
 MAX_SUBJECT_LENGTH = 200
+# 署名の検証より前に拒否する上限。正規の IdP のトークンはこの大きさにならない
+MAX_TOKEN_BYTES = 16 * 1024
 _DEV_ACTOR = re.compile(r"^[A-Za-z0-9._@:+\-]{1,196}$")
 
 
@@ -207,6 +209,8 @@ class JwtAuthenticator:
         token = token.strip()
         if scheme.lower() != "bearer" or not token:
             raise AuthError("Authorization: Bearer <token> が必要です", error=None)
+        if len(token) > MAX_TOKEN_BYTES:
+            raise AuthError("トークンが大きすぎます")
         key = self.keys.signing_key(token)
         c = self.config
         try:

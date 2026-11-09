@@ -9,9 +9,9 @@ from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal
-from edgf.models import AuditEvent
+from edgf.models import AuditAnchor, AuditEvent
 from edgf.pagination import Page, page_params, paginate
-from edgf.services.audit import verify_chain
+from edgf.services.audit_anchor import anchoring_in_use, verify_all
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -31,5 +31,22 @@ def list_events(request: Request, response: Response, entity_id: str | None = No
 
 
 @router.get("/verify")
-def verify(db: Session = Depends(get_session)):
-    return verify_chain(db)
+def verify(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """チェーンの検証と、最新のアンカーとの照合。
+
+    アンカーの詳細は audit.read を持つ利用者にだけ返す。アンカリングを使っていなければ、応答は従来と同じ。
+    """
+    result = verify_all(db)
+    if not authz.is_allowed(principal, "audit.read") or not anchoring_in_use(result):
+        return {k: result[k] for k in ("valid", "events_checked", "broken_at_seq")}
+    return result
+
+
+@router.get("/anchors")
+def list_anchors(request: Request, response: Response, page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                 principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "audit.read", entity_type="audit", entity_id="anchors")
+    stmt = select(AuditAnchor).order_by(AuditAnchor.seq.desc())
+    return [{"seq": a.seq, "hash": a.hash, "anchored_at": a.anchored_at, "key_id": a.key_id, "signature": a.signature,
+             "sinks": {name: {k: v for k, v in result.items() if k != "token"} for name, result in a.sinks.items()}}
+            for a in paginate(db, stmt, page, request, response)]

@@ -21,6 +21,7 @@ from edgf.services.approval_types import APPROVER_RULES, Step
 
 A = ApprovalStatus
 COMMITTEE_ASSIGNEE = "data-governance-committee"
+BATCH = 500
 
 
 class ApprovalValidationError(ValueError):
@@ -70,17 +71,32 @@ def _can_decide_step(principal: Principal, step: Mapping[str, Any], asset: DataA
     return authz.rule_allows(principal, APPROVER_RULES[step["rule"]], asset=asset, domain=step.get("domain"))
 
 
-def can_decide(db: Session, principal: Principal, req: ApprovalRequest) -> bool:
-    """この人が今のステップで判断できるか (inbox の判定と同じ)。"""
+def _decidable(principal: Principal, req: ApprovalRequest, asset: DataAsset | None) -> bool:
     if req.status != A.PENDING.value or principal.subject == req.requested_by:
         return False
-    asset = db.get(DataAsset, req.asset_id) if req.asset_id else None
     if asset is not None and asset.custodian == principal.subject:
         return False
-    if not _can_decide_step(principal, current_step(req), asset):
+    return _can_decide_step(principal, current_step(req), asset)
+
+
+def can_decide(db: Session, principal: Principal, req: ApprovalRequest) -> bool:
+    """この人が今のステップで判断できるか (inbox の判定と同じ)。"""
+    asset = db.get(DataAsset, req.asset_id) if req.asset_id else None
+    if not _decidable(principal, req, asset):
         return False
     return db.scalar(select(ApprovalDecision.id).where(ApprovalDecision.request_id == req.id,
                                                        ApprovalDecision.decided_by == principal.subject)) is None
+
+
+def decidable_pending(db: Session, principal: Principal) -> list[tuple[ApprovalRequest, DataAsset | None]]:
+    """今この人が判断できる未決の案件。inbox 用に一括で読む (案件ごとに問い合わせると N+1 になる)。"""
+    requests = pending(db)
+    asset_ids = sorted({r.asset_id for r in requests if r.asset_id})
+    assets: dict[str, DataAsset] = {}
+    for start in range(0, len(asset_ids), BATCH):
+        assets.update({a.id: a for a in db.scalars(select(DataAsset).where(DataAsset.id.in_(asset_ids[start:start + BATCH])))})
+    decided = set(db.scalars(select(ApprovalDecision.request_id).where(ApprovalDecision.decided_by == principal.subject)))
+    return [(r, assets.get(r.asset_id)) for r in requests if r.id not in decided and _decidable(principal, r, assets.get(r.asset_id))]
 
 
 def _require_decider(db: Session, principal: Principal, req: ApprovalRequest) -> None:
