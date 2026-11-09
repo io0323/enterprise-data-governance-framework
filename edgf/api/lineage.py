@@ -61,6 +61,26 @@ def downstream(qualified_name: str, depth: int = Query(10, ge=1, le=50), db: Ses
     return {"asset": qualified_name, "edges": lineage.traverse(db, qualified_name, "downstream", depth)}
 
 
+@router.get("/{qualified_name}/graph")
+def graph(qualified_name: str, depth: int = Query(3, ge=1, le=50), db: Session = Depends(get_session),
+          principal: Principal = Depends(get_principal)):
+    """UI の描画用のグラフ。閲覧できない資産 (ABAC) は名前と深さだけを返し、そこに接するエッジの job も伏せる。"""
+    result = lineage.graph(db, qualified_name, depth)
+    ids = [n["asset_id"] for n in result["nodes"] if n["asset_id"]]
+    assets = {a.id: a for a in db.scalars(select(DataAsset).where(DataAsset.id.in_(ids)))} if ids else {}
+    hidden = set()
+    nodes = []
+    for node in result["nodes"]:
+        asset = assets.get(node["asset_id"])
+        if asset is not None and not authz.can_read(db, principal, asset):
+            hidden.add(node["qualified_name"])
+            node = {"qualified_name": node["qualified_name"], "level": node["level"], "registered": True, "redacted": True}
+        nodes.append(node)
+    result["nodes"] = nodes
+    result["edges"] = [{"from": e["from"], "to": e["to"], "job": None if {e["from"], e["to"]} & hidden else e["job"]} for e in result["edges"]]
+    return result
+
+
 def redacted_impact(db: Session, principal: Principal, qualified_name: str, depth: int = 10) -> dict:
     """閲覧できない下流資産 (ABAC) は名前と深さだけを返し、詳細を伏せる。
 
