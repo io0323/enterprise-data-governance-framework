@@ -1174,3 +1174,41 @@ class PolicyBundleOut(ORM):
 
 class PolicyBundleDetail(PolicyBundleOut):
     files: dict[str, str]
+
+
+class WebhookIn(MeshInput):
+    url: str = Field(min_length=1, max_length=2000, description="配信先。本番では https のみ")
+    secret_ref: str = Field(max_length=200, description="署名の秘密鍵の外部参照 (env:<環境変数名>)")
+    event_types: list[str] = Field(default_factory=list, max_length=100, description="空なら全種別。末尾の * は前方一致 (例: edgf.issue.*)")
+    description: str = Field(default="", max_length=1000)
+
+
+class WebhookUpdate(MeshInput):
+    url: str | None = Field(default=None, min_length=1, max_length=2000)
+    secret_ref: str | None = Field(default=None, max_length=200)
+    event_types: list[str] | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=1000)
+    active: bool | None = None
+
+
+class WebhookOut(ORM):
+    id: str
+    url: str
+    secret_ref: str
+    event_types: list[str]
+    description: str
+    active: bool
+    created_by: str
+    created_at: datetime
+
+
+class DeliveryOut(ORM):
+    id: str
+    event_id: str
+    endpoint_id: str
+    status: str
+    attempts: int
+    next_attempt_at: datetime
+    last_error: str | None
+    delivered_at: datetime | None
+    dead_at: datetime | None

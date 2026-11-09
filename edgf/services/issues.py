@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from edgf.config import settings
 from edgf.enums import ESCALATION_ORDER, EscalationLevel, IssueStatus
 from edgf.models import DataAsset, Issue, utcnow
-from edgf.services import audit
+from edgf.services import audit, outbox
 
 MAX_TITLE_LENGTH = 300
 OPEN_STATES = (IssueStatus.OPEN.value, IssueStatus.IN_PROGRESS.value)
@@ -43,6 +43,8 @@ def open_issue(db: Session, actor: str, *, asset: DataAsset | None, kind: str, t
     db.add(issue)
     db.flush()
     audit.record(db, actor, "issue.open", "issue", issue.id, {"title": title, "kind": kind, "asset_id": issue.asset_id})
+    outbox.emit(db, "issue.opened", issue.id, {"issue_id": issue.id, "kind": kind, "severity": severity, "asset_id": issue.asset_id,
+                                               "escalation_level": issue.escalation_level, "due_at": issue.due_at})
     return issue
 
 
@@ -57,6 +59,7 @@ def escalate(db: Session, actor: str, issue: Issue, reason: str) -> Issue:
     issue.due_at = utcnow() + timedelta(days=max(settings.issue_sla_days // 3, 1))
     db.flush()
     audit.record(db, actor, "issue.escalate", "issue", issue.id, {"to": nxt.value, "reason": reason})
+    outbox.emit(db, "issue.escalated", issue.id, {"issue_id": issue.id, "asset_id": issue.asset_id, "escalation_level": nxt.value})
     return issue
 
 

@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from edgf.models import AccessGrant, ApprovalRequest, DataAsset
-from edgf.services import audit, lifecycle
+from edgf.services import audit, lifecycle, outbox
 from edgf.services.approvals import ApprovalConflict
 
 
@@ -19,6 +19,8 @@ def grant_access(db: Session, actor: str, req: ApprovalRequest, decided_by: str)
     audit.record(db, actor, "access.grant", "asset", req.asset_id, {
         "grant_id": grant.id, "subject": grant.subject, "purpose": grant.purpose, "expires_at": grant.expires_at,
         "approval_id": req.id})
+    outbox.emit(db, "access.granted", grant.id, {"grant_id": grant.id, "asset_id": grant.asset_id, "subject": grant.subject,
+                                                 "expires_at": grant.expires_at})
 
 
 def approve_share(db: Session, actor: str, req: ApprovalRequest, decided_by: str) -> None:
@@ -26,6 +28,8 @@ def approve_share(db: Session, actor: str, req: ApprovalRequest, decided_by: str
     audit.record(db, actor, "share.approved", "asset", req.asset_id, {
         "approval_id": req.id, "recipient": req.payload["recipient"], "purpose": req.payload["purpose"],
         "expires_at": req.payload["expires_at"], "approved_by": decided_by})
+    outbox.emit(db, "share.approved", req.id, {"approval_id": req.id, "asset_id": req.asset_id, "recipient": req.payload["recipient"],
+                                               "expires_at": req.payload["expires_at"]})
 
 
 def delete_asset(db: Session, actor: str, req: ApprovalRequest, decided_by: str) -> None:

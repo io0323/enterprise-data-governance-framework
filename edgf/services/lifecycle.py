@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from edgf.enums import LIFECYCLE_TRANSITIONS, Certification, LifecycleState
 from edgf.models import DataAsset, utcnow
-from edgf.services import audit
+from edgf.services import audit, outbox
 
 
 class LegalHoldError(ValueError):
@@ -30,3 +30,4 @@ def request_delete(db: Session, actor: str, asset: DataAsset, reason: str) -> No
     db.flush()
     audit.record(db, actor, "lifecycle.delete_requested", "asset", asset.id,
                  {"from": previous, "to": LifecycleState.DELETED.value, "reason": reason})
+    outbox.emit(db, "asset.delete_requested", asset.id, {"asset_id": asset.id, "qualified_name": asset.qualified_name})

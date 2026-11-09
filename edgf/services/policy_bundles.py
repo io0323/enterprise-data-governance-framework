@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from edgf.db import SessionLocal
 from edgf.enums import BundleStatus
 from edgf.models import ApprovalRequest, DataAsset, PolicyBundle, utcnow
-from edgf.services import approvals, audit, policy
+from edgf.services import approvals, audit, outbox, policy
 from edgf.services.approval_types import Step
 from edgf.services.policy import Policy, PolicyLoadError
 
@@ -260,3 +260,5 @@ def publish(db: Session, actor: str, bundle: PolicyBundle, publisher: str) -> No
     db.flush()
     audit.record(db, actor, "policy.publish", "policy_bundle", str(bundle.version), {
         "version": bundle.version, "content_hash": bundle.content_hash, "superseded": active.version, "rollback_of": bundle.rollback_of})
+    outbox.emit(db, "policy.published", str(bundle.version), {"version": bundle.version, "content_hash": bundle.content_hash,
+                                                              "superseded": active.version, "rollback_of": bundle.rollback_of})

@@ -16,7 +16,7 @@ from edgf import authz
 from edgf.auth import Principal
 from edgf.enums import ESCALATION_ORDER, ApprovalStatus, EscalationLevel
 from edgf.models import ApprovalDecision, ApprovalRequest, DataAsset, Issue, utcnow
-from edgf.services import approval_types, audit, issues
+from edgf.services import approval_types, audit, issues, outbox
 from edgf.services.approval_types import APPROVER_RULES, Step
 
 A = ApprovalStatus
@@ -53,7 +53,13 @@ def create(db: Session, actor: str, *, type_name: str, requested_by: str, target
     audit.record(db, actor, "approval.request", "approval", req.id, {
         "type": type_name, "target_type": target_type, "target_id": target_id, "reason": reason, "payload": dict(payload or {}),
         "due_at": req.due_at})
+    outbox.emit(db, "approval.requested", req.id, _event_data(req))
     return req
+
+
+def _event_data(req: ApprovalRequest) -> dict[str, Any]:
+    return {"approval_id": req.id, "type": req.type, "target_type": req.target_type, "target_id": req.target_id,
+            "asset_id": req.asset_id, "status": req.status, "due_at": req.due_at}
 
 
 def current_step(req: ApprovalRequest) -> dict[str, Any]:
@@ -98,6 +104,7 @@ def _finish(db: Session, actor: str, req: ApprovalRequest, status: str, decided_
     req.status, req.decided_at = status, utcnow()
     db.flush()
     audit.record(db, actor, f"approval.{status}", "approval", req.id, {"type": req.type, "target_id": req.target_id})
+    outbox.emit(db, f"approval.{status}", req.id, _event_data(req))
     callback = approval_types.resolve(handler)
     if callback is not None:
         callback(db, actor, req, decided_by)

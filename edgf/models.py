@@ -774,6 +774,46 @@ class PolicyBundle(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class OutboxEvent(Base):
+    """§16 Transactional Outbox: 状態変更と同じトランザクションで書き込むイベント (CloudEvents 1.0 の内容)。"""
+    __tablename__ = "outbox_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)  # CloudEvents の id (受信側の冪等キー)
+    type: Mapped[str] = mapped_column(String(100), index=True)
+    subject: Mapped[str] = mapped_column(String(300))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    request_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    fanned_out_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+
+class WebhookEndpoint(Base):
+    """配信先。署名の秘密鍵は持たず、外部の参照 (secret_ref) だけを持つ。"""
+    __tablename__ = "webhook_endpoints"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    url: Mapped[str] = mapped_column(String(2000))
+    secret_ref: Mapped[str] = mapped_column(String(200))
+    event_types: Mapped[list] = mapped_column(JSON, default=list)  # 空なら全種別。末尾の * は前方一致
+    description: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WebhookDelivery(Base):
+    """イベント × 配信先の配信状況。配信は at-least-once で、最後まで届かなければ dead (デッドレター) に移す。"""
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (UniqueConstraint("event_id", "endpoint_id", name="uq_webhook_delivery"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_id: Mapped[str] = mapped_column(ForeignKey("outbox_events.id"), index=True)
+    endpoint_id: Mapped[str] = mapped_column(ForeignKey("webhook_endpoints.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending / delivered / dead
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(200))  # ステータスや例外の種類だけ (本文や秘密は含めない)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dead_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

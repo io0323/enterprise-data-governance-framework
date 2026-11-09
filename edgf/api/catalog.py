@@ -18,7 +18,7 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_u
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import ai, ai_inherit, audit, mesh_contracts, privacy
+from edgf.services import ai, ai_inherit, audit, mesh_contracts, outbox, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
@@ -221,6 +221,8 @@ def change_lifecycle(asset_id: str, body: LifecycleChange, db: Session = Depends
     # 物理削除は Data Plane が実行する。Control Plane は削除指示と証跡を記録する。
     action = "lifecycle.delete_requested" if body.target_state == LifecycleState.DELETED else "lifecycle.change"
     audit.record(db, principal.audit_actor, action, "asset", asset.id, {"from": current.value, "to": body.target_state.value, "reason": body.reason})
+    if body.target_state == LifecycleState.DELETED:
+        outbox.emit(db, "asset.delete_requested", asset.id, {"asset_id": asset.id, "qualified_name": asset.qualified_name})
     return asset
 
 
@@ -283,6 +285,7 @@ def grant_access(asset_id: str, body: AccessGrantIn, db: Session = Depends(get_s
     db.flush()
     audit.record(db, principal.audit_actor, "access.grant", "asset", asset.id,
                  {"grant_id": g.id, "subject": g.subject, "purpose": g.purpose, "expires_at": g.expires_at})
+    outbox.emit(db, "access.granted", g.id, {"grant_id": g.id, "asset_id": asset.id, "subject": g.subject, "expires_at": g.expires_at})
     return g
 
 
@@ -308,4 +311,5 @@ def revoke_access(asset_id: str, grant_id: str, db: Session = Depends(get_sessio
         g.revoked_at, g.revoked_by = utcnow(), principal.subject
         db.flush()
         audit.record(db, principal.audit_actor, "access.revoke", "asset", asset.id, {"grant_id": g.id, "subject": g.subject})
+        outbox.emit(db, "access.revoked", g.id, {"grant_id": g.id, "asset_id": asset.id, "subject": g.subject})
     return g

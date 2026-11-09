@@ -177,6 +177,9 @@ PERMISSIONS: Mapping[str, Rule] = {
                             description="承認の判断 (種別とステップごとのルールで判定する)"),
     "approval.cancel": rule(roles=(ADMIN,), relations=("requester",), description="承認の申請の取り消し (申請者本人、admin)"),
     "approval.read": rule(roles=(ADMIN, COMMITTEE), description="全案件の参照 (ABAC で絞り込む)"),
+    # イベント配信 (§16)
+    "webhook.manage": rule(roles=(ADMIN,), description="Webhook の配信先の登録・更新・参照"),
+    "outbox.redeliver": rule(roles=(ADMIN,), description="デッドレターの参照と手動の再送"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

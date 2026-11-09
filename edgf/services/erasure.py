@@ -22,7 +22,7 @@ from edgf.config import settings
 from edgf.enums import ESCALATION_ORDER, AiKind, ErasureStatus, ErasureTaskStatus
 from edgf.models import DataAsset, ErasureRequest, ErasureTask, Issue, utcnow
 from edgf.observability import request_id_var
-from edgf.services import ai_lineage, ai_remediation, issues, lineage, mdm
+from edgf.services import ai_lineage, ai_remediation, issues, lineage, mdm, outbox
 from edgf.services.privacy import effective_pii_columns, pii_columns
 
 S, T = ErasureStatus, ErasureTaskStatus
@@ -182,6 +182,9 @@ def dispatch(db: Session, req: ErasureRequest, actor: str) -> None:
                 t.status, t.withheld_reason = T.WITHHELD.value, LEGAL_HOLD_REASON
             else:
                 t.status = T.PENDING.value
+                # push 型の通知。主体の情報は載せず、受信側は pull 型の API でタスクを取得する (§18.2)
+                outbox.emit(db, "erasure.task.dispatched", t.id, {"task_id": t.id, "erasure_request_id": req.id, "asset_id": t.asset_id,
+                                                                  "ai_kind": t.ai_kind, "due_at": req.due_at})
     req.status = S.DISPATCHED.value
     req.dispatched_at = utcnow()
     db.flush()

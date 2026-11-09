@@ -187,6 +187,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `mesh.subscription.approve` | 利用登録の承認 (対象 Product の Owner) | 対象の owner | ✓ |
 | `mesh.subscription.read` | 全利用者の利用登録の参照 | ロール: admin, committee |  |
 | `mesh.subscription.request` | 利用登録の申請と自分の登録の変更 (閲覧権限は与えない) | 認証済みの全員 |  |
+| `outbox.redeliver` | デッドレターの参照と手動の再送 | ロール: admin |  |
 | `policy.evaluate_all` | 全資産の自動監査と Issue 化 | ロール: admin, committee |  |
 | `policy.propose` | Policy の変更の提案 (ドメイン内の Owner は Domain Policy だけ) | ロール: admin, committee<br>ドメイン内ロール: owner |  |
 | `policy.publish` | 承認済みの Policy の公開 | ロール: committee | ✓ |
@@ -208,6 +209,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `quality.run` | 品質検査の実行 (パイプラインからの送信を含む) | ドメイン内ロール: custodian, owner, steward<br>対象の custodian / owner / steward |  |
 | `refdata.publish` | Reference Data の版の公開 | ロール: committee<br>対象の owner | ✓ |
 | `refdata.write` | Reference Data の下書きの作成 | ドメイン内ロール: owner, steward |  |
+| `webhook.manage` | Webhook の配信先の登録・更新・参照 | ロール: admin |  |
 
 これ以外の参照系 API(資産・Issue・KPI・ポリシー・リネージなど)は、認証済みの全員が使えます。資産を含む結果は、次の ABAC で絞り込みます。
 
