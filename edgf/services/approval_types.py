@@ -83,6 +83,12 @@ register(ApprovalType(
     on_approved=f"{HANDLERS}:delete_asset"))
 
 
+BUNDLES = "edgf.services.policy_bundles"
+register(ApprovalType(
+    "policy_change", "Policy の変更 (§16 Policy。ステップは変更の範囲で決まる)", sla_business_days=10,
+    on_approved=f"{BUNDLES}:on_approved", on_rejected=f"{BUNDLES}:on_rejected", on_cancelled=f"{BUNDLES}:on_rejected"))
+
+
 def resolve(path: str | None) -> Callable[..., None] | None:
     if path is None:
         return None

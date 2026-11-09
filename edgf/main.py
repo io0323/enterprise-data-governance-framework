@@ -14,7 +14,7 @@ from edgf.deps import get_principal
 from edgf.errors import PROBLEM_RESPONSES, install_problem_handlers
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from edgf.services.mdm_rules import get_entities
-from edgf.services.policy import get_policies
+from edgf.services.policy_bundles import bootstrap_on_startup
 from edgf.services.subject_ref import validate_subject_key
 
 log = logging.getLogger("edgf")
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         from edgf import db, migrate
         migrate.upgrade(db.engine)
         log.info("database migrated to head (EDGF_AUTO_MIGRATE)")
-    get_policies(reload=True)  # 起動時にポリシー構文を検証 (fail fast)
+    bootstrap_on_startup()  # active の版が無いときだけディスクから取り込む。不正なら fail fast
     get_entities(reload=True)  # MDM のエンティティ定義も同様
     log.info("edgf started", extra={"fields": {"version": __version__}})
     yield

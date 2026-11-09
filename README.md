@@ -188,7 +188,9 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `mesh.subscription.read` | 全利用者の利用登録の参照 | ロール: admin, committee |  |
 | `mesh.subscription.request` | 利用登録の申請と自分の登録の変更 (閲覧権限は与えない) | 認証済みの全員 |  |
 | `policy.evaluate_all` | 全資産の自動監査と Issue 化 | ロール: admin, committee |  |
-| `policy.reload` | ポリシーの再読込 (公開) | ロール: admin, committee | ✓ |
+| `policy.propose` | Policy の変更の提案 (ドメイン内の Owner は Domain Policy だけ) | ロール: admin, committee<br>ドメイン内ロール: owner |  |
+| `policy.publish` | 承認済みの Policy の公開 | ロール: committee | ✓ |
+| `policy.reload` | ディスクの内容から Policy の変更を提案する (即時には反映しない) | ロール: admin, committee |  |
 | `privacy.consent.check` | 目的内利用の判定と同意履歴の参照 | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |
 | `privacy.consent.write` | 同意の取得・撤回の記録 (ドメインは Purpose の所属で判定) | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |
 | `privacy.erasure.approve` | 消去の対象範囲の承認 (Owner は自分の資産の分のみ) | ロール: committee<br>対象の owner | ✓ |

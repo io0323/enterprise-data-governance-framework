@@ -751,6 +751,29 @@ class ApprovalDecision(Base):
     decided_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class PolicyBundle(Base):
+    """§16 Policy / §19 Integrity: Policy の正。YAML 一式を版として保持し、実行時は active の版だけを評価する。"""
+    __tablename__ = "policy_bundles"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    files: Mapped[dict] = mapped_column(JSON)  # 相対パス → YAML の本文
+    content_hash: Mapped[str] = mapped_column(String(64))
+    base_version: Mapped[int | None] = mapped_column(Integer)
+    base_hash: Mapped[str | None] = mapped_column(String(64))  # 提案の元にした active の版 (公開時に変わっていれば拒否する)
+    scope: Mapped[str] = mapped_column(String(20), default="global")  # global / domain
+    domains: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    proposed_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    approval_id: Mapped[str | None] = mapped_column(ForeignKey("approval_requests.id"))
+    impact: Mapped[dict] = mapped_column(JSON, default=dict)  # 影響評価 (dry-run) の結果
+    rollback_of: Mapped[int | None] = mapped_column(Integer)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

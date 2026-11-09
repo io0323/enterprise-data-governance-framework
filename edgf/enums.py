@@ -210,6 +210,15 @@ class ApprovalStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class BundleStatus(str, Enum):
+    """§16 Policy: Policy Bundle の状態。実行時の評価は active の版だけを使う"""
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    REJECTED = "rejected"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

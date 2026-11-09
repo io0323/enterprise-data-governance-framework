@@ -91,7 +91,10 @@ PERMISSIONS: Mapping[str, Rule] = {
     # Lineage (§9): パイプラインによる自動収集
     "lineage.write": rule(roles=(ADMIN, OWNER, STEWARD, CUSTODIAN), description="リネージの登録・取込"),
     # Policy / Compliance (§13, §15)
-    "policy.reload": rule(roles=(COMMITTEE, ADMIN), approval=True, description="ポリシーの再読込 (公開)"),
+    "policy.reload": rule(roles=(COMMITTEE, ADMIN), description="ディスクの内容から Policy の変更を提案する (即時には反映しない)"),
+    "policy.propose": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER,),
+                           description="Policy の変更の提案 (ドメイン内の Owner は Domain Policy だけ)"),
+    "policy.publish": rule(roles=(COMMITTEE,), approval=True, description="承認済みの Policy の公開"),
     "policy.evaluate_all": rule(roles=(COMMITTEE, ADMIN), description="全資産の自動監査と Issue 化"),
     "exception.request": rule(roles=(ADMIN,), domain_roles=(OWNER, STEWARD), relations=("owner", "steward"),
                               description="ポリシー例外の申請"),
@@ -238,6 +241,11 @@ def deny(db: Session, principal: Principal, action: str, *, entity_type: str, en
     if required is not None:
         ext["required"] = required.as_dict()
     raise ProblemError(403, reason, type_="forbidden", **ext)
+
+
+def has_global_role(principal: Principal, action: str) -> bool:
+    """ドメイン内ロールを除いた判定。全ドメイン (*) に所属する Owner でも全社の操作は許さない場合に使う。"""
+    return bool(principal.roles & PERMISSIONS[action].roles)
 
 
 def require(db: Session, principal: Principal, action: str, *, asset: DataAsset | None = None,

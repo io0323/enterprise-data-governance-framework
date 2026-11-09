@@ -1143,3 +1143,34 @@ class ApprovalOut(ORM):
     created_at: datetime
     decided_at: datetime | None
     decisions: list[ApprovalDecisionOut] = Field(default_factory=list)
+
+
+class PolicyProposalIn(MeshInput):
+    changes: dict[str, str | None] = Field(description="相対パス → YAML の本文。null はファイルの削除。指定しないファイルは active の版のまま")
+    reason: str = Field(min_length=1, max_length=1000, description="変更の理由")
+
+
+class PolicyRollbackIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000, description="切り戻しの理由")
+
+
+class PolicyBundleOut(ORM):
+    version: int
+    status: str
+    content_hash: str
+    base_version: int | None
+    scope: str
+    domains: list[str]
+    reason: str
+    proposed_by: str
+    created_at: datetime
+    approval_id: str | None
+    rollback_of: int | None
+    approved_at: datetime | None
+    published_by: str | None
+    published_at: datetime | None
+    superseded_at: datetime | None
+
+
+class PolicyBundleDetail(PolicyBundleOut):
+    files: dict[str, str]
