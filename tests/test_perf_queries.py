@@ -38,6 +38,19 @@ def _binary_tree(client, depth):
     return nodes
 
 
+@pytest.mark.parametrize("query, expected", [
+    ("ORDERS", {"sales.orders", "sales.tagged"}), ("orders", {"sales.orders", "sales.tagged"}), ("説明", {"sales.orders"}), ("100%", {"sales.pct"}), ("_", {"sales.pct"}),
+    ("nothing", set()), ("VIP", {"sales.tagged"}), ("vi", set()),
+])
+def test_search_matches_case_insensitively_as_before(client, query, expected):
+    """件数の取得を速くしても、大文字と小文字の無視、LIKE の記号の扱い、タグの完全一致は変わらない。"""
+    asset(client, "sales.orders", description="受注の説明")
+    asset(client, "sales.tagged", description="ORDERS の集計", tags=["VIP"])
+    asset(client, "sales.pct", description="100% a_b")
+    found = client.get(f"{API}/assets", headers=ADMIN, params={"q": query})
+    assert {a["qualified_name"] for a in found.json()} == expected and found.headers["x-total-count"] == str(len(expected))
+
+
 def test_traverse_queries_scale_with_depth_not_nodes(client):
     nodes = _binary_tree(client, 5)
     with SessionLocal() as db, count_queries() as statements:
