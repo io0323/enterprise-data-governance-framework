@@ -1031,22 +1031,24 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 
 条件は PostgreSQL 16、資産 10 万件(restricted 5%)、ドメイン 50、Lineage 深さ 10 の分岐、Product 500、承認待ち 1,000 件です。手順、原因、判断の記録は [docs/operations/performance.md](docs/operations/performance.md) にあります。
 
-| シナリオ | 目標 | 手元の実測 p95 | CI の実測 p95(3 回の範囲) | 判定 |
+| シナリオ | 目標 | 開発機の結果 | 参照環境 | CI の p95(回帰の検出用。13 回の範囲) |
 |---|---|---|---|---|
-| 検索 | p95 300ms | 150ms | 410〜460ms | **手元は達成、CI は 3 回とも未達** |
-| 資産詳細 | p95 200ms | 6ms | 6〜11ms | 達成 |
-| 影響分析(深さ 10) | p95 1s | 590ms | 620〜1,200ms | **手元は達成、CI は 3 回中 2 回未達** |
-| RAG 認可(50 ヒット) | p95 150ms | 27ms | 36〜66ms | 達成 |
-| Contract check | p95 1s | 300ms | 410〜570ms | 達成 |
-| inbox(1,000 件) | p95 500ms | 280ms | 330〜500ms | 達成 |
-| Product 一覧(500 件) | p95 2s | 240ms | 250〜320ms | 達成 |
-| 監査の書き込み | 200 件/秒以上 | 277 件/秒 | 214〜329 件/秒 | 達成 |
+| 検索 | p95 300ms | 達成(150ms) | 未測定 | 310〜630ms |
+| 資産詳細 | p95 200ms | 達成(6ms) | 未測定 | 6〜16ms |
+| 影響分析(深さ 10) | p95 1s | 達成(590ms) | 未測定 | 620〜1,500ms(目標ちょうどの 1,000ms が 2 回) |
+| RAG 認可(50 ヒット) | p95 150ms | 達成(27ms) | 未測定 | 34〜83ms |
+| Contract check | p95 1s | 達成(300ms) | 未測定 | 410〜850ms |
+| inbox(1,000 件) | p95 500ms | 達成(280ms) | 未測定 | 330〜530ms |
+| Product 一覧(500 件) | p95 2s | 達成(240ms) | 未測定 | 250〜360ms |
+| 監査の書き込み | 200 件/秒以上 | 達成(277 件/秒) | 未測定 | CI では 141〜329 件/秒。ばらつきが大きく判定は保留 |
 
-手元は開発機(macOS、Docker 上の PostgreSQL)で各 20 秒、CI は GitHub Actions の `ubuntu-24.04` で各 30 秒です。CI は負荷の発生、4 ワーカーの API、PostgreSQL が同じランナーに同居します。どちらもエラーは 0 件です。本番相当の環境での測定はしていません。
+**目標(SLO)の判定は参照環境で行います。参照環境での測定はまだしていません。** CI は回帰の検出用で、目標の判定には使いません。役割の分担と参照環境の仕様は [docs/operations/performance.md](docs/operations/performance.md) にあります。
+
+開発機は macOS と Docker 上の PostgreSQL で各 20 秒です。CI は GitHub Actions の `ubuntu-24.04` で各 30 秒で、負荷の発生、4 ワーカーの API、PostgreSQL が同じランナーに同居します。
 
 **100 万件のプロファイルは用意しましたが、未検証です**(`perf.yml` を `profile=million` で手動実行します)。設計書 §19 の「資産数百万件、毎秒万件級」と水平拡張も未検証です。
 
-性能の CI(`.github/workflows/perf.yml`)は手動と週次で動き、`perf/baseline.json` より p95 が 30% 以上悪化すると失敗します。基準値は同じコミットの 2 回の実行で、シナリオごとに悪い方の値です。同じコミットでもランナーの差で p95 が最大 47% 変わるので、小さな悪化は検知できません。基準値を更新するには、実行結果の artifact を `perf/baseline.json` として commit します。
+性能の CI(`.github/workflows/perf.yml`)は手動と週次で動きます。基準値(`perf/baseline.json`)より 30% 以上悪化したシナリオだけを最大 2 回まで再計測し、3 回のうち最も良い p95(監査の書き込みは最も良い件数)でも悪化していれば失敗します。各回の結果は artifact と job summary に出ます。ランナーの種類で全体の速さが変わるので、小さな悪化は検知できません。基準値を更新するには、実行結果の artifact を `perf/baseline.json` として commit します。
 
 ## セキュリティテストの範囲
 
@@ -1155,7 +1157,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - manifest のハッシュ、件数、`k`、Unlearning の証跡はすべて Data Plane の申告で、Control Plane は検証しません。Card の自由記述に貼られた値は検出できません(項目の長さの上限と運用で抑えています。監査ログには本文を残しません)
 - 継承の計算は Lineage を都度辿ります。リネージの削除 API は無いので、DB を直接修正した場合は `POST /ai/inheritance/recompute` を実行してください。Phase 10 より前の `data_class=ai` の資産も、この API で実効値を作ります(それまで ABAC は宣言値で判定します)。未登録の上流は `unregistered_upstream` で示しますが、機密度が不明なので実効値には反映できません
 - Phase 10 より前の `data_class=ai` の資産は、AI-001 が承認の記録を求めるようになったので不合格になります(`ai_kind` の設定と承認が必要です)
-- **検索は CI のランナーで p95 300ms の目標に届いていません**(410〜460ms。手元は 150ms)。`X-Total-Count` のために全行に部分一致をかけるのが原因で、索引で解消するには `pg_trgm`(PostgreSQL の拡張)が必要です。影響分析も CI では 1 秒を超えることがあります(620〜1,200ms。手元は 590ms)
+- **検索は開発機では目標を満たしますが、CI のランナーでは 310〜630ms で一度も 300ms に届いていません。** `X-Total-Count` のために全行に部分一致をかけるのが原因で、索引で解消するには `pg_trgm`(PostgreSQL の拡張)が必要です。影響分析(620〜1,500ms)と inbox(330〜530ms)も CI では目標を超える回があります。参照環境では未測定です
 - `POST /ai/rag/authorize` はヒットごとに ABAC を判定し、呼び出しごとに Lineage を辿ります。50 ヒットで p95 150ms の目標を満たしています(資産 10 万件で測定。100 万件は未検証)
 - **PostgreSQL 16 で検証済みです**(CI で SQLite と PostgreSQL の両方について pytest とマイグレーションの往復を毎回実行します)。残っている差異は次のとおりです
   - `ilike` の非 ASCII: PostgreSQL は `É` と `é` を同一視しますが、SQLite は ASCII だけです。検索結果が DB で変わるのはこの場合だけです
