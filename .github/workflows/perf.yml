@@ -2,6 +2,8 @@ name: Performance
 
 # Pull Request ごとには動かさない。基準値の 30% 以上の悪化で失敗する。
 on:
+  push:
+    branches: [tmp/perf-baseline]
   workflow_dispatch:
     inputs:
       profile:
