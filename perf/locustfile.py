@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import random
+import uuid
 from pathlib import Path
 
 from locust import HttpUser, constant, task
@@ -67,7 +68,22 @@ def audit_write(user):
     user.client.post(f"{API}/issues", json=body, headers=_headers("perf-writer", "steward"), name="audit_write")
 
 
-SCENARIOS = {f.__name__: f for f in (search, asset_detail, impact, rag_authorize, contract_check, inbox, products, audit_write)}
+def asset_update(user):
+    """検索の索引の対象の列 (名前、説明) の更新。pg_trgm の索引による書き込みの遅れを監視する。"""
+    suffix = uuid.uuid4().hex[:12]
+    body = {"name": f"perf {suffix}", "description": f"負荷試験の更新 {suffix}"}
+    user.client.patch(f"{API}/assets/{random.choice(MANIFEST['sample_asset_ids'])}", json=body, headers=_headers("perf-admin", "admin"), name="asset_update")
+
+
+def asset_register(user):
+    """新規の登録。再計測はプロセスが分かれるので、名前の重複を避けるために UUID を使う。"""
+    suffix = uuid.uuid4().hex
+    body = {"qualified_name": f"d00.perf.{suffix}", "name": f"perf {suffix[:12]}", "description": f"負荷試験の登録 {suffix[:12]}", "domain": "d00",
+            "data_class": "transactional", "sensitivity": "internal", "owner": "perf-admin", "tags": [random.choice(WORDS)]}
+    user.client.post(f"{API}/assets", json=body, headers=_headers("perf-admin", "admin"), name="asset_register")
+
+
+SCENARIOS = {f.__name__: f for f in (search, asset_detail, impact, rag_authorize, contract_check, inbox, products, audit_write, asset_update, asset_register)}
 
 
 class Scenario(HttpUser):

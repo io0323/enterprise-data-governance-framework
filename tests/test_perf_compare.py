@@ -1,6 +1,7 @@
 """Phase 14a: 負荷試験の結果と基準値の比較."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -180,9 +181,44 @@ def test_summary_marks_failures_and_missing_results():
     assert "性能目標の未達" in text
 
 
+def _declared_scenarios():
+    """scripts/perf/run.py の一覧。Locust が無い環境でも読めるよう、構文木から取り出す。"""
+    tree = ast.parse((ROOT / "scripts" / "perf" / "run.py").read_text(encoding="utf-8"))
+    return next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and node.targets[0].id == "SCENARIOS")
+
+
+def test_scenario_lists_agree():
+    tree = ast.parse((ROOT / "perf" / "locustfile.py").read_text(encoding="utf-8"))
+    functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+    assert {"asset_update", "asset_register"} <= set(_declared_scenarios()) <= functions
+
+
+WRITE_BASE = {"scenarios": {"asset_update": _row(100, rps=300), "asset_register": _row(100, rps=300)}}
+
+
+@pytest.mark.parametrize("name", ["asset_update", "asset_register"])
+@pytest.mark.parametrize("latencies, passes, best", [
+    ([500, 100], True, 100),            # 1 回目だけ悪化
+    ([500, 400, 450], False, 400),      # 3 回とも悪化
+    ([129], True, 129),                 # 30% 未満は再計測しない
+])
+def test_write_scenarios_are_judged_on_latency(name, latencies, passes, best):
+    """書き込みのシナリオも p95 で判定する (件数は見ない)。"""
+    other = "asset_register" if name == "asset_update" else "asset_update"
+    runner = FakeRunner(**{name: [_row(p, rps=1) for p in latencies], other: [_row(100, rps=300)]})
+    results = compare.measure_with_retries(runner, (name, other), WRITE_BASE)
+    assert (compare.regressions(results, WRITE_BASE) == []) is passes
+    assert results["scenarios"][name]["p95_ms"] == best and len(results["attempts"][name]) == len(latencies)
+    assert f"| {name} |" in compare.markdown_summary(results, WRITE_BASE)
+
+
+def test_write_scenarios_have_no_slo_target_yet():
+    assert not {"asset_update", "asset_register"} & (set(compare.TARGET_P95_MS) | set(compare.TARGET_MIN_RPS))
+
+
 def test_committed_baseline_covers_every_scenario():
     """perf.yml は基準値が無いと比較を省くので、基準値の有無と網羅はここで確認する。"""
     baseline = json.loads((Path(__file__).resolve().parents[1] / "perf" / "baseline.json").read_text(encoding="utf-8"))
     assert baseline["profile"] == "standard"
-    assert set(baseline["scenarios"]) == {"search", "asset_detail", "impact", "rag_authorize", "contract_check", "inbox", "products", "audit_write"}
+    assert set(baseline["scenarios"]) == set(_declared_scenarios())
     assert all(row["requests"] > 0 and row["error_rate"] == 0 for row in baseline["scenarios"].values())
