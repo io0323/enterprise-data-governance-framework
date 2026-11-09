@@ -1031,14 +1031,14 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 
 条件は PostgreSQL 16、資産 10 万件(restricted 5%)、ドメイン 50、Lineage 深さ 10 の分岐、Product 500、承認待ち 1,000 件です。手順、原因、判断の記録は [docs/operations/performance.md](docs/operations/performance.md) にあります。
 
-| シナリオ | 目標 | 開発機の結果 | 参照環境 | CI の p95(回帰の検出用。13 回の範囲) |
+| シナリオ | 目標 | 開発機の結果 | 参照環境 | CI の p95(回帰の検出用。17 回の範囲) |
 |---|---|---|---|---|
-| 検索 | p95 300ms | 達成(150ms) | 未測定 | 310〜630ms |
+| 検索 | p95 300ms | 達成(55ms) | 未測定 | 120〜250ms(`pg_trgm` の導入後の 4 回) |
 | 資産詳細 | p95 200ms | 達成(6ms) | 未測定 | 6〜16ms |
-| 影響分析(深さ 10) | p95 1s | 達成(590ms) | 未測定 | 620〜1,500ms(目標ちょうどの 1,000ms が 2 回) |
+| 影響分析(深さ 10) | p95 1s | 達成(590ms) | 未測定 | 620〜1,500ms(目標ちょうどの 1,000ms が 3 回) |
 | RAG 認可(50 ヒット) | p95 150ms | 達成(27ms) | 未測定 | 34〜83ms |
-| Contract check | p95 1s | 達成(300ms) | 未測定 | 410〜850ms |
-| inbox(1,000 件) | p95 500ms | 達成(280ms) | 未測定 | 330〜530ms |
+| Contract check | p95 1s | 達成(300ms) | 未測定 | 380〜850ms |
+| inbox(1,000 件) | p95 500ms | 達成(280ms) | 未測定 | 330〜560ms |
 | Product 一覧(500 件) | p95 2s | 達成(240ms) | 未測定 | 250〜360ms |
 | 監査の書き込み | 200 件/秒以上 | 達成(277 件/秒) | 未測定 | CI では 141〜329 件/秒。ばらつきが大きく判定は保留 |
 
@@ -1113,7 +1113,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - **ページネーション**: 一覧 API はすべて `limit`(1〜1000、既定 100。品質実行履歴のみ既定 20)と `offset` を受け付けます。後方互換のため本文は配列のままで、総件数は `X-Total-Count`、前後ページは `Link`(`rel="next"`/`"prev"`)ヘッダで返します。
 - **request_id**: `X-Request-ID` を受け取れば引き継ぎ(英数字と `._:-`、128 文字以内)、なければ採番してレスポンスヘッダとすべてのログ行に付けます。監査イベントにも記録し、ハッシュの対象に含めます(`GET /audit/events?request_id=...` で突き合わせできます)。
 - **入力の上限**: 本文は `EDGF_MAX_BODY_BYTES`(既定 10 MiB)まで(超えると 413 `payload-too-large`)。JSON の入れ子は 64 段まで(超えると 422 `json-too-deep`)。
-- **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
+- **ヘルスチェック**: `/health` = liveness(プロセスの応答のみ)、`/ready` = readiness(DB 疎通、スキーマが head か、ポリシー構文が有効か)。検索の索引が無い場合は `checks.search_index: degraded` を警告として示します(503 にはしません)。準備ができていない場合は 503 の Problem で返し、`checks` に原因を含めます。
 
 ## アーキテクチャ上の判断
 
@@ -1134,6 +1134,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 | `pytest-cov` | 開発 | カバレッジ計測(services/ 95% 以上を CI で検査) |
 | `cryptography` | 必須(直接指定に変更) | `PyJWT[crypto]` の依存として導入済み。Phase 14 で監査アンカーの Ed25519 署名に直接使い、既知の脆弱性を避けるため 50 以上を指定します |
 | `locust` | 任意(`perf`) | 負荷試験(MIT)。Python でシナリオを書け、結果を CSV で比較できます |
+| `pg_trgm`(PostgreSQL の contrib 拡張) | 任意(PostgreSQL のみ) | 検索の部分一致の GIN 索引。主要なマネージド PostgreSQL で使えるので Cloud Agnostic を保てます。使えなければ従来の方式に戻ります(結果は同じで、`/ready` に警告を出します) |
 | `pip-audit` / `bandit` | 任意(`security`) | 依存関係の脆弱性と静的解析(Apache-2.0)。CI で実行します |
 
 ## 既知の制約と次フェーズ
@@ -1157,7 +1158,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - manifest のハッシュ、件数、`k`、Unlearning の証跡はすべて Data Plane の申告で、Control Plane は検証しません。Card の自由記述に貼られた値は検出できません(項目の長さの上限と運用で抑えています。監査ログには本文を残しません)
 - 継承の計算は Lineage を都度辿ります。リネージの削除 API は無いので、DB を直接修正した場合は `POST /ai/inheritance/recompute` を実行してください。Phase 10 より前の `data_class=ai` の資産も、この API で実効値を作ります(それまで ABAC は宣言値で判定します)。未登録の上流は `unregistered_upstream` で示しますが、機密度が不明なので実効値には反映できません
 - Phase 10 より前の `data_class=ai` の資産は、AI-001 が承認の記録を求めるようになったので不合格になります(`ai_kind` の設定と承認が必要です)
-- **検索は開発機では目標を満たしますが、CI のランナーでは 310〜630ms で一度も 300ms に届いていません。** `X-Total-Count` のために全行に部分一致をかけるのが原因で、索引で解消するには `pg_trgm`(PostgreSQL の拡張)が必要です。影響分析(620〜1,500ms)と inbox(330〜530ms)も CI では目標を超える回があります。参照環境では未測定です
+- 検索は `pg_trgm` の索引を使い、CI のランナーでも p95 120〜250ms です(参照環境では未測定)。ほぼ全行に一致する 3 文字以上の語は索引の効果が無く、開発機で 150〜215ms と、索引の導入前(約 95ms)より遅くなります。拡張を使えない環境では索引なしで同じ結果を返し、`/ready` の `checks` に `search_index: degraded` を出します。影響分析(620〜1,500ms)と inbox(330〜560ms)は CI で目標を超える回があります
 - `POST /ai/rag/authorize` はヒットごとに ABAC を判定し、呼び出しごとに Lineage を辿ります。50 ヒットで p95 150ms の目標を満たしています(資産 10 万件で測定。100 万件は未検証)
 - **PostgreSQL 16 で検証済みです**(CI で SQLite と PostgreSQL の両方について pytest とマイグレーションの往復を毎回実行します)。残っている差異は次のとおりです
   - `ilike` の非 ASCII: PostgreSQL は `É` と `é` を同一視しますが、SQLite は ASCII だけです。検索結果が DB で変わるのはこの場合だけです
