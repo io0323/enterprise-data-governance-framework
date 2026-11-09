@@ -1,0 +1,39 @@
+# ローカル開発用の IdP (Keycloak)。開発用のツールで、Control Plane の実行時の依存ではない。本番では使わないこと。
+#   docker compose -f docker-compose.yml -f docker-compose.idp.yml up --build
+#   http://localhost:8000/ui/ を開き、README のテストユーザーでログインする
+# Control Plane の設定は OIDC の標準項目だけで、Keycloak 固有の処理は無い (別の IdP にも同じ項目で接続できる)。
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: edgf-dev-only
+      KC_HEALTH_ENABLED: "true"
+      # ブラウザから見える URL に固定する (トークンの iss がこの値になる)
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./docker/keycloak/edgf-realm.json:/opt/keycloak/data/import/edgf-realm.json:ro
+    ports: ["127.0.0.1:8180:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+  api:
+    environment:
+      EDGF_ENV: development
+      EDGF_AUTH_MODE: jwt
+      EDGF_OIDC_ISSUER: http://localhost:8180/realms/edgf
+      EDGF_OIDC_AUDIENCE: edgf-control-plane
+      # コンテナの中からは keycloak のサービス名で鍵を取得する
+      EDGF_OIDC_JWKS_URL: http://keycloak:8080/realms/edgf/protocol/openid-connect/certs
+      EDGF_CLAIM_SUBJECT: preferred_username
+      EDGF_CLAIM_ROLES: roles
+      EDGF_CLAIM_DOMAINS: domains
+      EDGF_CLAIM_CLEARANCE: clearance
+      EDGF_UI_OIDC_CLIENT_ID: edgf-ui
+      EDGF_UI_OIDC_SCOPES: openid,profile
+    depends_on:
+      keycloak: {condition: service_healthy}

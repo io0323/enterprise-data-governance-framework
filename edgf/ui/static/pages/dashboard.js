@@ -97,7 +97,7 @@ export function dashboardPage() {
     asyncSection(t("maturity.title"), async () => maturityView((await data).kpi)),
     asyncSection(t("kpi.trend"), async () => trends((await data).history)),
     asyncSection(t("kpi.domains"), async () => domainTable((await get("/kpi/history", {scope: "domains", limit: 1000})).data)),
-    asyncSection(t("kpi.title"), async () => {
+    asyncSection(t("kpi.areas"), async () => {
       const {kpi} = await data;
       return h("div", {class: "grid"},
         group(t("kpi.ai"), kpi, ["ai_asset_count", "ai_training_approved_rate", "ai_remediation_pending_count", "ai_card_complete_rate", "ai_inheritance_violation_count"]),

@@ -36,6 +36,7 @@ include = ["edgf*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["e2e: 実ブラウザの E2E テスト (EDGF_E2E=1 のときだけ収集する)"]
 pythonpath = ["."]
 
 [tool.coverage.run]

@@ -260,5 +260,6 @@
  "jobs.last_status": "Result",
  "jobs.last_count": "Count",
  "jobs.failures": "Consecutive failures",
- "jobs.overdue": "Overdue"
+ "jobs.overdue": "Overdue",
+ "kpi.areas": "KPIs by area"
 }

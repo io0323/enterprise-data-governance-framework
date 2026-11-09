@@ -260,5 +260,6 @@
  "jobs.last_status": "結果",
  "jobs.last_count": "件数",
  "jobs.failures": "連続の失敗",
- "jobs.overdue": "遅延"
+ "jobs.overdue": "遅延",
+ "kpi.areas": "領域別の KPI"
 }

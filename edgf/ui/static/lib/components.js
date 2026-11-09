@@ -6,7 +6,7 @@ import {ApiError, offsetOf} from "./api.js";
 export const PAGE_SIZE = 25;
 
 export function loading() {
-  return h("p", {class: "muted", role: "status"}, t("common.loading"));
+  return h("p", {class: "muted loading", role: "status"}, t("common.loading"));
 }
 
 export function formatDate(value) {

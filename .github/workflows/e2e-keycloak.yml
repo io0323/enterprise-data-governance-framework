@@ -1,0 +1,29 @@
+name: E2E (Keycloak)
+
+# Keycloak のイメージの取得とビルドに時間がかかるので、手動で起動する
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keycloak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,e2e]"
+      - run: playwright install --with-deps chromium
+      - name: 起動
+        run: docker compose -f docker-compose.yml -f docker-compose.idp.yml up --build -d --wait
+      - name: E2E
+        env:
+          EDGF_E2E_KEYCLOAK: http://localhost:8000
+        run: pytest -q tests/e2e_keycloak
+      - name: ログ
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.idp.yml logs --tail 200
