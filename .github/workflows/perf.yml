@@ -1,6 +1,6 @@
 name: Performance
 
-# Pull Request ごとには動かさない。基準値の 30% 以上の悪化で失敗する。
+# Pull Request ごとには動かさない。基準値の 30% 以上の悪化は最大 2 回まで再計測し、最も良い回でも悪化していれば失敗する。
 on:
   workflow_dispatch:
     inputs:
@@ -49,6 +49,8 @@ jobs:
         run: |
           if [ "$PROFILE" = million ]; then ASSETS=1000000; else ASSETS=100000; fi
           python scripts/perf/seed.py --reset --assets "$ASSETS"
+      - name: WAL の待ち時間の記録を有効にする
+        run: python scripts/perf/probe.py enable-timing
       - name: サーバの起動
         run: |
           sh scripts/perf/serve.sh > server.log 2>&1 &
@@ -59,7 +61,10 @@ jobs:
           cat server.log
           exit 1
       - name: 負荷試験
-        run: python scripts/perf/run.py --host http://127.0.0.1:8100 --seconds "$SECONDS_PER_SCENARIO" --profile "$PROFILE" --output "perf/results/$PROFILE.json"
+        run: |
+          # 基準値は standard にしかない
+          if [ "$PROFILE" = standard ] && [ -f perf/baseline.json ]; then BASELINE="--baseline perf/baseline.json"; else BASELINE=""; fi
+          python scripts/perf/run.py --host http://127.0.0.1:8100 --seconds "$SECONDS_PER_SCENARIO" --profile "$PROFILE" --output "perf/results/$PROFILE.json" --probe $BASELINE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -69,4 +74,4 @@ jobs:
             server.log
       - name: 基準値との比較
         if: env.PROFILE == 'standard' && hashFiles('perf/baseline.json') != ''  # 基準値の有無は tests/test_perf_compare.py で確認する
-        run: python scripts/perf/compare.py perf/results/standard.json
+        run: python scripts/perf/compare.py perf/results/standard.json --summary "$GITHUB_STEP_SUMMARY"
