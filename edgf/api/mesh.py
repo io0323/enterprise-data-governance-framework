@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import or_, select
+from sqlalchemy import false, or_, select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -85,9 +85,16 @@ def create_product(body: ProductIn, db: Session = Depends(get_session), principa
 
 @router.get("/products", response_model=list[ProductOut])
 def list_products(request: Request, response: Response, domain: str | None = None, status: str | None = None,
-                  owner: str | None = None, page: Page = Depends(page_params()), db: Session = Depends(get_session),
+                  owner: str | None = None, asset_id: str | None = None, page: Page = Depends(page_params()), db: Session = Depends(get_session),
                   principal: Principal = Depends(get_principal)):
+    """asset_id を指定すると、その資産を Output Port に持つ Product に絞る (閲覧できない資産なら結果は空)。"""
     stmt = select(DataProduct).order_by(DataProduct.domain, DataProduct.name)
+    if asset_id is not None:
+        asset = db.get(DataAsset, asset_id)
+        if asset is None or not authz.can_read(db, principal, asset):
+            stmt = stmt.where(false())
+        else:
+            stmt = stmt.where(DataProduct.id.in_(select(OutputPort.product_id).where(OutputPort.asset_id == asset_id)))
     for column, value in ((DataProduct.domain, domain), (DataProduct.status, status), (DataProduct.owner, owner)):
         if value is not None:
             stmt = stmt.where(column == value)

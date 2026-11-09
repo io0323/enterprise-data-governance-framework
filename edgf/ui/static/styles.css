@@ -55,3 +55,13 @@ th { background: #eef1f5; font-weight: 600; white-space: nowrap; }
 .filters label { display: flex; flex-direction: column; font-size: .9rem; gap: 2px; }
 .filters label.inline { flex-direction: row; align-items: center; gap: 6px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; overflow-wrap: anywhere; }
+.chart { width: 100%; height: auto; max-width: 720px; display: block; }
+.chart text { font-size: 11px; fill: var(--muted); }
+.chart .axis { stroke: var(--line); }
+.chart .series { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart .series-1 { stroke: #a4560a; }
+.chart .series-2 { stroke: #17643a; }
+.chart .point { fill: var(--accent); }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.page-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.page-head h1 { margin: 0 8px 0 0; }
