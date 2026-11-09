@@ -1,7 +1,7 @@
 {
   "profile": "standard",
   "seconds": 30,
-  "note": "GitHub Actions ubuntu-24.04 の同じコミットの複数回の実行で、シナリオごとに悪い方の値 (ランナーの差で p95 が大きく変わるため)。検索だけ pg_trgm の導入後の 4 回から取得",
+  "note": "GitHub Actions ubuntu-24.04 の複数回の実行に基づく値。更新の規則と各行の経緯は docs/operations/performance.md を参照",
   "scenarios": {
     "search": {
       "p50_ms": 120.0,
@@ -40,12 +40,12 @@
       "users": 5
     },
     "contract_check": {
-      "p50_ms": 190.0,
-      "p95_ms": 570.0,
-      "p99_ms": 630.0,
-      "rps": 16.67,
+      "p50_ms": 230.0,
+      "p95_ms": 710.0,
+      "p99_ms": 770.0,
+      "rps": 13.39,
       "error_rate": 0.0,
-      "requests": 484,
+      "requests": 387,
       "users": 5
     },
     "inbox": {
@@ -74,6 +74,24 @@
       "error_rate": 0.0,
       "requests": 6214,
       "users": 16
+    },
+    "asset_update": {
+      "p50_ms": 19.0,
+      "p95_ms": 32.0,
+      "p99_ms": 61.0,
+      "rps": 233.79,
+      "error_rate": 0.0,
+      "requests": 4446,
+      "users": 5
+    },
+    "asset_register": {
+      "p50_ms": 25.0,
+      "p95_ms": 43.0,
+      "p99_ms": 65.0,
+      "rps": 182.12,
+      "error_rate": 0.0,
+      "requests": 3468,
+      "users": 5
     }
   }
 }
