@@ -329,7 +329,7 @@ def _first_mismatch(db: Session, anchors: Sequence[Anchor]) -> int | None:
     seqs = sorted({seq for seq, _ in expected})
     actual: dict[int, str] = {}
     for start in range(0, len(seqs), CHUNK):
-        actual.update(db.execute(select(AuditEvent.seq, AuditEvent.hash).where(AuditEvent.seq.in_(seqs[start:start + CHUNK]))).tuples().all())
+        actual.update({row.seq: row.hash for row in db.execute(select(AuditEvent.seq, AuditEvent.hash).where(AuditEvent.seq.in_(seqs[start:start + CHUNK])))})
     return next((seq for seq, value in sorted(expected) if actual.get(seq) != value), None)
 
 

@@ -238,9 +238,6 @@ def test_many_anchors_are_all_compared(client, anchor_settings, monkeypatch):
         assert client.post(f"{API}/domains", headers=ADMIN, json={"name": f"m{i}"}).status_code == 201
         assert anchor_now()["anchored"] == 1
     assert verify_api(client)["anchor"]["status"] == "ok"
-    with engine.begin() as conn:
-        seq = conn.execute(text("SELECT min(seq) FROM audit_anchors")).scalar()
-        conn.execute(text("UPDATE audit_anchors SET hash = :h WHERE seq > :s"), {"h": "f" * 64, "s": seq + 10**6})
     with SessionLocal() as db:
         anchors = [Anchor.of_row(r) for r in db.scalars(select(AuditAnchor)).all()]
         assert audit_anchor._first_mismatch(db, anchors) is None

@@ -5,7 +5,7 @@ import json
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import String, cast, or_, select
+from sqlalchemy import func, String, cast, or_, select
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -101,11 +101,13 @@ def search_assets(
             or_(GlossaryTerm.name.ilike(like, escape=_LIKE_ESCAPE), GlossaryTerm.definition.ilike(like, escape=_LIKE_ESCAPE)))
         # tags は JSON 配列。要素の完全一致 (大文字小文字無視) を、保存時と同じ JSON 表現の部分一致で DB 側判定する
         tag_like = _contains(json.dumps(q))
-        stmt = stmt.where(or_(DataAsset.name.ilike(like, escape=_LIKE_ESCAPE),
-                              DataAsset.qualified_name.ilike(like, escape=_LIKE_ESCAPE),
-                              DataAsset.description.ilike(like, escape=_LIKE_ESCAPE),
+        # ILIKE と同じ結果で、パターンを行ごとに小文字にしない分だけ速い (件数の取得で全行を見る。docs/operations/performance.md)
+        lowered = func.lower(like)
+        stmt = stmt.where(or_(func.lower(DataAsset.name).like(lowered, escape=_LIKE_ESCAPE),
+                              func.lower(DataAsset.qualified_name).like(lowered, escape=_LIKE_ESCAPE),
+                              func.lower(DataAsset.description).like(lowered, escape=_LIKE_ESCAPE),
                               DataAsset.id.in_(term_assets),
-                              cast(DataAsset.tags, String).ilike(tag_like, escape=_LIKE_ESCAPE)))
+                              func.lower(cast(DataAsset.tags, String)).like(func.lower(tag_like), escape=_LIKE_ESCAPE)))
     for col, val in (("domain", domain), ("data_class", data_class), ("ai_kind", ai_kind), ("sensitivity", sensitivity),
                      ("owner", owner), ("certification", certification), ("lifecycle_state", lifecycle_state),
                      ("is_cde", is_cde)):
