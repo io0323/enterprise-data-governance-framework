@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -38,7 +38,7 @@ def decisions_of(db: Session, req: ApprovalRequest) -> Sequence[ApprovalDecision
 
 def create(db: Session, actor: str, *, type_name: str, requested_by: str, target_type: str, target_id: str,
            asset: DataAsset | None = None, reason: str = "", payload: Mapping[str, Any] | None = None,
-           steps: Sequence[Step] | None = None) -> ApprovalRequest:
+           steps: Sequence[Step] | None = None, due_at: datetime | None = None) -> ApprovalRequest:
     definition = approval_types.TYPES[type_name]
     resolved = tuple(steps) if steps is not None else definition.steps
     if not resolved:
@@ -47,7 +47,7 @@ def create(db: Session, actor: str, *, type_name: str, requested_by: str, target
     req = ApprovalRequest(type=type_name, target_type=target_type, target_id=target_id, asset_id=asset.id if asset else None,
                           requested_by=requested_by, reason=reason, payload=dict(payload or {}),
                           steps=[s.as_dict() for s in resolved], current_step=0, status=A.PENDING.value,
-                          due_at=approval_types.add_business_days(now, definition.sla_business_days))
+                          due_at=due_at or approval_types.add_business_days(now, definition.sla_business_days))
     db.add(req)
     db.flush()
     audit.record(db, actor, "approval.request", "approval", req.id, {
@@ -155,7 +155,7 @@ def escalate_overdue(db: Session, actor: str) -> dict[str, Any]:
     now = utcnow()
     opened: list[str] = []
     escalated: list[str] = []
-    overdue = [r for r in pending(db) if r.due_at < now]
+    overdue = [r for r in pending(db) if r.due_at < now and not approval_types.TYPES[r.type].sla_managed_by_source]
     for req in overdue:
         asset = db.get(DataAsset, req.asset_id) if req.asset_id else None
         ref = f"approval:{req.id}"

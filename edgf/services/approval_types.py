@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -45,7 +45,7 @@ class ApprovalType:
     on_approved: str | None = None  # "module:function"。循環 import を避けるため名前で参照する
     on_rejected: str | None = None
     on_cancelled: str | None = None
-    extra: Mapping[str, Any] = field(default_factory=dict)
+    sla_managed_by_source: bool = False  # 期限の処理を種別の側で行う (棚卸は猶予期間があるので共通の SLA を使わない)
 
 
 def _validate(definition: ApprovalType) -> None:
@@ -87,6 +87,15 @@ BUNDLES = "edgf.services.policy_bundles"
 register(ApprovalType(
     "policy_change", "Policy の変更 (§16 Policy。ステップは変更の範囲で決まる)", sla_business_days=10,
     on_approved=f"{BUNDLES}:on_approved", on_rejected=f"{BUNDLES}:on_rejected", on_cancelled=f"{BUNDLES}:on_rejected"))
+
+
+REVIEWS = "edgf.services.reviews"
+register(ApprovalType(
+    "access_review", "四半期の権限の棚卸 (§11。承認は継続、却下は取り消し)", steps=(Step("owner", "asset_owner"),), sla_managed_by_source=True,
+    on_approved=f"{REVIEWS}:on_keep", on_rejected=f"{REVIEWS}:on_revoke", on_cancelled=f"{REVIEWS}:on_cancelled"))
+register(ApprovalType(
+    "ownership_attestation", "年次の Owner・Steward・分類・保持期間の証明 (§16 Review)", steps=(Step("owner", "asset_owner"),), sla_managed_by_source=True,
+    on_approved=f"{REVIEWS}:on_attested", on_rejected=f"{REVIEWS}:on_disputed", on_cancelled=f"{REVIEWS}:on_cancelled"))
 
 
 def resolve(path: str | None) -> Callable[..., None] | None:

@@ -814,6 +814,47 @@ class WebhookDelivery(Base):
     dead_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class ReviewCampaign(Base):
+    """§16 Review / §11 定期棚卸。同じ種別と期間のキャンペーンは 1 つだけ。"""
+    __tablename__ = "review_campaigns"
+    __table_args__ = (UniqueConstraint("kind", "period", name="uq_review_campaign"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(30))  # access_review / ownership_attestation / policy_review
+    period: Mapped[str] = mapped_column(String(10))  # 2026-Q4 / 2026
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open / closed
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    grace_until: Mapped[datetime] = mapped_column(DateTime)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ReviewItem(Base):
+    """レビューの 1 項目。判断は承認エンジンの案件 (approval_id) で行う。"""
+    __tablename__ = "review_items"
+    __table_args__ = (UniqueConstraint("campaign_id", "target_type", "target_id", name="uq_review_item"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("review_campaigns.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(30))  # access_grant / subscription / asset
+    target_id: Mapped[str] = mapped_column(String(36))
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), index=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), unique=True)
+    # pending / kept / revoked / auto_revoked / attested / disputed / unattested / cancelled
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PolicyReview(Base):
+    """§16 Policy の年次見直しの記録。内容を変えなくても、見直したことを証跡に残す。"""
+    __tablename__ = "policy_reviews"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    policy_id: Mapped[str] = mapped_column(String(50), index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(200))
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

@@ -1212,3 +1212,42 @@ class DeliveryOut(ORM):
     last_error: str | None
     delivered_at: datetime | None
     dead_at: datetime | None
+
+
+class ReviewDecisionIn(MeshInput):
+    keep: bool = Field(description="棚卸: 継続か取り消しか。証明: 正しいか修正が必要か")
+    comment: str = Field(default="", max_length=1000, description="取り消しや修正が必要なときは必須")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ReviewDecisionIn:
+        if not self.keep and not self.comment.strip():
+            raise ValueError("取り消しや修正が必要なときは comment が必要です")
+        return self
+
+
+class ReviewCampaignOut(ORM):
+    id: str
+    kind: str
+    period: str
+    status: str
+    due_at: datetime
+    grace_until: datetime
+    item_count: int
+    created_at: datetime
+    closed_at: datetime | None
+
+
+class ReviewItemOut(ORM):
+    id: str
+    campaign_id: str
+    target_type: str
+    target_id: str
+    asset_id: str
+    approval_id: str
+    status: str
+    decided_by: str | None
+    decided_at: datetime | None
+
+
+class PolicyReviewIn(MeshInput):
+    note: str = Field(default="", max_length=1000)

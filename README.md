@@ -192,6 +192,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `policy.propose` | Policy の変更の提案 (ドメイン内の Owner は Domain Policy だけ) | ロール: admin, committee<br>ドメイン内ロール: owner |  |
 | `policy.publish` | 承認済みの Policy の公開 | ロール: committee | ✓ |
 | `policy.reload` | ディスクの内容から Policy の変更を提案する (即時には反映しない) | ロール: admin, committee |  |
+| `policy.review` | Policy の年次見直しの記録 | ロール: committee | ✓ |
 | `privacy.consent.check` | 目的内利用の判定と同意履歴の参照 | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |
 | `privacy.consent.write` | 同意の取得・撤回の記録 (ドメインは Purpose の所属で判定) | ロール: admin, committee, consent_collector<br>ドメイン内ロール: steward |  |
 | `privacy.erasure.approve` | 消去の対象範囲の承認 (Owner は自分の資産の分のみ) | ロール: committee<br>対象の owner | ✓ |
@@ -209,6 +210,8 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `quality.run` | 品質検査の実行 (パイプラインからの送信を含む) | ドメイン内ロール: custodian, owner, steward<br>対象の custodian / owner / steward |  |
 | `refdata.publish` | Reference Data の版の公開 | ロール: committee<br>対象の owner | ✓ |
 | `refdata.write` | Reference Data の下書きの作成 | ドメイン内ロール: owner, steward |  |
+| `review.decide` | 棚卸と証明の判断 (対象資産の Owner) | 対象の owner | ✓ |
+| `review.read` | キャンペーンと全項目の参照 | ロール: admin, committee |  |
 | `webhook.manage` | Webhook の配信先の登録・更新・参照 | ロール: admin |  |
 
 これ以外の参照系 API(資産・Issue・KPI・ポリシー・リネージなど)は、認証済みの全員が使えます。資産を含む結果は、次の ABAC で絞り込みます。

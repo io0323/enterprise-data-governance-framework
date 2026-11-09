@@ -14,8 +14,8 @@ from edgf.deps import get_principal, load_asset
 from edgf.models import DataAsset, PolicyBundle, PolicyException, to_naive_utc, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (ExceptionDecision, ExceptionIn, ExceptionOut, PolicyBundleDetail, PolicyBundleOut, PolicyProposalIn,
-                          PolicyRollbackIn)
-from edgf.services import audit, issues, policy_bundles
+                          PolicyReviewIn, PolicyRollbackIn)
+from edgf.services import audit, issues, policy_bundles, reviews
 from edgf.services.policy import evaluate_all, evaluate_asset, get_policies, read_disk_files
 from edgf.services.policy_bundles import PolicyBundleConflict, PolicyBundleInvalid
 
@@ -156,6 +156,16 @@ def evaluate(open_issues: bool = False, db: Session = Depends(get_session), prin
                  {"compliance_rate": report["compliance_rate"], "issues_opened": opened})
     report["issues_opened"] = opened
     return report
+
+
+@router.post("/{policy_id}/review", status_code=201)
+def review_policy(policy_id: str, body: PolicyReviewIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """年次見直しを記録する (内容を変えない場合も、見直したことを証跡に残す。§16 Policy)。"""
+    authz.require(db, principal, "policy.review", entity_type="policy", entity_id=policy_id)
+    if policy_id not in {p.id for p in get_policies(db=db)}:
+        raise HTTPException(404, f"policy not found: {policy_id}")
+    row = reviews.record_policy_review(db, principal.audit_actor, policy_id, reviewed_by=principal.subject, note=body.note)
+    return {"policy_id": policy_id, "reviewed_by": row.reviewed_by, "reviewed_at": row.reviewed_at}
 
 
 @router.post("/exceptions", response_model=ExceptionOut, status_code=201)

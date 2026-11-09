@@ -180,6 +180,10 @@ PERMISSIONS: Mapping[str, Rule] = {
     # イベント配信 (§16)
     "webhook.manage": rule(roles=(ADMIN,), description="Webhook の配信先の登録・更新・参照"),
     "outbox.redeliver": rule(roles=(ADMIN,), description="デッドレターの参照と手動の再送"),
+    # 定期レビュー (§16 Review / §11 四半期の棚卸)
+    "review.decide": rule(relations=("owner",), approval=True, description="棚卸と証明の判断 (対象資産の Owner)"),
+    "review.read": rule(roles=(ADMIN, COMMITTEE), description="キャンペーンと全項目の参照"),
+    "policy.review": rule(roles=(COMMITTEE,), approval=True, description="Policy の年次見直しの記録"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
