@@ -6,12 +6,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from edgf.enums import DataClass, DatasetVersionStatus, RemediationStatus
-from edgf.models import (AuditEvent, DataAsset, DatasetVersion, GoldenRecord, Issue, MdmReview, MdmXref, ModelRemediation,
-                         utcnow)
+from edgf.enums import DataClass, DatasetVersionStatus, ProductStatus, RemediationStatus, SubscriptionStatus
+from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, GoldenRecord, Issue, MdmReview, MdmXref, MeshSubscription,
+                         ModelRemediation, utcnow)
 from edgf.services.ai import card_complete
 from edgf.services.ai_inherit import compute as compute_inherited, is_violation
 from edgf.services.issues import OPEN_STATES
+from edgf.services.mesh_datsis import passes as datsis_passes
 from edgf.services.policy import evaluate_asset
 from edgf.services.quality import latest_run
 
@@ -37,6 +38,28 @@ def _ai_metrics(db: Session, assets: list[DataAsset], now: datetime) -> dict:
         "ai_remediation_pending_count": pending,
         "ai_card_complete_rate": _rate(sum(1 for a in ai_assets if card_complete(db, a)), len(ai_assets)),
         "ai_inheritance_violation_count": sum(1 for a in ai_assets if is_violation(a, compute_inherited(db, a))),
+    }
+
+
+def _mesh_metrics(db: Session, domain: str | None, asset_ids: list[str]) -> dict:
+    """§15 Data Mesh の KPI。ドメイン別の内訳は /kpi/domains で返す。成熟度の判定 (§20) には使わない。"""
+    stmt = select(DataProduct).where(DataProduct.status != ProductStatus.RETIRED.value)
+    if domain:
+        stmt = stmt.where(DataProduct.domain == domain)
+    products = db.scalars(stmt).all()
+    active = select(func.count()).select_from(MeshSubscription).join(DataProduct, MeshSubscription.product_id == DataProduct.id) \
+        .where(MeshSubscription.status == SubscriptionStatus.ACTIVE.value)
+    drift = select(func.count()).select_from(Issue).where(Issue.source_ref.like("mesh-drift:%"), Issue.status.in_(OPEN_STATES))
+    if domain:
+        active = active.where(DataProduct.domain == domain)
+        drift = drift.where(Issue.asset_id.in_(asset_ids))
+    rejected = db.scalars(select(AuditEvent.payload).where(AuditEvent.action == "mesh.contract.publish_rejected")).all()
+    return {
+        "mesh_product_published_count": sum(1 for p in products if p.status == ProductStatus.PUBLISHED.value),
+        "mesh_datsis_pass_rate": _rate(sum(1 for p in products if datsis_passes(db, p)), len(products)),
+        "mesh_breaking_rejected_count": sum(1 for r in rejected if r.get("breaking") and (not domain or r.get("domain") == domain)),
+        "mesh_subscription_active_count": db.scalar(active) or 0,
+        "mesh_schema_drift_issue_count": db.scalar(drift) or 0,
     }
 
 
@@ -108,6 +131,7 @@ def compute(db: Session, domain: str | None = None) -> dict:
         "mdm_duplicate_rate": _rate(auto_merged + steward_merged, len(links)),  # ソースのうち既存に統合された割合
         "mdm_auto_merge_rate": _rate(auto_merged, auto_merged + steward_merged),  # 統合のうち自動マージの割合
         **_ai_metrics(db, list(assets), now),
+        **_mesh_metrics(db, domain, ids),
     }
 
 

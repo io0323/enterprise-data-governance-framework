@@ -20,6 +20,12 @@ CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
                "anonymization_k", "pseudonymization_controls", "pii_columns_documented", "mdm_entity_defined",
                "ai_training_approved", "ai_inheritance", "ai_rag_certified_sources", "ai_embedding_protected"}
+# §15 Data Product の出荷基準 (DATSIS)。評価の対象が Data Product のもの (target: product)
+MESH_CHECK_TYPES = {"mesh_discoverable", "mesh_addressable", "mesh_trustworthy", "mesh_self_describing", "mesh_interoperable",
+                    "mesh_secure"}
+# target: product で使える check type。Domain Policy はこれらで基準を追加できる
+PRODUCT_CHECK_TYPES = MESH_CHECK_TYPES | {"required_fields", "field_in"}
+ASSET, PRODUCT = "asset", "product"
 
 
 class PolicyLoadError(Exception):
@@ -36,8 +42,10 @@ class Policy:
     domain: str | None = None
     when: dict = field(default_factory=dict)
     design_ref: str = ""
+    target: str = ASSET
 
-    def applies_to(self, asset: DataAsset) -> bool:
+    def applies_to(self, asset: Any) -> bool:
+        """asset は DataAsset か DataProduct (target による)。どちらも domain を持つ。"""
         if self.scope == "domain" and asset.domain != self.domain:
             return False
         for key, expected in self.when.items():
@@ -51,7 +59,7 @@ class Policy:
 
     def as_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "severity": self.severity, "scope": self.scope,
-                "domain": self.domain, "when": self.when, "check": self.check, "design_ref": self.design_ref}
+                "domain": self.domain, "when": self.when, "check": self.check, "design_ref": self.design_ref, "target": self.target}
 
 
 def load_policies(policy_dir: Path | None = None) -> list[Policy]:
@@ -69,10 +77,15 @@ def load_policies(policy_dir: Path | None = None) -> list[Policy]:
             if pid in policies:
                 # Federated Governance: ドメインは Global Policy を上書き(緩和)できない
                 raise PolicyLoadError(f"{f.name}: duplicate policy id {pid} (override is not allowed)")
-            if p["check"]["type"] not in CHECK_TYPES:
-                raise PolicyLoadError(f"{f.name}: unknown check type {p['check']['type']}")
+            target = p.get("target", ASSET)
+            check_type = p["check"]["type"]
+            if target not in (ASSET, PRODUCT):
+                raise PolicyLoadError(f"{f.name}: unknown target {target}")
+            if check_type not in (PRODUCT_CHECK_TYPES if target == PRODUCT else CHECK_TYPES):
+                raise PolicyLoadError(f"{f.name}: unknown check type {check_type} for target {target}")
             policies[pid] = Policy(id=pid, name=p["name"], severity=p.get("severity", "medium"), check=p["check"],
-                                   scope=scope, domain=domain, when=p.get("when", {}), design_ref=p.get("design_ref", ""))
+                                   scope=scope, domain=domain, when=p.get("when", {}), design_ref=p.get("design_ref", ""),
+                                   target=target)
     return list(policies.values())
 
 
@@ -86,9 +99,12 @@ def get_policies(reload: bool = False) -> list[Policy]:
     return _cache
 
 
-def _run_check(db: Session, asset: DataAsset, check: dict) -> tuple[bool | None, str]:
+def _run_check(db: Session, asset: Any, check: dict) -> tuple[bool | None, str]:
     """(合否, メッセージ) を返す。None は対象外で、評価結果に含めない。"""
     t = check["type"]
+    if t in MESH_CHECK_TYPES:
+        from edgf.services import mesh_datsis
+        return mesh_datsis.run(db, asset, check)
     if t == "mdm_entity_defined":
         from edgf.services.mdm_rules import check_entity_defined
         return check_entity_defined(db, asset)
@@ -142,7 +158,7 @@ def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None 
     excepted = _active_exceptions(db, asset.id)
     results = []
     for p in policies or get_policies():
-        if not p.applies_to(asset):
+        if p.target != ASSET or not p.applies_to(asset):
             continue
         ok, msg = _run_check(db, asset, p.check)
         if ok is None:
@@ -150,6 +166,18 @@ def evaluate_asset(db: Session, asset: DataAsset, policies: list[Policy] | None 
         status = "pass" if ok else ("excepted" if p.id in excepted else "fail")
         results.append({"policy_id": p.id, "name": p.name, "severity": p.severity, "scope": p.scope,
                         "status": status, "message": msg, "design_ref": p.design_ref})
+    return results
+
+
+def evaluate_product(db: Session, product: Any, policies: list[Policy] | None = None) -> list[dict[str, Any]]:
+    """Data Product の出荷基準を評価する。ポリシー例外は適用しない (緩和の経路を作らない)。"""
+    results = []
+    for p in policies or get_policies():
+        if p.target != PRODUCT or not p.applies_to(product):
+            continue
+        ok, msg = _run_check(db, product, p.check)
+        results.append({"policy_id": p.id, "name": p.name, "severity": p.severity, "scope": p.scope,
+                        "status": "pass" if ok else "fail", "message": msg, "design_ref": p.design_ref})
     return results
 
 

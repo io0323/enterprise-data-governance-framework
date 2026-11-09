@@ -176,6 +176,31 @@ class RemediationStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class ProductStatus(str, Enum):
+    """§15 Data Product のライフサイクル"""
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+
+
+class ContractStatus(str, Enum):
+    """§15 Data Contract の版"""
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    DEPRECATED = "deprecated"    # 新しいメジャー版の公開後、併存期間中
+    RETIRED = "retired"
+
+
+class SubscriptionStatus(str, Enum):
+    """§15 / §4 Data Consumer の利用登録。閲覧権限は与えない (ABAC と AccessGrant はこれまで通り)"""
+    PENDING = "pending"
+    ACTIVE = "active"
+    REJECTED = "rejected"
+    SUSPENDED = "suspended"
+    CANCELLED = "cancelled"
+
+
 class EscalationLevel(str, Enum):
     """§16 Escalation: Steward -> Owner -> Committee"""
     STEWARD = "steward"

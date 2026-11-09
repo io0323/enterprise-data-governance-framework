@@ -153,6 +153,21 @@ PERMISSIONS: Mapping[str, Rule] = {
     "ai.inheritance.recompute": rule(roles=(ADMIN, COMMITTEE), description="継承した統制属性の全件再計算"),
     # RAG サービスの実行主体が検索のたびに呼ぶ判定 (承認ではないため Custodian を含む)
     "ai.rag.authorize": rule(relations=("custodian",), description="RAG の検索結果を利用者の権限で絞り込む判定"),
+    # Data Mesh 連携 (§15): Data Product の統治のための定義だけを扱う
+    "mesh.product.write": rule(domain_roles=(OWNER, STEWARD), description="Data Product と Output Port の登録・更新"),
+    "mesh.product.publish": rule(relations=("owner",), approval=True,
+                                 description="Data Product の公開・非推奨・廃止 (対象 Product の Owner)"),
+    "mesh.contract.write": rule(domain_roles=(OWNER, STEWARD), description="Data Contract の下書きの作成・更新"),
+    "mesh.contract.publish": rule(relations=("owner",), approval=True,
+                                  description="Data Contract の版の公開と旧版の retire (対象 Product の Owner)"),
+    # Data Plane の CI からの呼び出しを想定した判定 (承認ではないため Custodian を含む)
+    "mesh.contract.check": rule(relations=ASSET_RELATIONS, description="Contract の案の互換性の判定と影響の確認"),
+    "mesh.contract.expedite_retire": rule(roles=(COMMITTEE,), approval=True, description="旧版の併存期間の短縮 (理由必須)"),
+    "mesh.subscription.request": rule(authenticated=True, description="利用登録の申請と自分の登録の変更 (閲覧権限は与えない)"),
+    "mesh.subscription.approve": rule(relations=("owner",), approval=True, description="利用登録の承認 (対象 Product の Owner)"),
+    "mesh.subscription.read": rule(roles=(ADMIN, COMMITTEE), description="全利用者の利用登録の参照"),
+    "cdm.import": rule(roles=(ADMIN, COMMITTEE), approval=True,
+                       description="外部の CDM 定義の版の取り込み (作成・編集の機能は持たない)"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

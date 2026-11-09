@@ -18,13 +18,14 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, to_naive_u
 from edgf.pagination import Page, page_params, paginate, paginate_list
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import ai, ai_inherit, audit, privacy
+from edgf.services import ai, ai_inherit, audit, mesh_contracts, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
 
 MAX_GRANT_DAYS = 365  # 恒久承認は不可 (§13 Exception と同じ上限)
 # 下流の AI 資産の実効値に影響する項目 (§14)
+CONTRACT_DRIFT_FIELDS = {"schema_", "sensitivity"}
 INHERITANCE_FIELDS = {"sensitivity", "contains_pii", "schema_", "privacy_technique", "privacy_params", "data_class", "ai_kind"}
 
 
@@ -183,6 +184,8 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
     audit.record(db, principal.audit_actor, "asset.update", "asset", asset.id, changes)
     if set(changes) & INHERITANCE_FIELDS:
         ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])
+    if set(changes) & CONTRACT_DRIFT_FIELDS:  # Contract とずれても更新は拒否しない。Issue で知らせる (§15)
+        mesh_contracts.check_drift(db, principal.audit_actor, asset)
     return asset
 
 

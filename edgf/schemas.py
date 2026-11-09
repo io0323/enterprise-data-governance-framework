@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
                         PiiCategory, PrivacyTechnique, QualityDimension, Sensitivity, Severity, TrainingApprovalStatus,
-                        RemediationStatus)
+                        ContractStatus, ProductStatus, RemediationStatus, SubscriptionStatus)
 
 IDENTIFIER_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
 # 担当者の列は 200 文字。SQLite は長さを検査せず PostgreSQL は DataError になるので、DB に依存せず入力で検証する
@@ -36,6 +36,7 @@ class DomainOut(ORM, DomainIn):
 class ColumnSpec(BaseModel):
     name: str
     type: str = "string"
+    nullable: bool | None = Field(default=None, description="§15 Contract とのずれの検出に使う (省略時は比較しない)")
     description: str = ""
     pii: bool = False
     # §12 PII Inventory (いずれも任意。既存の pii フラグと互換)
@@ -328,6 +329,12 @@ class PurposeOut(ORM):
     domain: str | None
     created_at: datetime
     updated_at: datetime
+    withdrawn_at: datetime | None = None
+    withdrawn_reason: str | None = None
+
+
+class PurposeWithdrawIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000, description="目的を撤回する理由。個人情報を含めないこと")
 
 
 class ConsentIn(SubjectIdentifier):
@@ -838,3 +845,253 @@ class IncidentOut(ORM):
     issue_ids: list[str]
     reported_by: str
     created_at: datetime
+
+
+# ---------- Data Mesh 連携 (§15) ----------
+# Control Plane が持つのは統治のための定義だけ。未定義の項目を黙って捨てず、検証エラーで知らせる
+class MeshInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ProductIn(MeshInput):
+    name: str = Field(min_length=1, max_length=200)
+    domain: str = Field(max_length=100)
+    owner: str = Field(min_length=1, max_length=200, description="単一。そのドメインの Data Owner であること")
+    description: str = Field(default="", max_length=4000)
+    term_ids: list[str] = Field(default_factory=list, max_length=200, description="Glossary の用語")
+
+
+class ProductUpdate(MeshInput):
+    owner: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    term_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class OutputPortIn(MeshInput):
+    name: str = Field(min_length=1, max_length=200)
+    asset_id: str = Field(max_length=36, description="Catalog 資産 (1 対 1。Product と同じドメイン)")
+    port_type: Literal["table", "api", "stream", "file"]
+    address_uri: ExternalUri | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> OutputPortIn:
+        check_external_uri(self.address_uri)
+        return self
+
+
+class OutputPortUpdate(MeshInput):
+    address_uri: ExternalUri | None = None
+    port_type: Literal["table", "api", "stream", "file"] | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> OutputPortUpdate:
+        check_external_uri(self.address_uri)
+        return self
+
+
+class OutputPortOut(BaseModel):
+    id: str
+    product_id: str
+    name: str
+    redacted: bool = Field(default=False, description="閲覧できない資産のポートは名前だけを返す (ABAC)")
+    asset_id: str | None = None
+    port_type: str | None = None
+    address_uri: str | None = None
+    contract_id: str | None = None
+
+
+class ProductOut(BaseModel):
+    id: str
+    name: str
+    domain: str
+    owner: str
+    description: str
+    status: ProductStatus
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    published_by: str | None
+    published_at: datetime | None
+    deprecated_at: datetime | None
+    retired_at: datetime | None
+    term_ids: list[str] = Field(default_factory=list)
+    ports: list[OutputPortOut] = Field(default_factory=list)
+
+
+SEMVER_PATTERN = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+
+
+class ContractColumn(MeshInput):
+    """カラムの定義。値やサンプルは持たない。"""
+    name: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=100)
+    nullable: bool = True
+    pii: bool = False
+    description: str = Field(default="", max_length=2000)
+    identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN, description="ID の標準 (§15 命名/ID標準)")
+    reference_set: str | None = Field(default=None, max_length=120, description="参照する Reference Data (<id>[@version])")
+    renamed_from: str | None = Field(default=None, max_length=200, description="名前の変更を明示する (前の版のカラム名)")
+
+
+class QualitySla(MeshInput):
+    min_score: float | None = Field(default=None, ge=0, le=1, description="最低の Quality Score")
+    rule_ids: list[str] = Field(default_factory=list, max_length=200, description="既存の品質ルールへの参照")
+
+
+class ContractContent(MeshInput):
+    description: str = Field(default="", max_length=4000)
+    schema_: list[ContractColumn] = Field(alias="schema", min_length=1, max_length=2000)
+    quality_sla: QualitySla = Field(default_factory=QualitySla)
+    freshness_sla_hours: int | None = Field(default=None, ge=1)
+    sensitivity: Sensitivity
+    purposes: list[str] = Field(default_factory=list, max_length=100, description="利用条件 (Purpose の ID)")
+    conforms_to: str | None = Field(default=None, pattern=r"^[^@\s]+@[^@\s]+$", max_length=300, description="<cdm_entity>@<version>")
+    cdm_mappings: dict[str, str] = Field(default_factory=dict, description="CDM の属性 → Contract のカラム")
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _unique_columns(self) -> ContractContent:
+        names = [c.name for c in self.schema_]
+        if len(names) != len(set(names)):
+            raise ValueError("カラム名が重複しています")
+        return self
+
+
+class ContractVersionIn(ContractContent):
+    version: str = Field(pattern=SEMVER_PATTERN, max_length=50, description="セマンティックバージョン (例: 1.2.0)")
+
+
+class ContractIn(MeshInput):
+    output_port_id: str = Field(max_length=36)
+    name: str | None = Field(default=None, max_length=200, description="省略時は Output Port の名前")
+
+
+class ContractOut(ORM):
+    id: str
+    product_id: str
+    output_port_id: str
+    name: str
+    schema_object: str
+    external_id: str | None
+    created_by: str
+    created_at: datetime
+
+
+class ContractVersionOut(ORM):
+    id: str
+    contract_id: str
+    version: str
+    major: int
+    status: ContractStatus
+    description: str
+    schema_: list[dict[str, Any]] = Field(serialization_alias="schema")
+    quality_sla: dict[str, Any]
+    freshness_sla_hours: int | None
+    sensitivity: Sensitivity
+    purposes: list[str]
+    conforms_to: str | None
+    cdm_mappings: dict[str, str]
+    created_by: str
+    created_at: datetime
+    published_by: str | None
+    published_at: datetime | None
+    deprecated_at: datetime | None
+    sunset_at: datetime | None
+    sunset_shortened_by: str | None
+    sunset_shortened_reason: str | None
+    retired_at: datetime | None
+
+
+class ContractCheckIn(MeshInput):
+    """提案の案。省略した項目は最新の公開版の値を引き継ぐ (スキーマだけの案でも判定できる)。"""
+    version: str | None = Field(default=None, pattern=SEMVER_PATTERN, max_length=50)
+    description: str | None = Field(default=None, max_length=4000)
+    schema_: list[ContractColumn] | None = Field(default=None, alias="schema", max_length=2000)
+    quality_sla: QualitySla | None = None
+    freshness_sla_hours: int | None = Field(default=None, ge=1)
+    sensitivity: Sensitivity | None = None
+    purposes: list[str] | None = Field(default=None, max_length=100)
+    conforms_to: str | None = Field(default=None, pattern=r"^[^@\s]+@[^@\s]+$", max_length=300)
+    cdm_mappings: dict[str, str] | None = None
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class SubscriptionIn(MeshInput):
+    output_port_id: str = Field(max_length=36)
+    purpose_id: str = Field(max_length=80)
+    major: int | None = Field(default=None, ge=0, description="Contract のメジャー版。省略時は最新")
+
+
+class SubscriptionDecisionIn(MeshInput):
+    approve: bool
+    comment: str = Field(default="", max_length=1000, description="却下のときは必須")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> SubscriptionDecisionIn:
+        if not self.approve and not self.comment.strip():
+            raise ValueError("却下には comment が必要です")
+        return self
+
+
+class SubscriptionMigrateIn(MeshInput):
+    major: int = Field(ge=0, description="付け替え先のメジャー版")
+    purpose_id: str | None = Field(default=None, max_length=80, description="利用目的も変える場合に指定")
+
+
+class SubscriptionOut(ORM):
+    id: str
+    subscriber: str
+    product_id: str
+    output_port_id: str
+    contract_id: str
+    major: int
+    purpose_id: str
+    status: SubscriptionStatus
+    decided_by: str | None
+    decided_at: datetime | None
+    decision_comment: str
+    suspended_reason: str | None
+    created_at: datetime
+
+
+class ExpediteRetireIn(MeshInput):
+    reason: str = Field(max_length=1000, description="期間を短縮する理由 (必須)")
+    sunset_at: datetime | None = Field(default=None, description="新しい満了日時 (省略時は現在)。今の満了日時より前であること")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ExpediteRetireIn:
+        if not self.reason.strip():
+            raise ValueError("期間の短縮には reason が必要です")
+        return self
+
+
+class CdmImportIn(MeshInput):
+    entity: str = Field(pattern=r"^[A-Za-z0-9._-]{1,120}$", description="エンティティ名")
+    asset_id: str = Field(max_length=36, description="data_class=metadata の Catalog 資産")
+    version: str = Field(pattern=r"^[A-Za-z0-9._-]{1,50}$", description="外部で定義された版")
+    json_schema: dict[str, Any] = Field(description="JSON Schema の一部 (object / properties / required / type / format)")
+    source_uri: ExternalUri | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> CdmImportIn:
+        check_external_uri(self.source_uri)
+        return self
+
+
+class CdmEntityOut(ORM):
+    name: str
+    asset_id: str
+    created_by: str
+    created_at: datetime
+
+
+class CdmVersionOut(ORM):
+    entity: str
+    version: str
+    json_schema: dict[str, Any]
+    content_hash: str
+    source_uri: str | None
+    imported_by: str
+    imported_at: datetime

@@ -118,6 +118,49 @@ policies:
     when: {ai_kind: [vector_index, embedding_set]}
     check: {type: ai_embedding_protected}
 
+  # §15 Data Product の出荷基準 (DATSIS)。すべて合格しないと Product を published にできない
+  - id: MESH-001
+    name: Discoverable(Catalogに登録済みで説明と用語がある)
+    design_ref: "§15 Data Product"
+    severity: high
+    target: product
+    check: {type: mesh_discoverable}
+
+  - id: MESH-002
+    name: Addressable(すべてのOutput PortにアドレスURIがある)
+    design_ref: "§15 Data Product"
+    severity: high
+    target: product
+    check: {type: mesh_addressable}
+
+  - id: MESH-003
+    name: Trustworthy(Contractが公開済みで品質SLAを満たし資産がCertified)
+    design_ref: "§15 Data Product"
+    severity: high
+    target: product
+    check: {type: mesh_trustworthy}
+
+  - id: MESH-004
+    name: Self-describing(全カラムと Product に説明があり Owner がいる)
+    design_ref: "§15 Data Product"
+    severity: high
+    target: product
+    check: {type: mesh_self_describing}
+
+  - id: MESH-005
+    name: Interoperable(CDMに準拠しIDとReference Dataの参照が標準に沿う)
+    design_ref: "§15 Standardization"
+    severity: high
+    target: product
+    check: {type: mesh_interoperable, column_name_pattern: "^[a-z][a-z0-9_]*$"}
+
+  - id: MESH-006
+    name: Secure(重大度high/criticalのポリシーに合格している)
+    design_ref: "§15 Data Product"
+    severity: high
+    target: product
+    check: {type: mesh_secure}
+
   - id: CAT-001
     name: Glossary用語との紐付け
     design_ref: "§6.2 Glossary"

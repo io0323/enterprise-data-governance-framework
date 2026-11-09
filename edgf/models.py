@@ -207,6 +207,10 @@ class PrivacyPurpose(Base):
     domain: Mapped[str | None] = mapped_column(ForeignKey("domains.name"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    # 目的そのものの撤回 (主体ごとの同意の撤回とは別)。撤回後は新しい同意と利用登録を受け付けない
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime)
+    withdrawn_by: Mapped[str | None] = mapped_column(String(200))
+    withdrawn_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class Consent(Base):
@@ -584,6 +588,135 @@ class AiIncident(Base):
     issue_ids: Mapped[list] = mapped_column(JSON, default=list)
     reported_by: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+product_term = Table(
+    "data_product_terms",
+    Base.metadata,
+    Column("product_id", String(36), ForeignKey("data_products.id", ondelete="CASCADE"), primary_key=True),
+    Column("term_id", String(36), ForeignKey("glossary_terms.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class DataProduct(Base):
+    """§15 Data Product の統治のための定義。配信基盤やパイプラインの実行は Data Mesh / Data Plane の責務。"""
+    __tablename__ = "data_products"
+    __table_args__ = (UniqueConstraint("domain", "name", name="uq_data_product_name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200))
+    domain: Mapped[str] = mapped_column(ForeignKey("domains.name"), index=True)
+    owner: Mapped[str] = mapped_column(String(200), index=True)  # 単一 (§4 共同 Owner 禁止)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deprecated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+    terms: Mapped[list[GlossaryTerm]] = relationship(secondary=product_term)
+    ports: Mapped[list[OutputPort]] = relationship(back_populates="product", order_by="OutputPort.name")
+
+
+class OutputPort(Base):
+    """Catalog 資産への参照とアドレス URI だけを持つ (配信そのものは Data Plane)。資産とは 1 対 1。"""
+    __tablename__ = "output_ports"
+    __table_args__ = (UniqueConstraint("product_id", "name", name="uq_output_port_name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    product_id: Mapped[str] = mapped_column(ForeignKey("data_products.id"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    address_uri: Mapped[str | None] = mapped_column(String(2000))
+    port_type: Mapped[str] = mapped_column(String(20))  # table / api / stream / file
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    product: Mapped[DataProduct] = relationship(back_populates="ports")
+
+
+class DataContract(Base):
+    """§15 Standardization: Output Port ごとの Data Contract。内容は版 (ContractVersion) が持つ。"""
+    __tablename__ = "data_contracts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    product_id: Mapped[str] = mapped_column(ForeignKey("data_products.id"), index=True)
+    output_port_id: Mapped[str] = mapped_column(ForeignKey("output_ports.id"), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    schema_object: Mapped[str] = mapped_column(String(200))  # ODCS の schema[].name
+    external_id: Mapped[str | None] = mapped_column(String(200))  # ODCS の id (取り込み元の識別子)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ContractVersion(Base):
+    """セマンティックバージョニングの版。公開した版は変更できない。"""
+    __tablename__ = "contract_versions"
+    __table_args__ = (UniqueConstraint("contract_id", "version", name="uq_contract_version"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    contract_id: Mapped[str] = mapped_column(ForeignKey("data_contracts.id"), index=True)
+    version: Mapped[str] = mapped_column(String(50))
+    major: Mapped[int] = mapped_column(Integer)
+    minor: Mapped[int] = mapped_column(Integer)
+    patch: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    schema_: Mapped[list] = mapped_column("schema", JSON, default=list)
+    quality_sla: Mapped[dict] = mapped_column(JSON, default=dict)  # min_score / rule_ids
+    freshness_sla_hours: Mapped[int | None] = mapped_column(Integer)
+    sensitivity: Mapped[str] = mapped_column(String(20))
+    purposes: Mapped[list] = mapped_column(JSON, default=list)  # 利用条件 (§12 Purpose の ID)
+    conforms_to: Mapped[str | None] = mapped_column(String(300))  # <cdm_entity>@<version>
+    cdm_mappings: Mapped[dict] = mapped_column(JSON, default=dict)  # CDM の属性 → Contract のカラム
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    published_by: Mapped[str | None] = mapped_column(String(200))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deprecated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sunset_at: Mapped[datetime | None] = mapped_column(DateTime)  # 併存期間の満了
+    sunset_shortened_by: Mapped[str | None] = mapped_column(String(200))
+    sunset_shortened_reason: Mapped[str | None] = mapped_column(Text)
+    retired_by: Mapped[str | None] = mapped_column(String(200))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class MeshSubscription(Base):
+    """§15 / §4 Data Consumer の利用登録。閲覧権限は与えない。Contract のメジャー版に対して登録する。"""
+    __tablename__ = "mesh_subscriptions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    subscriber: Mapped[str] = mapped_column(String(200), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("data_products.id"), index=True)
+    output_port_id: Mapped[str] = mapped_column(ForeignKey("output_ports.id"), index=True)
+    contract_id: Mapped[str] = mapped_column(ForeignKey("data_contracts.id"), index=True)
+    major: Mapped[int] = mapped_column(Integer)
+    purpose_id: Mapped[str] = mapped_column(ForeignKey("privacy_purposes.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decision_comment: Mapped[str] = mapped_column(Text, default="")
+    suspended_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class CdmEntity(Base):
+    """外部で定義された CDM のエンティティ。Catalog の metadata 資産と対応付ける (CDM は Governance の被統制対象)。"""
+    __tablename__ = "cdm_entities"
+    name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id"), unique=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CdmVersion(Base):
+    """CDM 定義の写し (JSON Schema の一部)。取り込んだ版は変更できない。作成・編集・設計の機能は持たない。"""
+    __tablename__ = "cdm_versions"
+    __table_args__ = (UniqueConstraint("entity", "version", name="uq_cdm_version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity: Mapped[str] = mapped_column(ForeignKey("cdm_entities.name"), index=True)
+    version: Mapped[str] = mapped_column(String(50))
+    json_schema: Mapped[dict] = mapped_column(JSON)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    source_uri: Mapped[str | None] = mapped_column(String(2000))
+    imported_by: Mapped[str] = mapped_column(String(200))
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AuditEvent(Base):
