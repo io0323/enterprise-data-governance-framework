@@ -13,6 +13,7 @@ from edgf.config import Settings, settings
 from edgf.deps import get_principal
 from edgf.errors import PROBLEM_RESPONSES, BodyLimitMiddleware, install_problem_handlers
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
+from edgf.services.audit_anchor import validate_anchor_settings
 from edgf.services.mdm_rules import get_entities
 from edgf.ui import routes as ui_routes
 from edgf.services.policy_bundles import bootstrap_on_startup
@@ -38,6 +39,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     configure_logging(s.log_level, s.log_format)
     authenticator = build_authenticator(s)  # 設定不備・production での dev モードはここで停止 (fail fast)
     validate_subject_key(s)  # production で EDGF_SUBJECT_KEY が無ければ停止
+    validate_anchor_settings(s)  # production でアンカリングが有効なのに署名鍵が無ければ停止
     app = FastAPI(
         title="Enterprise Data Governance Framework",
         version=__version__,

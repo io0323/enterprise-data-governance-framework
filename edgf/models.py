@@ -905,3 +905,15 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(128), index=True)
     prev_hash: Mapped[str] = mapped_column(String(64), unique=True)  # 並行書込みによるチェーン分岐をDB制約で防止
     hash: Mapped[str] = mapped_column(String(64), unique=True)
+
+
+class AuditAnchor(Base):
+    """§13 Evidence: 監査チェーンの先頭への署名。正本は DB の外の書き出し先で、この表は参照と照合のための控え"""
+    __tablename__ = "audit_anchors"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    seq: Mapped[int] = mapped_column(Integer, unique=True)
+    hash: Mapped[str] = mapped_column(String(64))
+    anchored_at: Mapped[datetime] = mapped_column(DateTime)
+    key_id: Mapped[str] = mapped_column(String(32))
+    signature: Mapped[str] = mapped_column(String(128))
+    sinks: Mapped[dict] = mapped_column(JSON, default=dict)

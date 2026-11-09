@@ -210,7 +210,7 @@ def test_every_job_runs_and_is_idempotent(client, monkeypatch):
     a = asset(client, retention_days=30)
     _age(a["id"])
     assert {j for j in JOBS} == {"issue_escalate", "erasure_escalate", "mdm_review_escalate", "ai_remediation_escalate", "policy_evaluate",
-                                 "retention_detect", "consent_expire", "outbox_deliver", "approval_sla", "review_campaigns", "kpi_snapshot"}
+                                 "retention_detect", "consent_expire", "outbox_deliver", "approval_sla", "review_campaigns", "kpi_snapshot", "audit_anchor"}
     first = {name: run_job(name) for name in JOBS}
     assert all(r["status"] == "succeeded" for r in first.values()), first
     assert first["policy_evaluate"]["result"]["issues_opened"] >= 1
