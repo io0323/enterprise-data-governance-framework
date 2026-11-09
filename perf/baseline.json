@@ -74,6 +74,24 @@
       "error_rate": 0.0,
       "requests": 6214,
       "users": 16
+    },
+    "asset_update": {
+      "p50_ms": 19.0,
+      "p95_ms": 32.0,
+      "p99_ms": 61.0,
+      "rps": 233.79,
+      "error_rate": 0.0,
+      "requests": 4446,
+      "users": 5
+    },
+    "asset_register": {
+      "p50_ms": 25.0,
+      "p95_ms": 43.0,
+      "p99_ms": 65.0,
+      "rps": 182.12,
+      "error_rate": 0.0,
+      "requests": 3468,
+      "users": 5
     }
   }
 }
