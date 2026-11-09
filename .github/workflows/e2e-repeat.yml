@@ -1,0 +1,49 @@
+name: E2E (Repeat)
+
+# 不安定なテストの調査用。指定したテストだけを繰り返し、失敗の trace とスクリーンショットを artifact に残す。
+on:
+  push:
+    branches: [fix/flaky-keyboard-flow]  # workflow_dispatch は main に載るまで起動できないので、調査の間だけ使う
+  workflow_dispatch:
+    inputs:
+      test:
+        description: テストの指定 (pytest の nodeid)
+        default: tests/e2e/test_ui.py::test_keyboard_only_flow
+      count:
+        description: 繰り返す回数
+        default: "100"
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        trace: ["1", ""]  # trace の記録で時間の関係が変わるので、記録なしでも実行する
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,e2e]"
+      - run: playwright install --with-deps chromium
+      - name: 繰り返し実行
+        env:
+          EDGF_E2E: "1"
+          EDGF_E2E_REPEAT: ${{ inputs.count || '100' }}
+          TEST: ${{ inputs.test || 'tests/e2e/test_ui.py::test_keyboard_only_flow' }}
+          TRACE: ${{ matrix.trace }}
+        run: |
+          mkdir -p e2e-artifacts
+          if [ -n "$TRACE" ]; then export EDGF_E2E_TRACE_DIR="$PWD/e2e-artifacts"; fi
+          pytest -q "$TEST"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-repeat-trace-${{ matrix.trace || 'off' }}
+          path: e2e-artifacts/
+          if-no-files-found: ignore

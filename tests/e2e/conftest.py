@@ -16,6 +16,10 @@ if not os.environ.get("EDGF_E2E"):
 
 ROOT = Path(__file__).resolve().parents[2]
 API = "/api/v1"
+# 不安定なテストの調査用: 失敗したテストの trace とスクリーンショットを残す。EDGF_E2E_REPEAT は全テストを N 回ずつ実行する
+TRACE_DIR = os.environ.get("EDGF_E2E_TRACE_DIR")
+REPEAT = int(os.environ.get("EDGF_E2E_REPEAT") or 0)
+_artifacts: list[Path] = []
 ADMIN = {"sub": "root", "roles": ["admin"]}
 OWNER = {"sub": "asset-owner", "roles": ["owner"], "domains": ["sales"]}
 CONSUMER = {"sub": "consumer1", "roles": ["consumer"], "clearance": "internal"}
@@ -24,6 +28,34 @@ COMMITTEE = {"sub": "chair", "roles": ["committee"]}
 CUSTODIAN = {"sub": "custodian1", "roles": ["custodian"], "clearance": "confidential"}
 USERS = {"admin": ADMIN, "committee": COMMITTEE, "owner": OWNER, "steward": STEWARD, "custodian": CUSTODIAN, "consumer": CONSUMER}
 XSS = '<img src=x onerror="window.__xss=1"><script>window.__xss=1</script>'
+
+
+def pytest_generate_tests(metafunc):
+    if REPEAT:
+        metafunc.fixturenames.append("e2e_repeat")
+        metafunc.parametrize("e2e_repeat", range(REPEAT), indirect=True)
+
+
+@pytest.fixture()
+def e2e_repeat(request):
+    return request.param
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if call.when == "call":
+        item.e2e_failed = outcome.get_result().failed
+
+
+@pytest.fixture(autouse=True)
+def _keep_artifacts_of_failures(request):
+    """全テストより外側で片付ける。成功したテストの trace は消す。"""
+    yield
+    if not getattr(request.node, "e2e_failed", False):
+        for path in _artifacts:
+            path.unlink(missing_ok=True)
+    _artifacts.clear()
 
 
 def _free_port() -> int:
@@ -142,6 +174,8 @@ class Session:
         self.context.on("request", lambda r: self.requests.append(r))
         self.context.on("console", lambda m: self.console.append(m.text))
         self.page = self.context.new_page()
+        if TRACE_DIR:
+            self.context.tracing.start(screenshots=True, snapshots=True)
 
     def open(self):
         self.page.goto(f"{self.base}/ui/")
@@ -167,6 +201,12 @@ class Session:
         return self
 
     def close(self):
+        if TRACE_DIR:
+            name = Path(TRACE_DIR) / f"{os.getpid()}-{time.time_ns()}"
+            screenshot, trace = name.with_suffix(".png"), name.with_suffix(".zip")
+            self.page.screenshot(path=screenshot)
+            self.context.tracing.stop(path=trace)
+            _artifacts.extend([screenshot, trace])
         self.context.close()
 
 
