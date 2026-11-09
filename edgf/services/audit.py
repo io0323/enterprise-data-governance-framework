@@ -8,7 +8,7 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ GENESIS = "0" * 64
 MAX_ENTITY_ID_LENGTH = 300
 # チェーンの先頭の取り合いで再試行する回数。書き込みは 1 件ずつしか進まないので、同時実行数より十分大きくする
 MAX_WRITE_ATTEMPTS = 100
+CHAIN_LOCK_KEY = 7_046_209_001  # 監査チェーンの advisory lock のキー (任意の固定値)
 
 # 監査ログはハッシュチェーンのため消去できない。PII と生の識別子が入らないようにする (§12, §13)
 FORBIDDEN_PAYLOAD_KEYS = frozenset({
@@ -108,12 +109,17 @@ def record(db: Session, actor: str, action: str, entity_type: str, entity_id: st
     失敗した側はセーブポイントまで戻して先頭を読み直す (リクエストの他の変更は失われない)。
     勝った側のトランザクションが確定するまで UNIQUE 検査で待つので、書き込みはチェーン上で直列化される。
     先頭を読み直せる必要があるので、分離レベルは READ COMMITTED が前提。
+
+    PostgreSQL では先に advisory lock を取り、トランザクションの終わりまで順番に書く。衝突して再試行する無駄が無くなる。
+    UNIQUE 制約と再試行は、ロックを取らない経路 (SQLite や手動の操作) のために残す。
     """
     payload = json.loads(json.dumps(payload or {}, default=str))
     guard_payload(payload)
     entity_id = fit_identifier(entity_id, MAX_ENTITY_ID_LENGTH)
     rid = request_id_var.get()
     db.flush()  # 他の変更のエラーをチェーンの衝突と混同しないよう、先に確定させる
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(select(func.pg_advisory_xact_lock(CHAIN_LOCK_KEY)))
     for attempt in range(1, MAX_WRITE_ATTEMPTS + 1):
         prev = _latest_hash(db)
         ts = utcnow()

@@ -110,12 +110,18 @@ def view(row: ContractVersion) -> dict[str, Any]:
     return {k: getattr(row, k) for k in CONTENT_KEYS}
 
 
-def quality_status(db: Session, asset: DataAsset, sla: Mapping[str, Any] | None) -> dict[str, Any]:
-    """品質 SLA を最新の品質検査の結果と照合する。値は扱わず、スコアとルールの結果だけを見る。"""
+_UNSET: Any = object()
+
+
+def quality_status(db: Session, asset: DataAsset, sla: Mapping[str, Any] | None, run: Any = _UNSET) -> dict[str, Any]:
+    """品質 SLA を最新の品質検査の結果と照合する。値は扱わず、スコアとルールの結果だけを見る。
+
+    run は一括読み込みの結果 (省略時は問い合わせる)。
+    """
     sla = sla or {}
     min_score, rule_ids = sla.get("min_score"), sla.get("rule_ids") or []
     declared = min_score is not None or bool(rule_ids)
-    run = latest_run(db, asset.id)
+    run = latest_run(db, asset.id) if run is _UNSET else run
     breaches = []
     if declared and run is None:
         breaches.append("品質検査の実績がありません")

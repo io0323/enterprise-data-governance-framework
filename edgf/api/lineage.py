@@ -1,6 +1,7 @@
 """§9 Data Lineage API (OpenLineage互換取込)."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -52,6 +53,9 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
     return {"accepted": True, "edges": count}
 
 
+CHUNK = 500
+
+
 class NameRedactor:
     """閲覧できない資産 (ABAC) の名前を、応答ごとの不透明なラベルに置き換える。
 
@@ -64,10 +68,18 @@ class NameRedactor:
         self._hidden: dict[str, bool] = {}
         self._labels: dict[str, str] = {}
 
+    def preload(self, names: Iterable[str]) -> None:
+        """まとめて判定する (名前ごとに問い合わせると N+1 になる)。readable_clause は can_read と同じ判定。"""
+        pending = sorted({n for n in names if n not in self._hidden})
+        for start in range(0, len(pending), CHUNK):
+            chunk = pending[start:start + CHUNK]
+            registered = set(self.db.scalars(select(DataAsset.qualified_name).where(DataAsset.qualified_name.in_(chunk))))
+            readable = set(self.db.scalars(select(DataAsset.qualified_name).where(DataAsset.qualified_name.in_(chunk), authz.readable_clause(self.principal))))
+            self._hidden.update({name: name in registered and name not in readable for name in chunk})
+
     def hidden(self, name: str) -> bool:
         if name not in self._hidden:
-            asset = self.db.scalar(select(DataAsset).where(DataAsset.qualified_name == name))
-            self._hidden[name] = asset is not None and not authz.can_read(self.db, self.principal, asset)
+            self.preload([name])
         return self._hidden[name]
 
     def label(self, name: str) -> str:
@@ -81,8 +93,10 @@ def _traversal(db: Session, principal: Principal, response: Response, qualified_
     response.headers["Deprecation"] = "true"
     response.headers["Link"] = f'</api/v1/lineage/{quote(qualified_name, safe="")}/graph>; rel="successor-version"'
     names = NameRedactor(db, principal)
+    traversed = lineage.traverse(db, qualified_name, direction, depth)
+    names.preload([qualified_name, *(e["from"] for e in traversed), *(e["to"] for e in traversed)])
     edges = []
-    for edge in lineage.traverse(db, qualified_name, direction, depth):
+    for edge in traversed:
         secret = names.hidden(edge["from"]) or names.hidden(edge["to"])
         edges.append({**edge, "from": names.label(edge["from"]), "to": names.label(edge["to"]),
                       "job": None if secret else edge["job"], "transformation": None if secret else edge["transformation"]})
@@ -109,6 +123,7 @@ def graph(qualified_name: str, depth: int = Query(3, ge=1, le=50), db: Session =
     """UI の描画用のグラフ。閲覧できない資産 (ABAC) は名前と深さだけを返し、そこに接するエッジの job も伏せる。"""
     result = lineage.graph(db, qualified_name, depth)
     names = NameRedactor(db, principal)
+    names.preload(n["qualified_name"] for n in result["nodes"])
     nodes = []
     for node in result["nodes"]:
         if names.hidden(node["qualified_name"]):
@@ -128,6 +143,7 @@ def redacted_impact(db: Session, principal: Principal, qualified_name: str, dept
     """
     result = lineage.impact_analysis(db, qualified_name, depth)
     names = NameRedactor(db, principal)
+    names.preload([qualified_name, *(i["qualified_name"] for i in result["impacted"])])
     impacted = []
     for item in result["impacted"]:
         if names.hidden(item["qualified_name"]):

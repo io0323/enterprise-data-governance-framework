@@ -1,7 +1,7 @@
 """§9 Data Lineage / Impact Analysis / Traceability."""
 from __future__ import annotations
 
-from collections import deque
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,23 +26,40 @@ def upsert_edge(db: Session, source: str, target: str, job: str = "manual",
     return edge
 
 
+TRAVERSE_CHUNK = 500  # 1 回の IN に渡す名前の数 (SQLite の変数の上限に配慮する)
+
+
+def _edges_from(db: Session, column: Any, names: list[str]) -> dict[str, list[LineageEdge]]:
+    grouped: dict[str, list[LineageEdge]] = {name: [] for name in names}
+    for start in range(0, len(names), TRAVERSE_CHUNK):
+        for edge in db.scalars(select(LineageEdge).where(column.in_(names[start:start + TRAVERSE_CHUNK])).order_by(LineageEdge.id)):
+            grouped[getattr(edge, column.key)].append(edge)
+    return grouped
+
+
 def traverse(db: Session, start: str, direction: str, max_depth: int = 10) -> list[dict]:
-    """BFS (循環耐性あり)。direction: 'downstream' | 'upstream'"""
-    nxt_col, cur_col = (LineageEdge.target, LineageEdge.source) if direction == "downstream" else (LineageEdge.source, LineageEdge.target)
+    """BFS (循環耐性あり)。direction: 'downstream' | 'upstream'。
+
+    1 段ごとにまとめて読むので、クエリの数はノードの数ではなく深さに比例する。
+    """
+    cur_col = LineageEdge.source if direction == "downstream" else LineageEdge.target
     seen = {start}
     out: list[dict] = []
-    queue = deque([(start, 0)])
-    while queue:
-        node, depth = queue.popleft()
-        if depth >= max_depth:
-            continue
-        for edge in db.scalars(select(LineageEdge).where(cur_col == node).order_by(LineageEdge.id)):
-            nxt = edge.target if direction == "downstream" else edge.source
-            out.append({"from": edge.source, "to": edge.target, "job": edge.job,
-                        "transformation": edge.transformation, "depth": depth + 1})
-            if nxt not in seen:
-                seen.add(nxt)
-                queue.append((nxt, depth + 1))
+    frontier = [start]
+    depth = 0
+    while frontier and depth < max_depth:
+        grouped = _edges_from(db, cur_col, frontier)
+        following: list[str] = []
+        for node in frontier:
+            for edge in grouped[node]:
+                nxt = edge.target if direction == "downstream" else edge.source
+                out.append({"from": edge.source, "to": edge.target, "job": edge.job,
+                            "transformation": edge.transformation, "depth": depth + 1})
+                if nxt not in seen:
+                    seen.add(nxt)
+                    following.append(nxt)
+        frontier = following
+        depth += 1
     return out
 
 
