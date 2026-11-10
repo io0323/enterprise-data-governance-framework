@@ -100,6 +100,37 @@ def app_url(idp, tmp_path_factory):
     process.wait(timeout=10)
 
 
+def transition(page, action, wait="main h1", *, navigation=True):
+    """画面の操作をして、遷移が終わるまで待つ (Session.go、ページング、リネージの深さの切り替えで共通)。
+
+    ハッシュは操作と同時に変わり、再描画はそのあとの hashchange で起きる。操作の直後に要素を待つと、
+    切り替わる前の画面で成立してしまう (docs/operations/flaky-tests.md)。判定は次の 3 段で行う。
+
+    1. ルートの切り替わり: 再描画は <main> を作り直すので、古い <main> に印を付け、印の無い <main> が現れるまで待つ
+    2. 主要な要素の表示: wait の要素が見えること
+    3. 読み込みの完了: 読み込み中の表示 (.loading) が無いこと
+
+    navigation=True は「この操作で画面が切り替わるはず」を意味し、ハッシュが変わらなければ失敗にする。
+    None はハッシュが変わったときだけ切り替わりを待つ (同じハッシュへの移動を許す)。
+    """
+    from playwright.sync_api import expect  # playwright は E2E のときだけ入れる
+    page.evaluate("""() => {
+        const main = document.getElementById("main");
+        if (main) main.__e2eStale = true;
+        window.__e2eHashBefore = window.location.hash;
+    }""")
+    action()
+    changed = page.evaluate("() => window.location.hash !== window.__e2eHashBefore")
+    if navigation and not changed:
+        pytest.fail(f"操作で画面が切り替わりませんでした (ハッシュ {page.evaluate('() => window.location.hash')})")
+    if changed:
+        page.wait_for_function("() => { const main = document.getElementById('main'); return main !== null && !main.__e2eStale; }")
+    else:
+        page.evaluate("() => { const main = document.getElementById('main'); if (main) delete main.__e2eStale; }")
+    expect(page.locator(wait).first).to_be_visible()
+    expect(page.locator(".loading")).to_have_count(0)
+
+
 def _client(idp, app_url, user) -> httpx.Client:
     return httpx.Client(base_url=app_url["url"] + API, headers={"Authorization": f"Bearer {idp.access_token(user)}"}, timeout=30)
 
@@ -190,26 +221,8 @@ class Session:
         return self
 
     def go(self, fragment, wait="main h1"):
-        """画面を切り替え、遷移が終わるまで待つ。
-
-        ハッシュは代入と同時に変わり、再描画はそのあとの hashchange で起きる。代入の直後に要素を待つと、
-        切り替わる前の画面で成立してしまう (docs/operations/flaky-tests.md)。再描画は <main> を作り直すので、
-        古い <main> に印を付けておき、印の無い <main> が現れたことでルートの切り替わりを判定する。
-        """
-        navigated = self.page.evaluate("""f => {
-            const before = window.location.hash;
-            const main = document.getElementById("main");
-            if (main) main.__e2eStale = true;
-            window.location.hash = f;
-            const changed = window.location.hash !== before;
-            if (!changed && main) delete main.__e2eStale;  // 同じハッシュでは hashchange が起きず、作り直されない
-            return changed;
-        }""", fragment)
-        from playwright.sync_api import expect  # playwright は E2E のときだけ入れる
-        if navigated:
-            self.page.wait_for_function("() => { const main = document.getElementById('main'); return main !== null && !main.__e2eStale; }")
-        expect(self.page.locator(wait).first).to_be_visible()
-        expect(self.page.locator(".loading")).to_have_count(0)
+        """画面を切り替え、遷移が終わるまで待つ。同じハッシュなら再描画は起きないので、切り替わりは待たない。"""
+        transition(self.page, lambda: self.page.evaluate("f => { window.location.hash = f; }", fragment), wait, navigation=None)
         return self
 
     def settled(self):
