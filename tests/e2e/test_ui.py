@@ -74,13 +74,38 @@ def test_token_is_kept_only_in_memory(session_of, idp):
 
 
 def test_login_rejects_wrong_state_and_requires_pkce(browser, idp, app_url, seed):
+    """ログインの応答を待っている間に、別の state の応答を送る。
+
+    受け手 (state を照合するチャンネル) はログインの開始後にしか無いので、IdP の画面を保留して応答待ちの状態を作る。
+    """
     s = Session(browser, idp, app_url, CONSUMER).open()
+    held = []
+    s.context.route(f"{idp.issuer}/authorize*", lambda route: held.append(route))
     try:
-        # 別の state の応答は無視され、ログインにならない
-        s.page.evaluate("() => { const c = new BroadcastChannel('edgf-oidc'); c.postMessage({code: 'forged', state: 'forged'}); c.close(); }")
-        s.page.wait_for_timeout(200)
+        with s.context.expect_event("request", lambda request: "/authorize" in request.url):
+            s.page.click("#login")
+        expect(s.page.locator(".login [role=status]")).to_have_text("別のウィンドウでログインしてください。")
+        exchanges = len(idp.token_requests)
+        # 同じチャンネルのメッセージは送った順に処理されるので、目印が届いた時点で偽の応答の処理は終わっている
+        s.page.evaluate("""() => new Promise((resolve) => {
+            const probe = new BroadcastChannel('edgf-oidc');
+            probe.onmessage = (event) => { if (event.data.probe) { probe.close(); resolve(); } };
+            const sender = new BroadcastChannel('edgf-oidc');
+            sender.postMessage({code: 'forged', state: 'forged'});
+            sender.postMessage({probe: true});
+            sender.close();
+        })""")
+        assert len(idp.token_requests) == exchanges  # 偽の応答ではトークンの交換をしない
         assert s.page.locator(".site-nav").count() == 0
+        expect(s.page.locator(".login [role=status]")).to_have_text("別のウィンドウでログインしてください。")
+        # 本物の応答はまだ受け付ける (受け手がいたことの確認)
+        held.pop().continue_()
+        expect(s.page.locator(".site-nav")).to_be_visible()
+        assert idp.token_requests[-1]["code_verifier"] and "client_secret" not in idp.token_requests[-1]
+        assert len(idp.token_requests) == exchanges + 1
     finally:
+        for route in held:
+            route.continue_()
         s.close()
 
 
