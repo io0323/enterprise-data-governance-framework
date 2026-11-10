@@ -272,6 +272,35 @@ def test_search_keeps_focus_on_main_while_results_load(browser, idp, app_url, se
         s.close()
 
 
+# hashchange の処理を数フレーム遅らせる。go() が切り替わる前の画面で戻ると、下のテストが失敗する
+DEFER_HASHCHANGE = """
+const add = window.addEventListener.bind(window);
+window.addEventListener = (type, listener, options) => type !== "hashchange" ? add(type, listener, options) : add(type, (event) => {
+  let frames = 5;
+  const step = () => (--frames > 0 ? requestAnimationFrame(step) : listener(event));
+  requestAnimationFrame(step);
+}, options);
+"""
+
+
+def test_go_waits_until_the_new_page_is_rendered(browser, idp, app_url, seed):
+    s = Session(browser, idp, app_url, STEWARD)
+    s.context.add_init_script(DEFER_HASHCHANGE)
+    s.login()
+    try:
+        s.go("#/catalog", "#catalog-results")
+        catalog_title = s.page.locator("main h1").inner_text()
+        s.go("#/glossary")  # 既定の待ち (main h1) は、切り替わる前の画面にもある
+        assert s.page.locator("main h1").inner_text() != catalog_title
+        assert "glossary" in s.page.evaluate("() => window.location.hash")
+        assert s.page.locator(".loading").count() == 0
+        # 同じハッシュでは再描画が起きないので、切り替わりを待たずに戻る
+        s.go("#/glossary")
+        assert "glossary" in s.page.evaluate("() => window.location.hash")
+    finally:
+        s.close()
+
+
 def test_landmarks_and_labels(session_of):
     s = session_of(CONSUMER)
     s.go("#/catalog", "#catalog-results")
