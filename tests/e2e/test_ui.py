@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from tests.e2e.conftest import ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, STEWARD, USERS, Session
+from tests.e2e.conftest import ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, STEWARD, USERS, Session, transition
 
 pytestmark = pytest.mark.e2e
 ROUTES = ["#/catalog", "#/glossary", "#/lineage/sales.internal", "#/dashboard", "#/products", "#/issues", "#/inbox", "#/jobs"]
@@ -143,13 +143,34 @@ def test_lineage_graph_and_redaction(session_of):
     assert "閲覧権限なし" in svg and "未登録" in svg and "CDE" in svg
     hidden = s.page.locator("svg.lineage .node-redacted")
     assert hidden.count() == 1 and "sales.restricted" not in s.page.inner_text("main")
-    # 深さの切り替え
-    s.page.select_option("select[name=depth]", "1")
-    s.page.click("main form button")
-    s.page.wait_for_function("() => window.location.hash.includes('depth=1')")
-    s.page.wait_for_selector("svg.lineage")
     # 伏せたノードは表にも詳細のリンクを出さない
     assert s.page.locator("main table a", has_text="sales.restricted").count() == 0
+
+
+def _graph_names(page) -> list[str]:
+    """グラフのノードの名前 (title の先頭)。"""
+    return sorted(t.split(" / ")[0] for t in page.locator("svg.lineage g.node > title").all_text_contents())
+
+
+def test_lineage_depth_switch_shows_the_new_graph(session_of, api_as):
+    """深さの切り替え。sales.public は深さ 1 と 3 でノードが変わる (sales.internal は上下 1 段ずつで変わらない)。"""
+    api = api_as(CONSUMER)
+    deep, shallow = (api.get("/lineage/sales.public/graph", params={"depth": d}).json() for d in (3, 1))
+    deep_names, shallow_names = (sorted(n["qualified_name"] for n in g["nodes"]) for g in (deep, shallow))
+    assert len(deep_names) > len(shallow_names) and "ext.unregistered" in deep_names and "ext.unregistered" not in shallow_names  # 前提
+    s = session_of(CONSUMER)
+    s.go("#/lineage/sales.public", "svg.lineage")
+    assert _graph_names(s.page) == deep_names
+    s.page.select_option("select[name=depth]", "1")
+    transition(s.page, lambda: s.page.click("main form button"), "svg.lineage")
+    # 切り替えの後でしか成り立たない条件
+    assert "depth=1" in s.page.evaluate("() => window.location.hash")
+    assert _graph_names(s.page) == shallow_names
+    assert "ext.unregistered" not in s.page.locator("svg.lineage").text_content()
+    assert s.page.locator("svg.lineage").get_attribute("aria-label").count(f"ノード {len(shallow_names)} 件") == 1
+    assert s.page.locator("select[name=depth]").input_value() == "1"
+    distances = s.page.locator("main table").first.locator("tbody tr td:nth-child(3)").all_inner_texts()
+    assert distances and max(int(d) for d in distances) == 1
 
 
 def test_dashboard(session_of):
@@ -176,12 +197,20 @@ def test_products_issues_inbox(session_of):
 
 def test_pagination_uses_headers(session_of, api_as):
     s = session_of(ADMIN)
+    api = api_as(ADMIN)
+    first, second = ([a["qualified_name"] for a in api.get("/assets", params={"limit": 2, "offset": o}).json()] for o in (0, 2))
+    assert first and second and set(first).isdisjoint(second)  # 前提: 2 ページ目は別の行
     s.page.route("**/api/v1/assets?*", lambda route: route.continue_(url=route.request.url.replace("limit=25", "limit=2")))
     s.go("#/catalog", "#catalog-results")
+    rows = s.page.locator("#catalog-results tbody tr td:first-child")
+    assert rows.all_inner_texts() == first
     pager = s.page.locator(".pager")
     assert "全" in pager.inner_text() and pager.locator("button").nth(0).is_disabled()
-    pager.locator("button").nth(1).click()
-    s.page.wait_for_function("() => window.location.hash.includes('offset=2')")
+    transition(s.page, lambda: pager.locator("button").nth(1).click(), "#catalog-results")
+    # 2 ページ目の内容に変わったこと
+    assert "offset=2" in s.page.evaluate("() => window.location.hash")
+    assert rows.all_inner_texts() == second
+    assert s.page.locator(".pager button").nth(0).is_enabled()
 
 
 def test_language_switch(session_of):
