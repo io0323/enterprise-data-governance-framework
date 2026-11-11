@@ -16,6 +16,7 @@ from edgf.idempotency import IdempotencyMiddleware
 from edgf.observability import RequestContextMiddleware, configure_logging, setup_tracing
 from edgf.services.audit_anchor import validate_anchor_settings
 from edgf.services.discovery_rules import get_rules
+from edgf.services.probe import validate_probe_settings
 from edgf.services.mdm_rules import get_entities
 from edgf.ui import routes as ui_routes
 from edgf.services.policy_bundles import bootstrap_on_startup
@@ -43,6 +44,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     authenticator = build_authenticator(s)  # 設定不備・production での dev モードはここで停止 (fail fast)
     validate_subject_key(s)  # production で EDGF_SUBJECT_KEY が無ければ停止
     validate_anchor_settings(s)  # production でアンカリングが有効なのに署名鍵が無ければ停止
+    validate_probe_settings(s)  # 到達の確認が有効なのに許可するホストが無ければ停止
     app = FastAPI(
         title="Enterprise Data Governance Framework",
         version=__version__,

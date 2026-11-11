@@ -1326,3 +1326,22 @@ class SchemaChangeOut(ORM):
     created_at: datetime
     decided_by: str | None
     decided_at: datetime | None
+
+
+# ---------------------------------------------------------------- §15 Addressable (Phase 15c)
+class ReachabilityReportIn(BaseModel):
+    """Data Plane からの到達の報告。detail は短い説明だけ (応答の本文や個人情報を入れない)。"""
+    model_config = ConfigDict(extra="forbid")
+    reachable: bool
+    observed_at: datetime | None = Field(default=None, description="確認した時刻 (省略時は受け取った時刻。未来の時刻は受け取った時刻に丸める)")
+    detail: str = Field(default="", max_length=200, pattern=r"^[A-Za-z0-9 _.:/\-]*$")
+
+
+class ReachabilityOut(ORM):
+    id: str
+    port_id: str
+    reachable: bool
+    method: str
+    observed_at: datetime
+    detail: str
+    reporter: str

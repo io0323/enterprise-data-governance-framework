@@ -44,7 +44,7 @@ def world(as_user):
     version = ok(steward.post(f"/mesh/contracts/{contract['id']}/versions", json={"version": "1.0.0", "description": "受注", "sensitivity": "internal",
                                                                                  "schema": columns}))
     ok(owner.post(f"/mesh/contract-versions/{version['id']}/publish"))
-    return {"admin": admin, "committee": committee, "orders": orders, "customers": customers, "party": party, "source": source, "corpus": corpus,
+    return {"admin": admin, "committee": committee, "port": port, "product": product, "orders": orders, "customers": customers, "party": party, "source": source, "corpus": corpus,
             "contract": contract, "columns": columns}
 
 
@@ -112,6 +112,15 @@ def test_inventory_snapshot(sdk, world):
     with pytest.raises(ValidationFailed):
         sdk.push_inventory("warehouse.sales", [{"qualified_name": "sales.orders", "sample": [{"order_id": 1}]}])
     assert world["admin"].get("/kpi").json()["catalog_registration_rate"] == 0.5
+
+
+def test_reachability_report(sdk, world):
+    before = world["admin"].get(f"/mesh/products/{world['product']['id']}/datsis").json()
+    assert "MESH-007" in [r["policy_id"] for r in before["results"] if r["status"] == "fail"]
+    report = sdk.report_reachability(world["port"]["id"], True, detail="http_200")
+    assert report["method"] == "push" and report["reporter"] == DATA_PLANE
+    after = world["admin"].get(f"/mesh/products/{world['product']['id']}/datsis").json()
+    assert "MESH-007" not in [r["policy_id"] for r in after["results"] if r["status"] == "fail"]
 
 
 def test_errors_are_typed(sdk, world):

@@ -28,7 +28,7 @@ CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_
                "ai_training_approved", "ai_inheritance", "ai_rag_certified_sources", "ai_embedding_protected"}
 # §15 Data Product の出荷基準 (DATSIS)。評価の対象が Data Product のもの (target: product)
 MESH_CHECK_TYPES = {"mesh_discoverable", "mesh_addressable", "mesh_trustworthy", "mesh_self_describing", "mesh_interoperable",
-                    "mesh_secure"}
+                    "mesh_secure", "mesh_reachable"}
 # target: product で使える check type。Domain Policy はこれらで基準を追加できる
 PRODUCT_CHECK_TYPES = MESH_CHECK_TYPES | {"required_fields", "field_in"}
 ASSET, PRODUCT = "asset", "product"

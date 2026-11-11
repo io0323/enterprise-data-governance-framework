@@ -253,8 +253,10 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `privacy.erasure.verify` | 消去の完了確認とクローズ | ロール: committee<br>対象の owner | ✓ |
 | `privacy.inventory.read` | PII インベントリの参照 | ロール: admin, committee<br>ドメイン内ロール: owner, steward |  |
 | `privacy.purpose.write` | Purpose カタログの登録・更新 | ロール: admin, committee |  |
+| `probe.configure` | Control Plane からの到達の確認の実行と設定の参照 | ロール: admin |  |
 | `quality.rule_write` | 品質ルールの追加・削除 | ドメイン内ロール: owner, steward<br>対象の owner / steward |  |
 | `quality.run` | 品質検査の実行 (パイプラインからの送信を含む) | ドメイン内ロール: custodian, owner, steward<br>対象の custodian / owner / steward |  |
+| `reachability.report` | Output Port の到達の報告 (ポートの資産の Custodian) | 対象の custodian |  |
 | `refdata.publish` | Reference Data の版の公開 | ロール: committee<br>対象の owner | ✓ |
 | `refdata.write` | Reference Data の下書きの作成 | ドメイン内ロール: owner, steward |  |
 | `review.decide` | 棚卸と証明の判断 (対象資産の Owner) | 対象の owner | ✓ |

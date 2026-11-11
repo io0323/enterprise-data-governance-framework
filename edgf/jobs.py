@@ -94,6 +94,11 @@ def _kpi_snapshot(db: Session, actor: str) -> dict[str, Any]:
     return kpi.snapshot(db)
 
 
+def _reachability_probe(db: Session, actor: str) -> dict[str, Any]:
+    from edgf.services import mesh_reachability
+    return mesh_reachability.probe_all(db)
+
+
 def _audit_anchor(db: Session, actor: str) -> dict[str, Any]:
     from edgf.services import audit_anchor
     return audit_anchor.create_anchor(db, actor)
@@ -132,6 +137,8 @@ JOBS: dict[str, Job] = {j.name: j for j in (
     Job("review_campaigns", "レビューキャンペーンの作成と期限の処理 (§16 / §11)", _reviews, DAY),
     Job("kpi_snapshot", "KPI の日次のスナップショット (§17)", _kpi_snapshot, DAY),
     Job("audit_anchor", "監査チェーンのアンカリング (§13)", _audit_anchor, HOUR, lambda: settings.anchor_enabled),
+    Job("reachability_probe", "Control Plane からの Output Port の到達の確認 (§15。EDGF_PROBE_ENABLED のときだけ)", _reachability_probe, HOUR,
+        lambda: settings.probe_enabled),
 )}
 
 

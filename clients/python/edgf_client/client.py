@@ -142,6 +142,13 @@ class EdgfClient:
         """
         return self._send(f"{API}/discovery/snapshots", {"source": source, "assets": list(assets)}, idempotency_key)
 
+    # ------------------------------------------------------------ Addressable (§15)
+    def report_reachability(self, port_id: str, reachable: bool, *, observed_at: str | None = None, detail: str = "",
+                            idempotency_key: str | None = None) -> dict:
+        """Output Port に到達できたかを報告する (ポートの資産の Custodian)。detail は短い説明だけにする。"""
+        body = {"reachable": reachable, "detail": detail, **({"observed_at": observed_at} if observed_at else {})}
+        return self._send(f"{API}/mesh/ports/{port_id}/reachability", body, idempotency_key)
+
     def close(self) -> None:
         self._http.close()
 

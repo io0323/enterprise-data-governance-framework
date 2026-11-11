@@ -891,6 +891,19 @@ class KpiSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ReachabilityReport(Base):
+    """§15 Addressable: Output Port に到達できたかの記録。既定は Data Plane からの報告 (push)、任意で Control Plane からの確認 (probe)"""
+    __tablename__ = "reachability_reports"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    port_id: Mapped[str] = mapped_column(String(36), ForeignKey("output_ports.id", ondelete="CASCADE"), index=True)
+    reachable: Mapped[bool] = mapped_column(Boolean)
+    method: Mapped[str] = mapped_column(String(10))  # push / probe
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    detail: Mapped[str] = mapped_column(String(200), default="")
+    reporter: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class DiscoverySource(Base):
     """§7 Discovery: Data Plane のソース (namespace)。ドメインと Steward は policies/discovery の対応表から決める"""
     __tablename__ = "discovery_sources"

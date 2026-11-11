@@ -161,6 +161,13 @@ policies:
     target: product
     check: {type: mesh_secure}
 
+  - id: MESH-007
+    name: Addressable(全Output Portに有効期間内の到達の報告がある)
+    design_ref: "§15 Data Product"
+    severity: high
+    target: product
+    check: {type: mesh_reachable}
+
   - id: CAT-001
     name: Glossary用語との紐付け
     design_ref: "§6.2 Glossary"

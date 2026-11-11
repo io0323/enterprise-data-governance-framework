@@ -34,11 +34,16 @@ def product(client, name="orders", *, domain_name="sales", owner="po", **kw) -> 
     return r.json()
 
 
-def add_port(client, product_id, asset_id, name="main", **kw) -> dict:
+def add_port(client, product_id, asset_id, name="main", reachable=True, **kw) -> dict:
     r = client.post(f"{MESH}/products/{product_id}/ports", headers=STEWARD,
                     json={"name": name, "asset_id": asset_id, "port_type": "table", "address_uri": "warehouse://sales/orders", **kw})
     assert r.status_code == 201, r.text
-    return r.json()
+    port = r.json()
+    if reachable:  # MESH-007 (Phase 15): Data Plane がポートの到達を報告する。資産の Custodian として送る
+        custodian = client.get(f"{API}/assets/{asset_id}", headers=ADMIN).json()["custodian"]
+        reported = client.post(f"{MESH}/ports/{port['id']}/reachability", headers=U(custodian), json={"reachable": True})
+        assert reported.status_code == 201, reported.text
+    return port
 
 
 COLUMNS = [{"name": "order_id", "type": "bigint", "nullable": False, "description": "受注 ID"},
