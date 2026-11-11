@@ -221,16 +221,17 @@ def test_client_methods_build_the_documented_requests():
         client.mdm_verify("party", "g", {"name": "x"}, version=2)
         client.rag_authorize("corpus", {"subject": "u"}, ["a", "b"])
         client.erasure_tasks("issued", limit=5)
+        client.push_inventory("warehouse.sales", [{"qualified_name": "a.b"}])
     paths = [(m, p) for m, p, _, _ in seen]
     assert paths == [("POST", "/api/v1/lineage/openlineage"), ("POST", "/api/v1/privacy/erasure-tasks/t1/ack"),
                      ("POST", "/api/v1/privacy/erasure-tasks/t1/complete"), ("POST", "/api/v1/mesh/contracts/c1/check"),
                      ("POST", "/api/v1/mdm/party/match"), ("POST", "/api/v1/mdm/party/golden-records/g/compose"),
                      ("POST", "/api/v1/mdm/party/golden-records/g/verify"), ("POST", "/api/v1/ai/rag/authorize"),
-                     ("GET", "/api/v1/privacy/erasure-tasks")]
+                     ("GET", "/api/v1/privacy/erasure-tasks"), ("POST", "/api/v1/discovery/snapshots")]
     # 送信系にだけ Idempotency-Key を付ける
     keyed = [p for m, p, _, k in seen if k]
     assert keyed == ["/api/v1/lineage/openlineage", "/api/v1/privacy/erasure-tasks/t1/ack", "/api/v1/privacy/erasure-tasks/t1/complete",
-                     "/api/v1/mdm/party/match", "/api/v1/mdm/party/golden-records/g/compose"]
+                     "/api/v1/mdm/party/match", "/api/v1/mdm/party/golden-records/g/compose", "/api/v1/discovery/snapshots"]
     assert seen[2][2]["evidence_hash"] == "a" * 64 and seen[6][2] == {"attributes": {"name": "x"}, "version": 2}
 
 

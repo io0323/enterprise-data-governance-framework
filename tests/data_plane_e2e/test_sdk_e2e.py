@@ -103,6 +103,17 @@ def test_erasure_tasks_ack_and_complete(sdk, world):
         assert done["status"] == "completed"
 
 
+def test_inventory_snapshot(sdk, world):
+    result = sdk.push_inventory("warehouse.sales", [
+        {"qualified_name": "sales.orders", "kind": "table", "schema": [{k: c[k] for k in ("name", "type", "nullable")} for c in world["columns"]]},
+        {"qualified_name": "sales.shadow_table", "kind": "table", "schema": [{"name": "id", "type": "bigint", "nullable": False}]},
+    ])
+    assert result["unregistered"] == ["sales.shadow_table"] and result["domain"] == "sales"
+    with pytest.raises(ValidationFailed):
+        sdk.push_inventory("warehouse.sales", [{"qualified_name": "sales.orders", "sample": [{"order_id": 1}]}])
+    assert world["admin"].get("/kpi").json()["catalog_registration_rate"] == 0.5
+
+
 def test_errors_are_typed(sdk, world):
     with pytest.raises(NotFound):
         sdk.notify_refreshed("00000000-0000-0000-0000-000000000000")

@@ -30,7 +30,7 @@ def _free_port() -> int:
 def idp():
     from tests.e2e.fake_idp import FakeIdp
     server = FakeIdp()
-    server.clients[DATA_PLANE] = {"secret": SECRET, "roles": ["custodian"]}
+    server.clients[DATA_PLANE] = {"secret": SECRET, "roles": ["custodian"], "domains": ["sales"]}
     server.start()
     yield server
     server.stop()

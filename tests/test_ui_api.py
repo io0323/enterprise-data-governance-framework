@@ -106,7 +106,7 @@ def test_maturity_reports_next_level_conditions():
     assert nxt["level"] == 2 and nxt["name"] == "Managed"
     assert nxt["conditions"] == [{"metric": "owner_assignment_rate", "minimum": 0.8, "value": 0.9, "met": True},
                                  {"metric": "quality_score_avg", "minimum": None, "value": None, "met": False}]
-    top = kpi.maturity_indicator({"owner_assignment_rate": 1, "quality_score_avg": 1, "metadata_completeness": 1, "compliance_rate": 1, "certified_rate": 1})
+    top = kpi.maturity_indicator({"owner_assignment_rate": 1, "quality_score_avg": 1, "catalog_registration_rate": 1, "compliance_rate": 1, "certified_rate": 1})
     assert top["indicative_level"] == 4 and top["next_level"] is None
     assert kpi.maturity_indicator({})["indicative_level"] == 0
 

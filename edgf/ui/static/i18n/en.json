@@ -181,7 +181,7 @@
  "kpi.compliance_rate": "Policy compliance",
  "kpi.mean_time_to_resolve_days": "Mean time to resolve (days)",
  "kpi.catalog_registration": "Catalog registration",
- "kpi.catalog_registration_note": "Cannot be measured: unregistered assets are not discovered",
+ "kpi.catalog_registration_note": "No asset inventory has arrived from the Data Plane yet",
  "kpi.usage": "Usage (assets with activity, 30 days)",
  "kpi.open_issue_count": "Open issues",
  "kpi.overdue_issue_count": "Overdue issues",
@@ -261,5 +261,6 @@
  "jobs.last_count": "Count",
  "jobs.failures": "Consecutive failures",
  "jobs.overdue": "Overdue",
- "kpi.areas": "KPIs by area"
+ "kpi.areas": "KPIs by area",
+ "kpi.catalog_registration_rate": "Catalog registration"
 }

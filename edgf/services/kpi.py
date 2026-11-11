@@ -12,6 +12,7 @@ from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, Dom
                          MdmReview, MdmXref, MeshSubscription, ModelRemediation, utcnow)
 from edgf.services.ai import card_complete
 from edgf.services.ai_inherit import compute as compute_inherited, is_violation
+from edgf.services.discovery import registration as discovery_registration
 from edgf.services.issues import OPEN_STATES
 from edgf.services.mesh_datsis import passes as datsis_passes
 from edgf.services.policy import evaluate_asset
@@ -148,6 +149,7 @@ def compute(db: Session, domain: str | None = None, readable: ColumnElement[bool
         "mdm_review_pending_count": pending_reviews,  # §8 裁定キューの件数
         "mdm_duplicate_rate": _rate(auto_merged + steward_merged, len(links)),  # ソースのうち既存に統合された割合
         "mdm_auto_merge_rate": _rate(auto_merged, auto_merged + steward_merged),  # 統合のうち自動マージの割合
+        **discovery_registration(db, domain),  # Catalog 登録率 (§1.8 目標 95%)。Data Plane の資産一覧が無ければ None
         **_ai_metrics(db, list(assets), now),
         **_mesh_metrics(db, domain, ids),
         **_privacy_metrics(db, domain, list(assets), ids, now),
@@ -159,7 +161,8 @@ LEVEL_NAMES = {0: "No Governance", 1: "Basic Policy", 2: "Managed", 3: "Standard
 LEVEL_CONDITIONS: dict[int, tuple[tuple[str, float | None], ...]] = {
     1: (("owner_assignment_rate", 0.5),),
     2: (("owner_assignment_rate", 0.8), ("quality_score_avg", None)),
-    3: (("metadata_completeness", 0.95), ("compliance_rate", 0.9)),
+    # Phase 15 で、メタデータ完備率による代替から Catalog 登録率 (登録済み ÷ 検出された資産) に切り替えた (§1.8 / §20)
+    3: (("catalog_registration_rate", 0.95), ("compliance_rate", 0.9)),
     4: (("certified_rate", 0.5), ("compliance_rate", 0.98)),
 }
 MAX_AUTOMATIC_LEVEL = max(LEVEL_CONDITIONS)

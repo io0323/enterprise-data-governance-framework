@@ -181,7 +181,7 @@
  "kpi.compliance_rate": "Policy 準拠率",
  "kpi.mean_time_to_resolve_days": "平均是正日数",
  "kpi.catalog_registration": "Catalog 登録率",
- "kpi.catalog_registration_note": "未登録の資産を検出する手段が無いため計測できません",
+ "kpi.catalog_registration_note": "Data Plane から資産一覧がまだ届いていません",
  "kpi.usage": "Usage (活動のあった資産、30 日)",
  "kpi.open_issue_count": "未解決の Issue",
  "kpi.overdue_issue_count": "期限超過の Issue",
@@ -261,5 +261,6 @@
  "jobs.last_count": "件数",
  "jobs.failures": "連続の失敗",
  "jobs.overdue": "遅延",
- "kpi.areas": "領域別の KPI"
+ "kpi.areas": "領域別の KPI",
+ "kpi.catalog_registration_rate": "Catalog 登録率"
 }

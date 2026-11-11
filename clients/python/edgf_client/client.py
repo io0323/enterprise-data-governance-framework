@@ -134,6 +134,14 @@ class EdgfClient:
         body = {"corpus_asset_id": corpus_asset_id, "user": dict(user), "hit_asset_ids": list(hit_asset_ids)}
         return self._query(f"{API}/ai/rag/authorize", body)
 
+    # ------------------------------------------------------------ Discovery (§7)
+    def push_inventory(self, source: str, assets: Iterable[Mapping[str, Any]], *, idempotency_key: str | None = None) -> dict:
+        """ソース (namespace) の全量の資産一覧を送る。送れるのはメタデータ (名前、種類、カラムの名前・型・nullable、更新時刻) だけ。
+
+        値、サンプル、統計 (min / max など) の項目を含めると 422 (ValidationFailed) になる。
+        """
+        return self._send(f"{API}/discovery/snapshots", {"source": source, "assets": list(assets)}, idempotency_key)
+
     def close(self) -> None:
         self._http.close()
 

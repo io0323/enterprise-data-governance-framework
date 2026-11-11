@@ -187,6 +187,10 @@ PERMISSIONS: Mapping[str, Rule] = {
     # ジョブ (§16 / §19 Observability)
     "jobs.run": rule(roles=(ADMIN,), description="ジョブの手動実行 (通常は外部の cron や CronJob から実行する)"),
     "jobs.read": rule(roles=(ADMIN, COMMITTEE), description="ジョブの実行状況の参照"),
+    # Data Plane 連携 (§7 Discovery / §17 Usage / §15 Addressable)。Data Plane のサービスの主体を想定
+    "discovery.push": rule(roles=(ADMIN,), domain_roles=(CUSTODIAN,), description="資産一覧のスナップショットの送信 (ソースのドメイン)"),
+    "discovery.read": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER, STEWARD), description="検出された資産と保留のスキーマの変化の参照"),
+    "discovery.apply_breaking": rule(relations=("owner", "steward"), approval=True, description="破壊的なスキーマの変化を確認して Catalog に反映"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

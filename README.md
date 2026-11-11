@@ -203,6 +203,9 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `asset.update` | 資産メタデータの更新・ライフサイクル遷移 (削除以外) | ロール: admin<br>ドメイン内ロール: owner, steward<br>対象の owner / steward |  |
 | `audit.read` | 監査ログの参照 | ロール: admin, committee |  |
 | `cdm.import` | 外部の CDM 定義の版の取り込み (作成・編集の機能は持たない) | ロール: admin, committee | ✓ |
+| `discovery.apply_breaking` | 破壊的なスキーマの変化を確認して Catalog に反映 | 対象の owner / steward | ✓ |
+| `discovery.push` | 資産一覧のスナップショットの送信 (ソースのドメイン) | ロール: admin<br>ドメイン内ロール: custodian |  |
+| `discovery.read` | 検出された資産と保留のスキーマの変化の参照 | ロール: admin, committee<br>ドメイン内ロール: owner, steward |  |
 | `domain.create` | ドメインの新設 | ロール: admin, committee |  |
 | `exception.decide` | ポリシー例外の承認/却下 | ロール: admin, committee | ✓ |
 | `exception.request` | ポリシー例外の申請 | ロール: admin<br>ドメイン内ロール: owner, steward<br>対象の owner / steward |  |

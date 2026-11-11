@@ -1251,3 +1251,78 @@ class ReviewItemOut(ORM):
 
 class PolicyReviewIn(MeshInput):
     note: str = Field(default="", max_length=1000)
+
+
+# ---------------------------------------------------------------- §7 Discovery (Phase 15b)
+# 値、サンプル、統計は受け付けない (§18.2 Control Plane はデータ本体を持たない)。名前で拒否して理由を明示する
+FORBIDDEN_DATA_FIELDS = frozenset({
+    "value", "values", "sample", "samples", "sample_values", "example", "examples", "rows", "records", "data", "preview",
+    "min", "max", "mean", "avg", "average", "median", "stddev", "sum", "histogram", "distinct_count", "null_count", "top_values",
+    "stats", "statistics", "profile", "distribution", "default", "default_value",
+})
+
+
+class _MetadataOnly(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_data(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            found = sorted(k for k in data if isinstance(k, str) and k.lower() in FORBIDDEN_DATA_FIELDS)
+            if found:
+                raise ValueError(f"値・サンプル・統計の項目は受け付けません (メタデータだけを送ってください): {', '.join(found)}")
+        return data
+
+
+class DiscoveredColumn(_MetadataOnly):
+    name: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=100)
+    nullable: bool | None = None
+
+
+class DiscoveredAssetIn(_MetadataOnly):
+    qualified_name: str = Field(min_length=1, max_length=300)
+    kind: str | None = Field(default=None, max_length=30, description="table / view / file / stream など")
+    schema_: list[DiscoveredColumn] = Field(default_factory=list, alias="schema", max_length=2000)
+    updated_at: datetime | None = Field(default=None, description="Data Plane での最終更新時刻")
+
+
+class DiscoverySnapshotIn(_MetadataOnly):
+    """ソース (namespace) の全量のスナップショット。前回のスナップショットとの差分を取る。"""
+    source: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/\-]+$")
+    assets: list[DiscoveredAssetIn] = Field(max_length=100_000)
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> DiscoverySnapshotIn:
+        names = [a.qualified_name for a in self.assets]
+        if len(names) != len(set(names)):
+            raise ValueError("同じ qualified_name が重複しています")
+        return self
+
+
+class DiscoveredAssetOut(ORM):
+    id: str
+    namespace: str
+    qualified_name: str
+    kind: str | None
+    schema_: list[dict[str, Any]] = Field(alias="schema")
+    source_updated_at: datetime | None
+    status: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    missing_since: datetime | None
+    registered: bool = False
+
+
+class SchemaChangeOut(ORM):
+    id: str
+    asset_id: str
+    namespace: str
+    proposed_schema: list[dict[str, Any]]
+    changes: list[dict[str, Any]]
+    status: str
+    issue_id: str | None
+    created_at: datetime
+    decided_by: str | None
+    decided_at: datetime | None
