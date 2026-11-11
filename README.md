@@ -3,6 +3,20 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 15)
+
+**成熟度 Level 3 の判定の指標を変えました(確定事項の変更です)。** これまでは Catalog 登録率を計測できなかったので、メタデータ完備率で代替していました。Phase 15 から Data Plane の資産一覧で未登録の資産を検出できるので、**Catalog 登録率(登録済み ÷ 検出された資産)が 95% 以上**であることを条件にします(§1.8、§20)。
+
+資産一覧が届いていない環境では Catalog 登録率は `null` で、**Level 3 には上がりません**(これまで Level 3 だった環境も Level 2 になります)。Data Plane から資産一覧を送ると判定できるようになります。
+
+| 対象 | 変更 |
+|---|---|
+| `GET /kpi`, `/kpi/domains`, `/kpi/history` | `catalog_registration_rate`、`discovered_asset_count`、`unregistered_asset_count`、`usage_active_assets_30d`、`usage_query_count_30d`、`unused_asset_count` を追加。`governance_activity_assets_30d` は互換性のために残します |
+| 成熟度(`maturity`) | Level 3 の条件を `metadata_completeness` から `catalog_registration_rate` に変更 |
+| ダッシュボード | Catalog 登録率を表示し、Usage を利用実績の指標に切り替え |
+| Policy | `MESH-007`(Addressable: 到達の報告)を `policies/global.yaml` に追加。**既存の環境では、Phase 12 の Policy 変更の承認(`POST /policies/reload` の提案 → Committee の承認 → 公開)を経て適用してください。** 新規の環境では最初の取り込みで有効になります。必須の出荷基準(MESH-001〜006)には含めないので、承認の前に Product の公開は止まりません |
+| 全 API | `Idempotency-Key` ヘッダを受け付けます(送信系の再送の重複の防止)。付けなければ従来どおりです |
+
 ## 変更点(Phase 14)
 
 **ABAC の漏れを修正しました(セキュリティの修正として承認済みの挙動の変更です)。** 閲覧できない資産の**名前**は、Lineage 系のすべての API で返さなくなりました。
@@ -51,6 +65,7 @@
 | §14 | AI 資産(Dataset / Model Card、版の情報)、学習利用の承認、AI Lineage、統制属性の継承、RAG の判定、消去の伝播と是正、インシデント | `/ai/...` |
 | §15 | Data Product、Output Port、Data Contract(互換性の判定、メジャー版の更新)、利用登録、CDM の取り込みと準拠の検証、出荷基準(DATSIS)、ODCS の取り込みと書き出し | `/mesh/...` |
 | §16 | 汎用の承認エンジンと共通の承認箱、Policy の変更のワークフロー、Outbox と Webhook(CloudEvents)、定期レビュー、ジョブ基盤と保持期限の自動執行 | `/approvals`, `/policies/bundles`, `/webhooks`, `/outbox`, `/reviews`, `/ops/jobs` |
+| §7 / §6.3 / §17 / §15 | Data Plane 連携: 資産一覧の取り込みと差分の検出(未登録・消失・スキーマの変化)、Catalog 登録率、利用実績、Output Port の到達の報告と確認(MESH-007)、SDK(`clients/python`)、MDM Hub の参照実装 | `/discovery/...`, `/usage/daily`, `/mesh/ports/{id}/reachability` |
 | §7 / §9 / §17 / §20 | 読み取り専用の UI(Catalog、Lineage、KPI、成熟度)、KPI の推移 | `/ui/`, `/kpi/history`, `/lineage/{name}/graph`, `/mesh/products/overview` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
@@ -738,6 +753,113 @@ Contract は [ODCS](https://bitol-io.github.io/open-data-contract-standard/lates
 
 KPI(`/kpi`、ドメイン別は `/kpi/domains`)に `mesh_product_published_count`、`mesh_datsis_pass_rate`、`mesh_breaking_rejected_count`、`mesh_subscription_active_count`、`mesh_schema_drift_issue_count` を追加しました。成熟度の判定(§20)には使いません。
 
+## Data Plane 連携(§7 / §17 / §15)
+
+Control Plane はデータ本体を持たず(§18.2)、Data Plane が送るメタデータと集計値で統治します。
+
+```mermaid
+flowchart LR
+  subgraph DP["Data Plane (各ドメインの基盤)"]
+    WH[(ウェアハウス / レイク)]
+    PIPE[パイプライン / CI]
+    HUB[MDM Hub<br/>Golden Record の値]
+    SDK[[edgf-client SDK]]
+  end
+  subgraph CP["Governance Control Plane (edgf)"]
+    DISC[Discovery<br/>資産一覧の差分]
+    CAT[Catalog / Policy / KPI]
+    MESH[Data Mesh<br/>MESH-007]
+    MDM[MDM<br/>由来・内容ハッシュ・版]
+    PRIV[Right to Erasure]
+  end
+  IDP[(IdP<br/>Client Credentials)]
+  WH -- 資産一覧 (メタデータだけ) --> SDK
+  PIPE -- 品質検査・OpenLineage・更新の通知・Contract の判定 --> SDK
+  PIPE -- 利用実績 (集計値) / 到達の報告 --> SDK
+  HUB -- match / compose / verify --> SDK
+  SDK -- 消去タスクの取得・完了 --> PRIV
+  SDK -- トークン --> IDP
+  SDK --> DISC & CAT & MESH & MDM
+  CP -. 到達の確認 (既定は無効、許可したホストだけ) .-> WH
+```
+
+### SDK(`clients/python`、パッケージ `edgf-client`)
+
+サーバとは別のパッケージで、依存は httpx だけです。
+
+```python
+from edgf_client import ClientCredentials, EdgfClient, ValidationFailed
+
+credentials = ClientCredentials("https://idp.example.com/token", client_id="dp-sales", client_secret=secret)  # トークンはキャッシュし、期限の 60 秒前に更新
+with EdgfClient("https://edgf.example.com", credentials) as edgf:
+    edgf.push_inventory("warehouse.sales", [{"qualified_name": "sales.orders", "kind": "table",
+                                              "schema": [{"name": "order_id", "type": "bigint", "nullable": False}]}])
+    edgf.push_usage([{"qualified_name": "sales.orders", "day": "2026-11-10", "query_count": 120, "user_count": 8}])
+    edgf.report_reachability(port_id, True, detail="http_200")
+```
+
+| 機能 | メソッド |
+|---|---|
+| 品質、リネージ、更新の通知 | `submit_quality_run`, `send_openlineage`, `notify_refreshed` |
+| Right to Erasure | `erasure_tasks`, `ack_erasure_task`, `complete_erasure_task` |
+| Data Contract(CI) | `check_contract` |
+| MDM | `mdm_match`, `mdm_compose`, `mdm_verify` |
+| RAG | `rag_authorize` |
+| Data Plane 連携 | `push_inventory`, `push_usage`, `report_reachability` |
+
+- **再試行**: 安全な操作(GET、判定)と、Idempotency-Key を付けた送信だけを再試行します(接続の失敗、429、502、503、504。`Retry-After` に従う)。鍵の無い送信は二重に処理されるおそれがあるので送り直しません
+- **Idempotency-Key**: 送信系には呼び出しごとに鍵を付け、再試行では同じ鍵を使います。サーバは同じ操作者と鍵の要求を 1 回だけ処理し、2 回目以降は保存した応答を返します(`Idempotent-Replayed: true`)。保存するのは要求のハッシュと成功した応答だけで、期間は `EDGF_IDEMPOTENCY_TTL_HOURS`(既定 24 時間)です。**応答にデータの値を含む MDM の compose は保存の対象外で**、SDK は鍵を付けずに再送します(同じ入力なら同じ結果になる)
+- **例外**: Problem Details を `Unauthenticated`、`Forbidden`、`NotFound`、`Conflict`、`ValidationFailed`、`PayloadTooLarge`、`RateLimited`、`ServerError`、`ServiceUnavailable` などに変換します。`slug`(`urn:edgf:problem:` を除いた種別)、`request_id`、拡張メンバを持ちます
+- **401**: トークンを取り直して 1 回だけ送り直します
+
+### 資産一覧の取り込み(`POST /discovery/snapshots`)
+
+Data Plane はソース(namespace)ごとに**全量**のスナップショットを送ります。Control Plane は**同じソースの**前回と比べます。送られてこなかったソースの資産は消失と判定しません。
+
+| 検出 | 扱い |
+|---|---|
+| 未登録(Catalog に無い) | 対応表のドメインの Steward に Issue(`discovery-unregistered:<名前>`、重複起票しない)。Catalog への登録は既存の `POST /assets` で行います |
+| 消失(前回あって今回無い) | Catalog にあれば、その資産の Steward に Issue |
+| スキーマの非破壊の変化 | Catalog の schema に自動で反映(actor は `system:discovery`)。既存の更新の経路を通すので、Certification のリセットと Contract とのずれの検出が働きます。説明や PII などの業務のメタデータは残します |
+| スキーマの破壊的な変化 | 反映せず、保留にして Issue を起票。`POST /discovery/schema-changes/{id}/apply`(対象資産の Steward / Owner)で反映します |
+
+変化の判定には Phase 11 の互換性の判定表を使います。ソースとドメインの対応は `policies/discovery/*.yaml` で宣言します(起動時に検証し、不正なら起動を止めます。Policy Bundle の承認の対象ではありません)。
+
+```yaml
+version: 1
+sources:
+  - {namespace: "warehouse.sales", domain: sales, steward: sales-steward}  # namespace はシェル形式のパターン。上から順に照合
+```
+
+**受け付けるのはメタデータだけです**: 資産は `qualified_name`、`kind`、`schema`、`updated_at`。カラムは `name`、`type`、`nullable` です。それ以外の項目は 422 で拒否し、値・サンプル・統計の項目(`sample`、`values`、`rows`、`min`、`max`、`top_values`、`statistics` など)はその理由を返します。エラーの応答に入力の値は含めません。本文の大きさは `EDGF_MAX_BODY_BYTES` に従います。
+
+### 利用実績(`POST /usage/daily`)
+
+受け取るのは **資産 × 日 × 問い合わせの件数 × 利用者の数** の集計値だけです。
+
+- 利用者を特定する項目(`user_id`、`users`、`email`、`subject`、`client_ip`、`query_text`、`sql`、`session_id` など)と未知の項目は 422 で拒否します
+- 同じ資産と日の再送は上書きします(Data Plane が集計し直して送り直せます)。Catalog に無い資産は保存せず、`unregistered` として返します
+- 日付は今日から 400 日前まで、`user_count` は `query_count` 以下です
+- KPI: `usage_active_assets_30d`(直近 30 日に問い合わせのあった資産)、`usage_query_count_30d`、`unused_asset_count`。利用実績が 1 件も無いうちは `null` です
+
+### 到達の確認(MESH-007)
+
+既定は **Data Plane からの報告(push)** です。`POST /mesh/ports/{id}/reachability`(ポートの資産の Custodian)で、`reachable` と短い `detail` を送ります。未来の時刻は受け取った時刻に丸めます。
+
+Control Plane から確かめる方式は `EDGF_PROBE_ENABLED=false` が既定で、無効の間は外部に一切接続しません。有効にする場合の安全策:
+
+- `EDGF_PROBE_ALLOWED_HOSTS`(許可するホストの一覧。`*.example.com` の形も可)が必須です。無ければ起動を拒否します
+- https だけを使い、URI に認証情報があれば接続しません。証明書はホスト名で検証します
+- 名前を解決したあと、解決したアドレスのどれかがプライベート、ループバック、リンクローカル、予約、マルチキャストなら拒否します
+- 確認したアドレスにそのまま接続します(接続のときに解決し直さないので、DNS の再束縛で内部に向けられません)
+- リダイレクトに従いません。タイムアウトは `EDGF_PROBE_TIMEOUT_SECONDS`(既定 5 秒)です
+
+`MESH-007` は、全ポートに `EDGF_REACHABILITY_MAX_AGE_HOURS`(既定 24 時間)以内の到達の報告があることを求めます。
+
+### MDM Hub の参照実装
+
+`examples/mdm-hub/` に、SDK を使う最小の MDM Hub があります(サーバのパッケージには含めません)。Golden Record の値を自分の SQLite に持ち、match → compose → verify と消去タスクの処理を示します。
+
 ## Governance Process(§16)
 
 ### 承認エンジンと inbox の構成
@@ -879,6 +1001,8 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 | `review_campaigns` | 1 日 | レビューキャンペーンの作成と期限の処理 |
 | `kpi_snapshot` | 1 日 | KPI の日次のスナップショット(同じ日に 2 回実行しても 1 日分) |
 | `audit_anchor` | 1 時間 | 監査チェーンのアンカリング(`EDGF_ANCHOR_ENABLED=true` のときだけ動作) |
+| `unused_assets` | 1 日 | `EDGF_UNUSED_DAYS`(既定 90 日)使われていない資産を、廃止の候補として Owner に Issue で知らせる(利用実績が届くまでは何もしない) |
+| `reachability_probe` | 1 時間 | Control Plane からの Output Port の到達の確認(`EDGF_PROBE_ENABLED=true` のときだけ動作) |
 
 ```cron
 # cron の例 (環境変数は EDGF_DATABASE_URL などを設定しておく)
@@ -894,6 +1018,8 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 30 2 * * *  python -m edgf.jobs run review_campaigns
 40 2 * * *  python -m edgf.jobs run kpi_snapshot
 25 * * * *  python -m edgf.jobs run audit_anchor
+50 2 * * *  python -m edgf.jobs run unused_assets
+35 * * * *  python -m edgf.jobs run reachability_probe
 ```
 
 ```yaml
@@ -1142,6 +1268,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 | `PyJWT[crypto]` | 必須 | JWT の検証と JWKS の取得・キャッシュ(MIT。暗号処理は `cryptography`)。依存が少なく、JWKS のキャッシュと未知の `kid` での再取得(鍵ローテーション)を標準で備え、特定の IdP SDK を使わずに OIDC 準拠の検証ができるため |
 | (追加なし) | - | Phase 9 の類似度は標準ライブラリの `difflib` で計算しています。Phase 10 と Phase 11 でも依存は追加していません(ODCS の YAML は既存の `pyyaml` で処理します) |
 | `pytest-cov` | 開発 | カバレッジ計測(services/ 95% 以上を CI で検査) |
+| `edgf-client`(`clients/python`) | 別のパッケージ | Data Plane の SDK。依存は `httpx` だけです(サーバの開発依存として既に使っています)。サーバのパッケージには含めません |
 | `cryptography` | 必須(直接指定に変更) | `PyJWT[crypto]` の依存として導入済み。Phase 14 で監査アンカーの Ed25519 署名に直接使い、既知の脆弱性を避けるため 50 以上を指定します |
 | `locust` | 任意(`perf`) | 負荷試験(MIT)。Python でシナリオを書け、結果を CSV で比較できます |
 | `pg_trgm`(PostgreSQL の contrib 拡張) | 任意(PostgreSQL のみ) | 検索の部分一致の GIN 索引。主要なマネージド PostgreSQL で使えるので Cloud Agnostic を保てます。使えなければ索引なしで動きます(結果は同じで、遅くなり、`/ready` に警告を出します) |
@@ -1188,7 +1315,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - Product の Owner が自分で利用登録すると、自分では承認できないので `pending` のままです。Owner は自分の Product の利用登録を必要としない想定です
 - `POST /mesh/contracts/{id}/check` は呼び出しごとに Lineage を辿ります。p95 1 秒の目標を満たしています(資産 10 万件で測定。100 万件は未検証)
 - 拒否した破壊的変更の件数は監査ログから集計するので、KPI の計算は監査ログの件数に比例します
-- **MDM Hub の参照実装はありません**。候補の絞り込み、値の保存と履歴、再構成の実行、利用システムへの配信(§8 Synchronization、逆流更新の変更申請を含む)は Data Plane の責務で、本リポジトリには含みません
+- **MDM Hub は最小の参照実装だけです**(`examples/mdm-hub/`)。候補の絞り込み、値の履歴、同時実行の制御、利用システムへの配信(§8 Synchronization、逆流更新の変更申請を含む)は Data Plane の責務で、参照実装には含みません
 - Golden Record どうしのマージ(ソースを経由しない統合)は未実装です。裁定と自動マージはソース単位です
 - 裁定待ちのソースは Golden Record に紐付いていないので、その段階の消去要求では特定できません。MDM Hub 側で別途対応してください
 - `split` の直後は、どのソースの識別子か判定できないので、`subject_ref` の対応を両方の Golden Record に残します(再構成で正しくなります。消去の対象から漏らさないための措置です)
@@ -1196,7 +1323,9 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - **UI のアクセシビリティ**は WCAG 2.2 AA の基本(キーボード操作、ランドマーク、ラベル、フォーカスの表示、配色)に沿って作り、キーボード操作と構造を E2E で確認しています。支援技術での確認と、適合の監査は行っていません
 - UI はポップアップが必要で、再読み込みすると再ログインになります(トークンをメモリにだけ持つため)。トークンエンドポイントは issuer と同じオリジンにある必要があります(CSP の `connect-src` が issuer だけを許可するため)。トークンの自動更新はありません
 - `/kpi/history` のドメイン別の値は日次のスナップショットで、閲覧できない資産も含めた集計です(行そのものは ABAC で絞り込みます)。閲覧できる範囲で集計したい場合は `/kpi/domains` を使ってください
-- ダッシュボードの目標のうち、**Catalog 登録率(§1.8)は計測できません**(未登録の資産を検出する手段が無いため)。§20 の Level 3 の判定も、登録率の代わりにメタデータ充足率を使っています
+- Catalog 登録率は、Data Plane が送った資産一覧の範囲で計算します。**送られていないソースの資産は分母に入りません**。全ソースから送られているかは、Data Plane の側で確かめてください
+- 資産一覧の差分は、ソースごとに前回のスナップショットと比べます。差分のたびに Catalog を 1 件ずつ照合するので、1 回の送信で数万件を超える場合は分けて送ってください(ソースの単位を細かくする)
+- Usage の KPI は Data Plane の集計値の申告で、Control Plane は検証しません
 - `/mesh/products/overview` は 500 件で p95 2 秒の目標を満たしています(1 リクエストの間だけのスナップショットを使い、キャッシュは持ちません)。件数が増えると比例して遅くなります
 - **Policy の起案者は admin、Committee、ドメイン内の Owner です**。§16 の「起案(Steward/Owner)」のうち Steward は含みません
 - Policy の影響評価は全資産を評価するので、資産の数に比例して提案に時間がかかります。評価の結果は提案の時点のものです(公開までに資産が変わっても再計算しません)
