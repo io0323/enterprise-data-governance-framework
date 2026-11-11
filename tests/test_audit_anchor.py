@@ -25,6 +25,8 @@ from edgf.services.audit_anchor import (AnchorConfigError, Anchor, AnchorSinkErr
 from scripts.verify_anchors import main as verify_anchors_main
 from tests.ai_helpers import ADMIN, API, COMMITTEE, U
 
+pytestmark = pytest.mark.fresh_schema  # 監査チェーンを書き換えて検知を確かめる (テストごとにスキーマを作り直す)
+
 SEED = bytes(range(32))
 SIGNING_KEY = base64.b64encode(SEED).decode()
 ROTATED = base64.b64encode(bytes(range(1, 33))).decode()
