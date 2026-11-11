@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from tests.e2e.conftest import ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, STEWARD, USERS, Session
+from tests.e2e.conftest import ADMIN, COMMITTEE, CONSUMER, CUSTODIAN, OWNER, STEWARD, USERS, Session, transition
 
 pytestmark = pytest.mark.e2e
 ROUTES = ["#/catalog", "#/glossary", "#/lineage/sales.internal", "#/dashboard", "#/products", "#/issues", "#/inbox", "#/jobs"]
@@ -74,13 +74,38 @@ def test_token_is_kept_only_in_memory(session_of, idp):
 
 
 def test_login_rejects_wrong_state_and_requires_pkce(browser, idp, app_url, seed):
+    """ログインの応答を待っている間に、別の state の応答を送る。
+
+    受け手 (state を照合するチャンネル) はログインの開始後にしか無いので、IdP の画面を保留して応答待ちの状態を作る。
+    """
     s = Session(browser, idp, app_url, CONSUMER).open()
+    held = []
+    s.context.route(f"{idp.issuer}/authorize*", lambda route: held.append(route))
     try:
-        # 別の state の応答は無視され、ログインにならない
-        s.page.evaluate("() => { const c = new BroadcastChannel('edgf-oidc'); c.postMessage({code: 'forged', state: 'forged'}); c.close(); }")
-        s.page.wait_for_timeout(200)
+        with s.context.expect_event("request", lambda request: "/authorize" in request.url):
+            s.page.click("#login")
+        expect(s.page.locator(".login [role=status]")).to_have_text("別のウィンドウでログインしてください。")
+        exchanges = len(idp.token_requests)
+        # 同じチャンネルのメッセージは送った順に処理されるので、目印が届いた時点で偽の応答の処理は終わっている
+        s.page.evaluate("""() => new Promise((resolve) => {
+            const probe = new BroadcastChannel('edgf-oidc');
+            probe.onmessage = (event) => { if (event.data.probe) { probe.close(); resolve(); } };
+            const sender = new BroadcastChannel('edgf-oidc');
+            sender.postMessage({code: 'forged', state: 'forged'});
+            sender.postMessage({probe: true});
+            sender.close();
+        })""")
+        assert len(idp.token_requests) == exchanges  # 偽の応答ではトークンの交換をしない
         assert s.page.locator(".site-nav").count() == 0
+        expect(s.page.locator(".login [role=status]")).to_have_text("別のウィンドウでログインしてください。")
+        # 本物の応答はまだ受け付ける (受け手がいたことの確認)
+        held.pop().continue_()
+        expect(s.page.locator(".site-nav")).to_be_visible()
+        assert idp.token_requests[-1]["code_verifier"] and "client_secret" not in idp.token_requests[-1]
+        assert len(idp.token_requests) == exchanges + 1
     finally:
+        for route in held:
+            route.continue_()
         s.close()
 
 
@@ -143,13 +168,34 @@ def test_lineage_graph_and_redaction(session_of):
     assert "閲覧権限なし" in svg and "未登録" in svg and "CDE" in svg
     hidden = s.page.locator("svg.lineage .node-redacted")
     assert hidden.count() == 1 and "sales.restricted" not in s.page.inner_text("main")
-    # 深さの切り替え
-    s.page.select_option("select[name=depth]", "1")
-    s.page.click("main form button")
-    s.page.wait_for_function("() => window.location.hash.includes('depth=1')")
-    s.page.wait_for_selector("svg.lineage")
     # 伏せたノードは表にも詳細のリンクを出さない
     assert s.page.locator("main table a", has_text="sales.restricted").count() == 0
+
+
+def _graph_names(page) -> list[str]:
+    """グラフのノードの名前 (title の先頭)。"""
+    return sorted(t.split(" / ")[0] for t in page.locator("svg.lineage g.node > title").all_text_contents())
+
+
+def test_lineage_depth_switch_shows_the_new_graph(session_of, api_as):
+    """深さの切り替え。sales.public は深さ 1 と 3 でノードが変わる (sales.internal は上下 1 段ずつで変わらない)。"""
+    api = api_as(CONSUMER)
+    deep, shallow = (api.get("/lineage/sales.public/graph", params={"depth": d}).json() for d in (3, 1))
+    deep_names, shallow_names = (sorted(n["qualified_name"] for n in g["nodes"]) for g in (deep, shallow))
+    assert len(deep_names) > len(shallow_names) and "ext.unregistered" in deep_names and "ext.unregistered" not in shallow_names  # 前提
+    s = session_of(CONSUMER)
+    s.go("#/lineage/sales.public", "svg.lineage")
+    assert _graph_names(s.page) == deep_names
+    s.page.select_option("select[name=depth]", "1")
+    transition(s.page, lambda: s.page.click("main form button"), "svg.lineage")
+    # 切り替えの後でしか成り立たない条件
+    assert "depth=1" in s.page.evaluate("() => window.location.hash")
+    assert _graph_names(s.page) == shallow_names
+    assert "ext.unregistered" not in s.page.locator("svg.lineage").text_content()
+    assert s.page.locator("svg.lineage").get_attribute("aria-label").count(f"ノード {len(shallow_names)} 件") == 1
+    assert s.page.locator("select[name=depth]").input_value() == "1"
+    distances = s.page.locator("main table").first.locator("tbody tr td:nth-child(3)").all_inner_texts()
+    assert distances and max(int(d) for d in distances) == 1
 
 
 def test_dashboard(session_of):
@@ -176,12 +222,20 @@ def test_products_issues_inbox(session_of):
 
 def test_pagination_uses_headers(session_of, api_as):
     s = session_of(ADMIN)
+    api = api_as(ADMIN)
+    first, second = ([a["qualified_name"] for a in api.get("/assets", params={"limit": 2, "offset": o}).json()] for o in (0, 2))
+    assert first and second and set(first).isdisjoint(second)  # 前提: 2 ページ目は別の行
     s.page.route("**/api/v1/assets?*", lambda route: route.continue_(url=route.request.url.replace("limit=25", "limit=2")))
     s.go("#/catalog", "#catalog-results")
+    rows = s.page.locator("#catalog-results tbody tr td:first-child")
+    assert rows.all_inner_texts() == first
     pager = s.page.locator(".pager")
     assert "全" in pager.inner_text() and pager.locator("button").nth(0).is_disabled()
-    pager.locator("button").nth(1).click()
-    s.page.wait_for_function("() => window.location.hash.includes('offset=2')")
+    transition(s.page, lambda: pager.locator("button").nth(1).click(), "#catalog-results")
+    # 2 ページ目の内容に変わったこと
+    assert "offset=2" in s.page.evaluate("() => window.location.hash")
+    assert rows.all_inner_texts() == second
+    assert s.page.locator(".pager button").nth(0).is_enabled()
 
 
 def test_language_switch(session_of):
