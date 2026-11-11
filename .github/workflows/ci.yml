@@ -23,11 +23,13 @@ jobs:
           EDGF_DATABASE_URL: sqlite:///./ci-migrations.db
         run: python scripts/verify_migrations.py
       - name: pytest
-        run: pytest -q --cov=edgf/services --cov-fail-under=95
+        env:
+          JOB_TIMEOUT_MINUTES: "25"  # ジョブの timeout-minutes と同じ値 (tests/test_workflows.py で確認する)
+        run: sh scripts/ci/timed.sh "pytest (SQLite)" pytest -q --cov=edgf/services --cov-fail-under=95
 
   postgres:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16-alpine
@@ -58,7 +60,8 @@ jobs:
           EDGF_TEST_DATABASE_URL: postgresql+psycopg://edgf:edgf-ci-only@localhost:5432/edgf_ci
           EDGF_REQUIRE_DIALECT: postgresql  # 接続先を間違えて SQLite で素通りしないようにする
           PGTZ: Asia/Tokyo                  # セッションのタイムゾーンに依存しないことも確認する
-        run: pytest -q --cov=edgf/services --cov-fail-under=95
+          JOB_TIMEOUT_MINUTES: "40"
+        run: sh scripts/ci/timed.sh "pytest (PostgreSQL)" pytest -q --cov=edgf/services --cov-fail-under=95
 
   playwright:
     runs-on: ubuntu-24.04
@@ -73,7 +76,8 @@ jobs:
       - name: UI の E2E (ローカルの署名鍵で IdP を模す)
         env:
           EDGF_E2E: "1"
-        run: pytest -q tests/e2e
+          JOB_TIMEOUT_MINUTES: "25"
+        run: sh scripts/ci/timed.sh "Playwright" pytest -q tests/e2e
 
   data-plane-e2e:
     runs-on: ubuntu-24.04
@@ -87,7 +91,8 @@ jobs:
       - name: Data Plane 連携の E2E (サーバを起動し、SDK で全 API を呼ぶ)
         env:
           EDGF_DATA_PLANE_E2E: "1"
-        run: pytest -q tests/data_plane_e2e
+          JOB_TIMEOUT_MINUTES: "15"
+        run: sh scripts/ci/timed.sh "Data Plane の E2E" pytest -q tests/data_plane_e2e
 
   restore:
     runs-on: ubuntu-24.04
