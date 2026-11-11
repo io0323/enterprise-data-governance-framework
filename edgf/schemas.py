@@ -1345,3 +1345,39 @@ class ReachabilityOut(ORM):
     observed_at: datetime
     detail: str
     reporter: str
+
+
+# ---------------------------------------------------------------- §17 Usage (Phase 15d)
+# 利用者を特定する項目は受け付けない。集計値 (件数と人数) だけを受け取る
+FORBIDDEN_USAGE_FIELDS = frozenset({
+    "user", "users", "user_id", "user_ids", "subject", "subjects", "principal", "principals", "account", "accounts", "email", "emails",
+    "client_ip", "ip", "ip_address", "query", "query_text", "sql", "session_id", "device_id",
+})
+
+
+class UsageRecordIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    qualified_name: str = Field(min_length=1, max_length=300)
+    day: date
+    query_count: int = Field(ge=0, le=10**12)
+    user_count: int = Field(ge=0, le=10**9, description="その日の異なる利用者の数 (人数だけ。ID は送らない)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_identities(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            found = sorted(k for k in data if isinstance(k, str) and k.lower() in FORBIDDEN_USAGE_FIELDS)
+            if found:
+                raise ValueError(f"利用者を特定する項目は受け付けません (人数だけを送ってください): {', '.join(found)}")
+        return data
+
+    @model_validator(mode="after")
+    def _consistent(self) -> UsageRecordIn:
+        if self.user_count > self.query_count:
+            raise ValueError("user_count は query_count 以下にしてください")
+        return self
+
+
+class UsagePushIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    records: list[UsageRecordIn] = Field(min_length=1, max_length=10_000)

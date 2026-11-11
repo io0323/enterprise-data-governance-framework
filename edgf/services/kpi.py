@@ -13,6 +13,7 @@ from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, Dom
 from edgf.services.ai import card_complete
 from edgf.services.ai_inherit import compute as compute_inherited, is_violation
 from edgf.services.discovery import registration as discovery_registration
+from edgf.services.usage import metrics as usage_metrics
 from edgf.services.issues import OPEN_STATES
 from edgf.services.mesh_datsis import passes as datsis_passes
 from edgf.services.policy import evaluate_asset
@@ -145,7 +146,8 @@ def compute(db: Session, domain: str | None = None, readable: ColumnElement[bool
         "open_issue_count": len(open_issues),
         "overdue_issue_count": sum(1 for i in open_issues if i.due_at and i.due_at < now),
         "mean_time_to_resolve_days": round(mttr, 2) if mttr is not None else None,  # 目標 30日以内
-        "governance_activity_assets_30d": len(active_assets),  # Usage 代理指標
+        "governance_activity_assets_30d": len(active_assets),  # Usage の旧い代理指標 (互換性のために残す)
+        **usage_metrics(db, ids),  # §17 Usage: Data Plane の利用実績から
         "mdm_review_pending_count": pending_reviews,  # §8 裁定キューの件数
         "mdm_duplicate_rate": _rate(auto_merged + steward_merged, len(links)),  # ソースのうち既存に統合された割合
         "mdm_auto_merge_rate": _rate(auto_merged, auto_merged + steward_merged),  # 統合のうち自動マージの割合

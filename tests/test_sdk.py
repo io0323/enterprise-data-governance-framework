@@ -223,17 +223,18 @@ def test_client_methods_build_the_documented_requests():
         client.erasure_tasks("issued", limit=5)
         client.push_inventory("warehouse.sales", [{"qualified_name": "a.b"}])
         client.report_reachability("p1", True, observed_at="2026-11-11T00:00:00Z", detail="ok")
+        client.push_usage([{"qualified_name": "a.b", "day": "2026-11-10", "query_count": 1, "user_count": 1}])
     paths = [(m, p) for m, p, _, _ in seen]
     assert paths == [("POST", "/api/v1/lineage/openlineage"), ("POST", "/api/v1/privacy/erasure-tasks/t1/ack"),
                      ("POST", "/api/v1/privacy/erasure-tasks/t1/complete"), ("POST", "/api/v1/mesh/contracts/c1/check"),
                      ("POST", "/api/v1/mdm/party/match"), ("POST", "/api/v1/mdm/party/golden-records/g/compose"),
                      ("POST", "/api/v1/mdm/party/golden-records/g/verify"), ("POST", "/api/v1/ai/rag/authorize"),
-                     ("GET", "/api/v1/privacy/erasure-tasks"), ("POST", "/api/v1/discovery/snapshots"), ("POST", "/api/v1/mesh/ports/p1/reachability")]
+                     ("GET", "/api/v1/privacy/erasure-tasks"), ("POST", "/api/v1/discovery/snapshots"), ("POST", "/api/v1/mesh/ports/p1/reachability"), ("POST", "/api/v1/usage/daily")]
     # 送信系にだけ Idempotency-Key を付ける
     keyed = [p for m, p, _, k in seen if k]
     assert keyed == ["/api/v1/lineage/openlineage", "/api/v1/privacy/erasure-tasks/t1/ack", "/api/v1/privacy/erasure-tasks/t1/complete",
                      "/api/v1/mdm/party/match", "/api/v1/mdm/party/golden-records/g/compose", "/api/v1/discovery/snapshots",
-                     "/api/v1/mesh/ports/p1/reachability"]
+                     "/api/v1/mesh/ports/p1/reachability", "/api/v1/usage/daily"]
     assert seen[2][2]["evidence_hash"] == "a" * 64 and seen[6][2] == {"attributes": {"name": "x"}, "version": 2}
 
 

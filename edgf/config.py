@@ -89,6 +89,8 @@ class Settings:
     mdm_review_sla_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MDM_REVIEW_SLA_DAYS", "7")))
     # §19 Security: リクエスト本文の上限 (バイト)。超えると 413 Problem を返す
     max_body_bytes: int = field(default_factory=lambda: int(os.getenv("EDGF_MAX_BODY_BYTES", str(10 * 1024 * 1024))))
+    # §17 Usage: この日数のあいだ利用の無い資産を廃止の候補にする
+    unused_days: int = field(default_factory=lambda: int(os.getenv("EDGF_UNUSED_DAYS", "90")))
     # §15 Addressable: 到達の報告の有効期間 (MESH-007) と、Control Plane からの確認 (既定は無効)
     reachability_max_age_hours: int = field(default_factory=lambda: int(os.getenv("EDGF_REACHABILITY_MAX_AGE_HOURS", "24")))
     probe_enabled: bool = field(default_factory=lambda: _env_bool("EDGF_PROBE_ENABLED"))

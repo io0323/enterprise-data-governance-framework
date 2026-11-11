@@ -123,6 +123,17 @@ def test_reachability_report(sdk, world):
     assert "MESH-007" not in [r["policy_id"] for r in after["results"] if r["status"] == "fail"]
 
 
+def test_usage_push(sdk, world):
+    from datetime import date, timedelta
+    day = (date.today() - timedelta(days=1)).isoformat()
+    record = {"qualified_name": "sales.orders", "day": day, "query_count": 12, "user_count": 4}
+    assert sdk.push_usage([record])["created"] == 1
+    assert sdk.push_usage([{**record, "query_count": 20}])["updated"] == 1  # 再送は上書き
+    with pytest.raises(ValidationFailed):
+        sdk.push_usage([{**record, "user_id": "someone"}])
+    assert world["admin"].get("/kpi").json()["usage_query_count_30d"] == 20
+
+
 def test_errors_are_typed(sdk, world):
     with pytest.raises(NotFound):
         sdk.notify_refreshed("00000000-0000-0000-0000-000000000000")

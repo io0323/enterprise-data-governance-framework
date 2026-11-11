@@ -182,7 +182,7 @@
  "kpi.mean_time_to_resolve_days": "Mean time to resolve (days)",
  "kpi.catalog_registration": "Catalog registration",
  "kpi.catalog_registration_note": "No asset inventory has arrived from the Data Plane yet",
- "kpi.usage": "Usage (assets with activity, 30 days)",
+ "kpi.usage": "Usage (assets queried in 30 days)",
  "kpi.open_issue_count": "Open issues",
  "kpi.overdue_issue_count": "Overdue issues",
  "kpi.certified_rate": "Certified rate",

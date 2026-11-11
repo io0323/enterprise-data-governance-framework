@@ -182,7 +182,7 @@
  "kpi.mean_time_to_resolve_days": "平均是正日数",
  "kpi.catalog_registration": "Catalog 登録率",
  "kpi.catalog_registration_note": "Data Plane から資産一覧がまだ届いていません",
- "kpi.usage": "Usage (活動のあった資産、30 日)",
+ "kpi.usage": "Usage (利用のあった資産、30 日)",
  "kpi.open_issue_count": "未解決の Issue",
  "kpi.overdue_issue_count": "期限超過の Issue",
  "kpi.certified_rate": "Certified 率",

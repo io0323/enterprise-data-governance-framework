@@ -142,6 +142,14 @@ class EdgfClient:
         """
         return self._send(f"{API}/discovery/snapshots", {"source": source, "assets": list(assets)}, idempotency_key)
 
+    # ------------------------------------------------------------ Usage (§17)
+    def push_usage(self, records: Iterable[Mapping[str, Any]], *, idempotency_key: str | None = None) -> dict:
+        """資産 × 日の利用の集計値 (qualified_name, day, query_count, user_count) を送る。同じ資産と日の再送は上書きされる。
+
+        利用者を特定する項目 (user_id、email、query_text など) を含めると 422 (ValidationFailed) になる。
+        """
+        return self._send(f"{API}/usage/daily", {"records": list(records)}, idempotency_key)
+
     # ------------------------------------------------------------ Addressable (§15)
     def report_reachability(self, port_id: str, reachable: bool, *, observed_at: str | None = None, detail: str = "",
                             idempotency_key: str | None = None) -> dict:

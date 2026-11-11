@@ -191,6 +191,7 @@ PERMISSIONS: Mapping[str, Rule] = {
     "discovery.push": rule(roles=(ADMIN,), domain_roles=(CUSTODIAN,), description="資産一覧のスナップショットの送信 (ソースのドメイン)"),
     "discovery.read": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER, STEWARD), description="検出された資産と保留のスキーマの変化の参照"),
     "discovery.apply_breaking": rule(relations=("owner", "steward"), approval=True, description="破壊的なスキーマの変化を確認して Catalog に反映"),
+    "usage.push": rule(roles=(ADMIN,), domain_roles=(CUSTODIAN,), description="利用実績の集計値の送信 (資産のドメイン)"),
     "reachability.report": rule(relations=("custodian",), description="Output Port の到達の報告 (ポートの資産の Custodian)"),
     "probe.configure": rule(roles=(ADMIN,), description="Control Plane からの到達の確認の実行と設定の参照"),
     # Audit (§13, §19)

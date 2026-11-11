@@ -261,6 +261,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `refdata.write` | Reference Data の下書きの作成 | ドメイン内ロール: owner, steward |  |
 | `review.decide` | 棚卸と証明の判断 (対象資産の Owner) | 対象の owner | ✓ |
 | `review.read` | キャンペーンと全項目の参照 | ロール: admin, committee |  |
+| `usage.push` | 利用実績の集計値の送信 (資産のドメイン) | ロール: admin<br>ドメイン内ロール: custodian |  |
 | `webhook.manage` | Webhook の配信先の登録・更新・参照 | ロール: admin |  |
 
 これ以外の参照系 API(資産・Issue・KPI・ポリシー・リネージなど)は、認証済みの全員が使えます。資産を含む結果は、次の ABAC で絞り込みます。

@@ -891,6 +891,19 @@ class KpiSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class UsageDaily(Base):
+    """§17 Usage: 資産 × 日の利用の集計値だけ。利用者を特定する情報は受け取らない"""
+    __tablename__ = "usage_daily"
+    __table_args__ = (UniqueConstraint("asset_id", "day", name="uq_usage_asset_day"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    query_count: Mapped[int] = mapped_column(Integer)
+    user_count: Mapped[int] = mapped_column(Integer)
+    reporter: Mapped[str] = mapped_column(String(200))
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class ReachabilityReport(Base):
     """§15 Addressable: Output Port に到達できたかの記録。既定は Data Plane からの報告 (push)、任意で Control Plane からの確認 (probe)"""
     __tablename__ = "reachability_reports"

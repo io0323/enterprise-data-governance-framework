@@ -29,13 +29,15 @@ function stateBadge(row, value) {
 }
 
 function usageRow(kpi, history) {
-  const values = history.map((r) => r.metrics.governance_activity_assets_30d).filter((v) => v !== undefined);
+  // §17 Usage: Data Plane の利用実績 (直近 30 日に問い合わせのあった資産の数)。届いていなければ未計測
+  const values = history.map((r) => r.metrics.usage_active_assets_30d).filter((v) => v !== undefined && v !== null);
   let state = badge(t("kpi.unknown"), "neutral");
   if (values.length > 1) {
     const rising = values[values.length - 1] > values[0];
     state = badge(t(rising ? "kpi.trend_up" : "kpi.trend_flat"), rising ? "ok" : "warn");
   }
-  return [t("kpi.usage"), kpi.governance_activity_assets_30d, t("kpi.trend_up"), state, "§17"];
+  const value = kpi.usage_active_assets_30d === null || kpi.usage_active_assets_30d === undefined ? "-" : kpi.usage_active_assets_30d;
+  return [t("kpi.usage"), value, t("kpi.trend_up"), state, "§17"];
 }
 
 function targetsTable(kpi, history) {
