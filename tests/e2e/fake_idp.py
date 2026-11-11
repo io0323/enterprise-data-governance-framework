@@ -27,6 +27,9 @@ class FakeIdp:
         self.user: dict = {}
         self.codes: dict[str, dict] = {}
         self.token_requests: list[dict] = []
+        # Client Credentials のクライアント (Data Plane のサービスの主体): client_id → {secret, roles, domains, clearance}
+        self.clients: dict[str, dict] = {}
+        self.client_token_lifetime = 3600
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.issuer = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -107,6 +110,15 @@ class FakeIdp:
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
                 form = {k: v[0] for k, v in parse_qs(body).items()}
                 idp.token_requests.append(form)
+                if form.get("grant_type") == "client_credentials":
+                    registered = idp.clients.get(form.get("client_id", ""))
+                    if registered is None or registered["secret"] != form.get("client_secret"):
+                        self._json(401, {"error": "invalid_client"})
+                        return
+                    token = idp.sign({"sub": form["client_id"], "roles": registered.get("roles", []), "domains": registered.get("domains", [])},
+                                     lifetime=idp.client_token_lifetime)
+                    self._json(200, {"access_token": token, "token_type": "Bearer", "expires_in": idp.client_token_lifetime})
+                    return
                 grant = idp.codes.pop(form.get("code"), None)
                 if grant is None or form.get("grant_type") != "authorization_code" or form.get("client_id") != CLIENT_ID:
                     self._json(400, {"error": "invalid_grant"})

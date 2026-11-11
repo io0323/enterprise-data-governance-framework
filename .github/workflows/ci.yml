@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,postgres]"
+      - run: pip install -e ".[dev,postgres]" -e clients/python
       - name: マイグレーションの往復
         env:
           EDGF_DATABASE_URL: sqlite:///./ci-migrations.db
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,postgres]"
+      - run: pip install -e ".[dev,postgres]" -e clients/python
       - name: マイグレーションの往復
         env:
           EDGF_DATABASE_URL: postgresql+psycopg://edgf:edgf-ci-only@localhost:5432/edgf_ci
@@ -75,6 +75,34 @@ jobs:
           EDGF_E2E: "1"
         run: pytest -q tests/e2e
 
+  data-plane-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" -e clients/python
+      - name: Data Plane 連携の E2E (サーバを起動し、SDK で呼ぶ)
+        env:
+          EDGF_DATA_PLANE_E2E: "1"
+        run: pytest -q tests/data_plane_e2e
+
+  data-plane-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" -e clients/python
+      - name: Data Plane 連携の E2E (サーバを起動し、SDK で全 API を呼ぶ)
+        env:
+          EDGF_DATA_PLANE_E2E: "1"
+        run: pytest -q tests/data_plane_e2e
+
   restore:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -96,7 +124,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,postgres]"
+      - run: pip install -e ".[dev,postgres]" -e clients/python
       - run: sudo apt-get install -y postgresql-client-16
       - name: バックアップと復元の訓練 (pg_dump → 別の DB に復元 → /audit/verify とアンカーの一致)
         env:

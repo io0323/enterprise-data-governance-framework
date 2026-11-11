@@ -89,6 +89,8 @@ class Settings:
     mdm_review_sla_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MDM_REVIEW_SLA_DAYS", "7")))
     # §19 Security: リクエスト本文の上限 (バイト)。超えると 413 Problem を返す
     max_body_bytes: int = field(default_factory=lambda: int(os.getenv("EDGF_MAX_BODY_BYTES", str(10 * 1024 * 1024))))
+    # Data Plane の SDK の再送の重複を防ぐ Idempotency-Key の記録の保存期間 (時間)
+    idempotency_ttl_hours: int = field(default_factory=lambda: int(os.getenv("EDGF_IDEMPOTENCY_TTL_HOURS", "24")))
     # §13 監査チェーンのアンカリング (edgf/services/audit_anchor.py)。署名鍵は 32 バイトの base64
     anchor_enabled: bool = field(default_factory=lambda: _env_bool("EDGF_ANCHOR_ENABLED"))
     anchor_signing_key: str = field(default_factory=lambda: os.getenv("EDGF_ANCHOR_SIGNING_KEY", ""))

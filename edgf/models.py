@@ -891,6 +891,22 @@ class KpiSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class IdempotencyRecord(Base):
+    """Idempotency-Key による送信の重複の防止 (Data Plane の SDK の再試行)。要求の本文は保存せず、ハッシュだけを持つ"""
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("actor", "key", name="uq_idempotency_actor_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor: Mapped[str] = mapped_column(String(200))
+    key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status_code: Mapped[int | None] = mapped_column(Integer)  # None は処理中
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    response_body: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    locked_until: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"
