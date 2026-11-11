@@ -120,10 +120,11 @@ class EdgfClient:
                   idempotency_key: str | None = None) -> dict:
         return self._send(f"{API}/mdm/{entity_type}/match", {"record": dict(record), "candidates": list(candidates)}, idempotency_key)
 
-    def mdm_compose(self, entity_type: str, golden_id: str, records: Iterable[Mapping[str, Any]], overrides: Mapping[str, str] | None = None, *,
-                    idempotency_key: str | None = None) -> dict:
+    def mdm_compose(self, entity_type: str, golden_id: str, records: Iterable[Mapping[str, Any]], overrides: Mapping[str, str] | None = None) -> dict:
+        """構成ソースから Golden Record を生成する。応答に値が含まれるので Idempotency-Key は付けない
+        (付けるとサーバが応答を保存し、Control Plane に値が残る)。同じ入力なら同じ結果になるので、そのまま再送する。"""
         body = {"records": list(records), "overrides": dict(overrides or {})}
-        return self._send(f"{API}/mdm/{entity_type}/golden-records/{golden_id}/compose", body, idempotency_key)
+        return self._query(f"{API}/mdm/{entity_type}/golden-records/{golden_id}/compose", body)
 
     def mdm_verify(self, entity_type: str, golden_id: str, attributes: Mapping[str, Any], version: int | None = None) -> dict:
         """Data Plane が持つ値の内容ハッシュを照合する。値は照合のあと破棄される。"""

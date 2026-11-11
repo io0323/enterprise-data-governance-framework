@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -13,6 +15,9 @@ from edgf.services import idempotency
 
 HEADER = b"idempotency-key"
 METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# 応答にデータの値を含む API。応答を保存すると Control Plane に値が残る (§18.2) ので、鍵があっても扱わない。
+# いずれも同じ入力なら同じ結果になる冪等な操作で、SDK は鍵を付けずに再送する
+NO_STORE_PATHS = (re.compile(r"^/api/v1/mdm/[^/]+/golden-records/[^/]+/compose$"),)
 
 
 class IdempotencyMiddleware:
@@ -24,7 +29,7 @@ class IdempotencyMiddleware:
             await self.app(scope, receive, send)
             return
         raw = dict(scope.get("headers") or []).get(HEADER)
-        if raw is None:
+        if raw is None or any(p.match(scope["path"]) for p in NO_STORE_PATHS):
             await self.app(scope, receive, send)
             return
         request = Request(scope)

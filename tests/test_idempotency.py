@@ -129,3 +129,18 @@ def test_record_is_stored_before_the_response_is_returned(client):
         record = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.key == "key-0000009"))
         assert record.status_code == 201 and record.response_body
     assert _domain(client, "sales", "key-0000009").headers["idempotent-replayed"] == "true"
+
+
+def test_compose_responses_with_values_are_never_stored(client):
+    """compose の応答には Golden Record の値が入る。鍵があっても応答を保存しない (§18.2)。"""
+    from tests.mdm_helpers import HUB, MDM, master_asset
+    from tests.test_mdm_matching import match, rec
+    master_asset(client)
+    a = rec("crm", "c1", email="zz.compose@example.com", full_name="値の目印ZZCOMPOSE")
+    gid = match(client, a)["golden_id"]
+    r = client.post(f"{MDM}/party/golden-records/{gid}/compose", headers={**HUB, "Idempotency-Key": "key-compose-01"}, json={"records": [a]})
+    assert r.status_code == 200 and "値の目印ZZCOMPOSE" in r.text and "idempotent-replayed" not in r.headers
+    with SessionLocal() as db:
+        assert db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.key == "key-compose-01")) is None
+    from tests.conftest import dump_database
+    assert "値の目印zzcompose" not in dump_database()

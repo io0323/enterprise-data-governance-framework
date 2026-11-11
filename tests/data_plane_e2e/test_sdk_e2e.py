@@ -21,8 +21,8 @@ def ok(response, *codes):
 def world(as_user):
     admin, committee = as_user("root", ["admin"]), as_user("chair", ["committee"])
     steward, owner = as_user("st", ["steward"], ["sales"]), as_user("po", ["owner"], ["sales"])
-    for name in ("sales", "master"):
-        ok(admin.post("/domains", json={"name": name, "owner": "po"}))
+    for name in ("sales", "master"):  # 他の E2E が先に作っていてもよい
+        ok(admin.post("/domains", json={"name": name, "owner": "po"}), 201, 409)
     columns = [{"name": "order_id", "type": "bigint", "nullable": False, "description": "受注 ID"}]
 
     def asset(qn, **kw):
