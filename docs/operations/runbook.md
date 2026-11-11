@@ -151,6 +151,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" https://<host>/api/v1/outbox/dead
 
 配信は at-least-once なので、再送は受信側で重複しても問題ありません。受信側はイベント ID で冪等にしてください。
 
+### Policy の追加を既存の環境に適用する(例: MESH-007)
+
+新しく構築する環境は、起動時にディスクの Policy を v1 として取り込むので、`policies/global.yaml` の追加(MESH-007 など)は最初から入ります。**既存の環境**(稼働中の DB、手元の Docker のボリュームなど)では、`POST /policies/reload` で変更を提案し、Committee が承認して公開します(Phase 12 の Policy 変更のワークフロー。承認されるまで実行時の評価には反映されません)。
+
 ## 7. 障害時の振る舞い
 
 | 障害 | 振る舞い | 対応 |
