@@ -21,15 +21,12 @@ from edgf.models import AccessGrant, DataAsset, Domain, GlossaryTerm, term_asset
 from edgf.pagination import Page, page_params, paginate, paginate_list, set_page_headers
 from edgf.schemas import (AccessGrantIn, AccessGrantOut, AssetCreate, AssetOut, AssetUpdate, CertificationChange,
                           DomainIn, DomainOut, LegalHoldChange, LifecycleChange, OwnershipChange)
-from edgf.services import ai, ai_inherit, audit, mesh_contracts, outbox, privacy
+from edgf.services import ai, ai_inherit, asset_update, audit, mesh_contracts, outbox, privacy
 from edgf.services.certification import certification_blockers
 
 router = APIRouter(tags=["catalog"])
 
 MAX_GRANT_DAYS = 365  # 恒久承認は不可 (§13 Exception と同じ上限)
-# 下流の AI 資産の実効値に影響する項目 (§14)
-CONTRACT_DRIFT_FIELDS = {"schema_", "sensitivity"}
-INHERITANCE_FIELDS = {"sensitivity", "contains_pii", "schema_", "privacy_technique", "privacy_params", "data_class", "ai_kind"}
 
 
 
@@ -199,26 +196,7 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
             raise HTTPException(422, str(e)) from e
         except ai.AiStateError as e:
             raise HTTPException(409, str(e)) from e
-    for k, v in changes.items():
-        setattr(asset, k, v)
-    if set(changes) & {"schema_", "contains_pii", "privacy_technique", "privacy_params"}:
-        # 基準を満たす匿名化でなくなったら、個人データとして扱いに戻す (§12)
-        lost_anonymity = was_anonymized and not privacy.is_anonymized(asset.privacy_technique, asset.privacy_params)
-        declared = asset.contains_pii or lost_anonymity
-        effective = privacy.effective_contains_pii(declared, asset.schema_, asset.privacy_technique, asset.privacy_params)
-        if effective != asset.contains_pii:
-            asset.contains_pii = effective
-            changes["contains_pii"] = effective
-    # 認証済み資産の構造・分類変更は再認証を要求する
-    if asset.certification == Certification.CERTIFIED.value and set(changes) & {"schema_", "data_class", "sensitivity", "privacy_technique"}:
-        asset.certification = Certification.DRAFT.value
-        changes["certification_reset"] = True
-    db.flush()
-    audit.record(db, principal.audit_actor, "asset.update", "asset", asset.id, changes)
-    if set(changes) & INHERITANCE_FIELDS:
-        ai_inherit.refresh(db, principal.audit_actor, [asset.qualified_name])
-    if set(changes) & CONTRACT_DRIFT_FIELDS:  # Contract とずれても更新は拒否しない。Issue で知らせる (§15)
-        mesh_contracts.check_drift(db, principal.audit_actor, asset)
+    asset_update.apply(db, asset, changes, principal.audit_actor, was_anonymized=was_anonymized)
     return asset
 
 

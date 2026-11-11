@@ -29,19 +29,25 @@ function stateBadge(row, value) {
 }
 
 function usageRow(kpi, history) {
-  const values = history.map((r) => r.metrics.governance_activity_assets_30d).filter((v) => v !== undefined);
+  // §17 Usage: Data Plane の利用実績 (直近 30 日に問い合わせのあった資産の数)。届いていなければ未計測
+  const values = history.map((r) => r.metrics.usage_active_assets_30d).filter((v) => v !== undefined && v !== null);
   let state = badge(t("kpi.unknown"), "neutral");
   if (values.length > 1) {
     const rising = values[values.length - 1] > values[0];
     state = badge(t(rising ? "kpi.trend_up" : "kpi.trend_flat"), rising ? "ok" : "warn");
   }
-  return [t("kpi.usage"), kpi.governance_activity_assets_30d, t("kpi.trend_up"), state, "§17"];
+  const value = kpi.usage_active_assets_30d === null || kpi.usage_active_assets_30d === undefined ? "-" : kpi.usage_active_assets_30d;
+  return [t("kpi.usage"), value, t("kpi.trend_up"), state, "§17"];
 }
 
 function targetsTable(kpi, history) {
   const rows = TARGETS.map((row) => [t(`kpi.${row.metric}`), display(row, kpi[row.metric]),
     `${row.direction === "at_least" ? "≥" : "≤"} ${row.days ? t("kpi.days", {value: row.target}) : formatRate(row.target)}`, stateBadge(row, kpi[row.metric]), row.source]);
-  rows.push([t("kpi.catalog_registration"), "-", "≥ 95.0%", h("span", {}, badge(t("kpi.unknown"), "neutral"), " ", t("kpi.catalog_registration_note")), "§1.8"]);
+  const registration = {metric: "catalog_registration_rate", target: 0.95, direction: "at_least"};
+  rows.push([t("kpi.catalog_registration"), display(registration, kpi.catalog_registration_rate), "≥ 95.0%",
+    kpi.catalog_registration_rate === null || kpi.catalog_registration_rate === undefined
+      ? h("span", {}, badge(t("kpi.unknown"), "neutral"), " ", t("kpi.catalog_registration_note"))
+      : stateBadge(registration, kpi.catalog_registration_rate), "§1.8"]);
   rows.push(usageRow(kpi, history));
   return table(t("kpi.targets"), ["kpi.metric", "kpi.value", "kpi.target", "kpi.state", "kpi.source"].map((key, i) => ({title: t(key), render: (r) => r[i]})), rows);
 }

@@ -14,12 +14,13 @@ from edgf.db import get_session
 from edgf.api.lineage import redacted_impact
 from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
-from edgf.models import CdmEntity, CdmVersion, ContractVersion, DataAsset, DataContract, DataProduct, MeshSubscription, OutputPort
+from edgf.config import settings
+from edgf.models import CdmEntity, CdmVersion, ContractVersion, DataAsset, DataContract, DataProduct, MeshSubscription, OutputPort, ReachabilityReport
 from edgf.pagination import Page, page_params, paginate
-from edgf.schemas import (CdmEntityOut, CdmImportIn, CdmVersionOut, ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
+from edgf.schemas import (CdmEntityOut, CdmImportIn, ReachabilityOut, ReachabilityReportIn, CdmVersionOut, ContractCheckIn, ContractIn, ContractOut, ContractVersionIn, ContractVersionOut, ExpediteRetireIn,
                           OutputPortIn, OutputPortOut, OutputPortUpdate, ProductIn, ProductOut, ProductUpdate,
                           SubscriptionDecisionIn, SubscriptionIn, SubscriptionMigrateIn, SubscriptionOut)
-from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_datsis, mesh_odcs, mesh_subscriptions
+from edgf.services import audit, mesh, mesh_cdm, mesh_contracts, mesh_datsis, mesh_odcs, mesh_reachability, mesh_subscriptions, probe
 from edgf.services.mesh import MeshStateError, MeshValidationError
 
 router = APIRouter(prefix="/mesh", tags=["mesh"])
@@ -208,6 +209,47 @@ def update_port(port_id: str, body: OutputPortUpdate, db: Session = Depends(get_
 @router.get("/ports/{port_id}", response_model=OutputPortOut)
 def get_port(port_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     return _port_out(db, principal, _get_port(db, port_id))
+
+
+@router.post("/ports/{port_id}/reachability", response_model=ReachabilityOut, status_code=201)
+def report_reachability(port_id: str, body: ReachabilityReportIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """Data Plane からの到達の報告 (既定の方式)。ポートの資産の Custodian が送る。"""
+    port = _get_port(db, port_id)
+    load_asset(db, principal, port.asset_id, "reachability.report")
+    return mesh_reachability.record(db, principal.audit_actor, port, reachable=body.reachable, method="push", detail=body.detail,
+                                    observed_at=body.observed_at)
+
+
+@router.get("/ports/{port_id}/reachability", response_model=list[ReachabilityOut])
+def list_reachability(port_id: str, request: Request, response: Response, page: Page = Depends(page_params(20)), db: Session = Depends(get_session),
+                      principal: Principal = Depends(get_principal)):
+    """到達の記録 (新しい順)。ポートの資産を閲覧できる利用者だけが見られる。"""
+    port = _get_port(db, port_id)
+    load_asset(db, principal, port.asset_id)
+    stmt = select(ReachabilityReport).where(ReachabilityReport.port_id == port.id).order_by(ReachabilityReport.observed_at.desc())
+    return paginate(db, stmt, page, request, response)
+
+
+@router.post("/ports/{port_id}/probe", response_model=ReachabilityOut)
+def probe_port(port_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """Control Plane からの確認を今すぐ行う (admin)。EDGF_PROBE_ENABLED=false のときは外部に接続せず 409。"""
+    authz.require(db, principal, "probe.configure", entity_type="output_port", entity_id=port_id)
+    port = _get_port(db, port_id)
+    if not settings.probe_enabled:
+        raise ProblemError(409, "Control Plane からの到達の確認は無効です (EDGF_PROBE_ENABLED)", type_="probe-disabled")
+    try:
+        result = probe.probe(port.address_uri)
+    except probe.ProbeRefused as e:
+        return mesh_reachability.record(db, principal.audit_actor, port, reachable=False, method="probe", detail=f"refused:{e.code}")
+    return mesh_reachability.record(db, principal.audit_actor, port, reachable=result.reachable, method="probe", detail=result.detail)
+
+
+@router.get("/probe")
+def probe_settings(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """到達の確認の設定 (admin)。設定は環境変数で行い、ここでは確認だけができる。"""
+    authz.require(db, principal, "probe.configure", entity_type="probe", entity_id="settings")
+    return {"enabled": settings.probe_enabled, "allowed_hosts": list(settings.probe_allowed_hosts), "timeout_seconds": settings.probe_timeout_seconds,
+            "max_age_hours": settings.reachability_max_age_hours}
 
 
 # ---------------- Data Contract (§15 Standardization) ----------------

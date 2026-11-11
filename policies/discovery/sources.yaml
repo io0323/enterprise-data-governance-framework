@@ -1,0 +1,8 @@
+# §7 Discovery: Data Plane のソース (namespace) とドメインの対応表。
+# 資産一覧はソースごとに送られ、未登録の資産は対応するドメインの steward に Issue で知らせる。
+# namespace はシェル形式のパターン (*, ?) を使える。上から順に照合し、最初に一致した行を使う。
+version: 1
+sources:
+  - {namespace: "warehouse.sales", domain: sales, steward: sales-steward}
+  - {namespace: "warehouse.sales.*", domain: sales, steward: sales-steward}
+  - {namespace: "lake.hr", domain: hr, steward: hr-steward}

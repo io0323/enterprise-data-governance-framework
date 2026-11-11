@@ -45,7 +45,7 @@ def test_all_criteria_pass_then_publish(ship):
     client, pid = ship["client"], ship["pid"]
     body = _datsis(client, pid)
     assert body["publishable"] is True and body["blockers"] == []
-    assert [r["policy_id"] for r in body["results"]] == [f"MESH-00{i}" for i in range(1, 7)]
+    assert [r["policy_id"] for r in body["results"]] == [f"MESH-00{i}" for i in range(1, 8)]
     assert all(r["status"] == "pass" for r in body["results"])
     for who in (STEWARD, COMMITTEE, ADMIN, U("asset-owner")):
         assert _publish(client, pid, who).status_code == 403
@@ -160,7 +160,7 @@ def test_product_without_ports_fails_every_port_criterion(client):
     domain(client)
     p = product(client)
     failed = {r["policy_id"] for r in _datsis(client, p["id"])["results"] if r["status"] == "fail"}
-    assert failed == {f"MESH-00{i}" for i in range(1, 7)}
+    assert failed == {f"MESH-00{i}" for i in range(1, 8)}
 
 
 def test_port_without_contract_is_blocked(client):

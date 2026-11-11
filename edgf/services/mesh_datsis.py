@@ -17,10 +17,11 @@ from sqlalchemy.orm import Session
 from edgf.enums import Certification, LifecycleState, ProductStatus
 from edgf.errors import ProblemError
 from edgf.models import ContractVersion, DataAsset, DataContract, DataProduct, OutputPort, PolicyException, QualityRun, RefDataSet, utcnow
-from edgf.services import mesh_contracts, mesh_subscriptions, refdata
+from edgf.services import mesh_contracts, mesh_reachability, mesh_subscriptions, refdata
 from edgf.services.mesh import MeshStateError
 from edgf.services.policy import Policy, evaluate_asset, evaluate_product, get_policies
 
+# MESH-007 (到達の報告) は必須にしない。既存の環境では Policy 変更の承認を経て有効になるので、承認前に公開を止めない
 REQUIRED_POLICIES = tuple(f"MESH-00{i}" for i in range(1, 7))
 P = ProductStatus
 BLOCKING_SEVERITIES = ("high", "critical")
@@ -37,6 +38,7 @@ class Snapshot:
     versions: dict[str, ContractVersion | None] = field(default_factory=dict)  # Output Port → 最新の公開版
     runs: dict[str, QualityRun] = field(default_factory=dict)  # 資産 → 最新の品質検査
     exceptions: dict[str, set[str]] = field(default_factory=dict)  # 資産 → 有効な例外
+    reachability: dict[str, Any] = field(default_factory=dict)  # Output Port → 最新の到達の記録
 
 
 def _chunks(values: Sequence[str]) -> Iterator[Sequence[str]]:
@@ -55,6 +57,8 @@ def load_snapshot(db: Session, products: Sequence[DataProduct]) -> Snapshot:
         for asset_id, policy_id in db.execute(select(PolicyException.asset_id, PolicyException.policy_id).where(
                 PolicyException.asset_id.in_(chunk), PolicyException.status == "approved", PolicyException.expires_at > utcnow())):
             snapshot.exceptions.setdefault(asset_id, set()).add(policy_id)
+    for chunk in _chunks([p.id for p in ports]):
+        snapshot.reachability.update(mesh_reachability.latest(db, chunk))
     contracts: dict[str, str] = {}
     for chunk in _chunks([p.id for p in ports]):
         contracts.update({c.id: c.output_port_id for c in db.scalars(select(DataContract).where(DataContract.output_port_id.in_(chunk)))})
@@ -123,6 +127,18 @@ def discoverable(db: Session, product: DataProduct, check: Mapping[str, Any]) ->
 
 def addressable(db: Session, product: DataProduct, check: Mapping[str, Any]) -> Result:
     return _outcome(_no_ports(product) + [f"{p.name}: アドレス URI がありません" for p in product.ports if not p.address_uri])
+
+
+def reachable(db: Session, product: DataProduct, check: Mapping[str, Any]) -> Result:
+    """MESH-007: 全ポートに EDGF_REACHABILITY_MAX_AGE_HOURS 以内の到達の報告がある。"""
+    snapshot = _snapshot(db)
+    reports = snapshot.reachability if snapshot is not None else mesh_reachability.latest(db, [p.id for p in product.ports])
+    problems = _no_ports(product)
+    for port in product.ports:
+        reason = mesh_reachability.problem(reports.get(port.id))
+        if reason:
+            problems.append(f"{port.name}: {reason}")
+    return _outcome(problems)
 
 
 def trustworthy(db: Session, product: DataProduct, check: Mapping[str, Any]) -> Result:
@@ -208,6 +224,7 @@ def secure(db: Session, product: DataProduct, check: Mapping[str, Any]) -> Resul
 _CHECKS: Mapping[str, Callable[[Session, DataProduct, Mapping[str, Any]], Result]] = {
     "mesh_discoverable": discoverable, "mesh_addressable": addressable, "mesh_trustworthy": trustworthy,
     "mesh_self_describing": self_describing, "mesh_interoperable": interoperable, "mesh_secure": secure,
+    "mesh_reachable": reachable,
 }
 
 

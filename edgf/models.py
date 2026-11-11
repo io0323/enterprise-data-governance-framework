@@ -891,6 +891,102 @@ class KpiSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class UsageDaily(Base):
+    """§17 Usage: 資産 × 日の利用の集計値だけ。利用者を特定する情報は受け取らない"""
+    __tablename__ = "usage_daily"
+    __table_args__ = (UniqueConstraint("asset_id", "day", name="uq_usage_asset_day"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    query_count: Mapped[int] = mapped_column(Integer)
+    user_count: Mapped[int] = mapped_column(Integer)
+    reporter: Mapped[str] = mapped_column(String(200))
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ReachabilityReport(Base):
+    """§15 Addressable: Output Port に到達できたかの記録。既定は Data Plane からの報告 (push)、任意で Control Plane からの確認 (probe)"""
+    __tablename__ = "reachability_reports"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    port_id: Mapped[str] = mapped_column(String(36), ForeignKey("output_ports.id", ondelete="CASCADE"), index=True)
+    reachable: Mapped[bool] = mapped_column(Boolean)
+    method: Mapped[str] = mapped_column(String(10))  # push / probe
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    detail: Mapped[str] = mapped_column(String(200), default="")
+    reporter: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DiscoverySource(Base):
+    """§7 Discovery: Data Plane のソース (namespace)。ドメインと Steward は policies/discovery の対応表から決める"""
+    __tablename__ = "discovery_sources"
+    namespace: Mapped[str] = mapped_column(String(200), primary_key=True)
+    domain: Mapped[str] = mapped_column(String(100), index=True)
+    steward: Mapped[str] = mapped_column(String(200))
+    last_snapshot_id: Mapped[str | None] = mapped_column(String(36))
+    last_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class DiscoverySnapshot(Base):
+    """資産一覧の受け取りの記録 (件数だけ。一覧そのものは DiscoveredAsset に反映する)"""
+    __tablename__ = "discovery_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    namespace: Mapped[str] = mapped_column(String(200), index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    actor: Mapped[str] = mapped_column(String(200))
+    asset_count: Mapped[int] = mapped_column(Integer)
+    added_count: Mapped[int] = mapped_column(Integer)
+    missing_count: Mapped[int] = mapped_column(Integer)
+    changed_count: Mapped[int] = mapped_column(Integer)
+
+
+class DiscoveredAsset(Base):
+    """Data Plane に実在する資産のメタデータ (名前、種類、カラムの名前・型・nullable、更新時刻だけ。値は持たない)"""
+    __tablename__ = "discovered_assets"
+    __table_args__ = (UniqueConstraint("namespace", "qualified_name", name="uq_discovered_asset"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    namespace: Mapped[str] = mapped_column(String(200), index=True)
+    qualified_name: Mapped[str] = mapped_column(String(300), index=True)
+    kind: Mapped[str | None] = mapped_column(String(30))
+    schema_: Mapped[list] = mapped_column("schema", JSON, default=list)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20), default="present", index=True)  # present / missing
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    missing_since: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class SchemaChangeProposal(Base):
+    """Discovery で見つかった破壊的なスキーマの変化。Steward / Owner が確認してから Catalog に反映する"""
+    __tablename__ = "schema_change_proposals"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(String(36), ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    namespace: Mapped[str] = mapped_column(String(200))
+    proposed_schema: Mapped[list] = mapped_column(JSON, default=list)
+    changes: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending / applied / superseded
+    issue_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class IdempotencyRecord(Base):
+    """Idempotency-Key による送信の重複の防止 (Data Plane の SDK の再試行)。要求の本文は保存せず、ハッシュだけを持つ"""
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("actor", "key", name="uq_idempotency_actor_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor: Mapped[str] = mapped_column(String(200))
+    key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status_code: Mapped[int | None] = mapped_column(Integer)  # None は処理中
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    response_body: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    locked_until: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

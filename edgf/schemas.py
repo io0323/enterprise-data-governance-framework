@@ -1251,3 +1251,133 @@ class ReviewItemOut(ORM):
 
 class PolicyReviewIn(MeshInput):
     note: str = Field(default="", max_length=1000)
+
+
+# ---------------------------------------------------------------- §7 Discovery (Phase 15b)
+# 値、サンプル、統計は受け付けない (§18.2 Control Plane はデータ本体を持たない)。名前で拒否して理由を明示する
+FORBIDDEN_DATA_FIELDS = frozenset({
+    "value", "values", "sample", "samples", "sample_values", "example", "examples", "rows", "records", "data", "preview",
+    "min", "max", "mean", "avg", "average", "median", "stddev", "sum", "histogram", "distinct_count", "null_count", "top_values",
+    "stats", "statistics", "profile", "distribution", "default", "default_value",
+})
+
+
+class _MetadataOnly(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_data(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            found = sorted(k for k in data if isinstance(k, str) and k.lower() in FORBIDDEN_DATA_FIELDS)
+            if found:
+                raise ValueError(f"値・サンプル・統計の項目は受け付けません (メタデータだけを送ってください): {', '.join(found)}")
+        return data
+
+
+class DiscoveredColumn(_MetadataOnly):
+    name: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=100)
+    nullable: bool | None = None
+
+
+class DiscoveredAssetIn(_MetadataOnly):
+    qualified_name: str = Field(min_length=1, max_length=300)
+    kind: str | None = Field(default=None, max_length=30, description="table / view / file / stream など")
+    schema_: list[DiscoveredColumn] = Field(default_factory=list, alias="schema", max_length=2000)
+    updated_at: datetime | None = Field(default=None, description="Data Plane での最終更新時刻")
+
+
+class DiscoverySnapshotIn(_MetadataOnly):
+    """ソース (namespace) の全量のスナップショット。前回のスナップショットとの差分を取る。"""
+    source: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/\-]+$")
+    assets: list[DiscoveredAssetIn] = Field(max_length=100_000)
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> DiscoverySnapshotIn:
+        names = [a.qualified_name for a in self.assets]
+        if len(names) != len(set(names)):
+            raise ValueError("同じ qualified_name が重複しています")
+        return self
+
+
+class DiscoveredAssetOut(ORM):
+    id: str
+    namespace: str
+    qualified_name: str
+    kind: str | None
+    schema_: list[dict[str, Any]] = Field(alias="schema")
+    source_updated_at: datetime | None
+    status: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    missing_since: datetime | None
+    registered: bool = False
+
+
+class SchemaChangeOut(ORM):
+    id: str
+    asset_id: str
+    namespace: str
+    proposed_schema: list[dict[str, Any]]
+    changes: list[dict[str, Any]]
+    status: str
+    issue_id: str | None
+    created_at: datetime
+    decided_by: str | None
+    decided_at: datetime | None
+
+
+# ---------------------------------------------------------------- §15 Addressable (Phase 15c)
+class ReachabilityReportIn(BaseModel):
+    """Data Plane からの到達の報告。detail は短い説明だけ (応答の本文や個人情報を入れない)。"""
+    model_config = ConfigDict(extra="forbid")
+    reachable: bool
+    observed_at: datetime | None = Field(default=None, description="確認した時刻 (省略時は受け取った時刻。未来の時刻は受け取った時刻に丸める)")
+    detail: str = Field(default="", max_length=200, pattern=r"^[A-Za-z0-9 _.:/\-]*$")
+
+
+class ReachabilityOut(ORM):
+    id: str
+    port_id: str
+    reachable: bool
+    method: str
+    observed_at: datetime
+    detail: str
+    reporter: str
+
+
+# ---------------------------------------------------------------- §17 Usage (Phase 15d)
+# 利用者を特定する項目は受け付けない。集計値 (件数と人数) だけを受け取る
+FORBIDDEN_USAGE_FIELDS = frozenset({
+    "user", "users", "user_id", "user_ids", "subject", "subjects", "principal", "principals", "account", "accounts", "email", "emails",
+    "client_ip", "ip", "ip_address", "query", "query_text", "sql", "session_id", "device_id",
+})
+
+
+class UsageRecordIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    qualified_name: str = Field(min_length=1, max_length=300)
+    day: date
+    query_count: int = Field(ge=0, le=10**12)
+    user_count: int = Field(ge=0, le=10**9, description="その日の異なる利用者の数 (人数だけ。ID は送らない)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_identities(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            found = sorted(k for k in data if isinstance(k, str) and k.lower() in FORBIDDEN_USAGE_FIELDS)
+            if found:
+                raise ValueError(f"利用者を特定する項目は受け付けません (人数だけを送ってください): {', '.join(found)}")
+        return data
+
+    @model_validator(mode="after")
+    def _consistent(self) -> UsageRecordIn:
+        if self.user_count > self.query_count:
+            raise ValueError("user_count は query_count 以下にしてください")
+        return self
+
+
+class UsagePushIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    records: list[UsageRecordIn] = Field(min_length=1, max_length=10_000)
