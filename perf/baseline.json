@@ -94,12 +94,12 @@
       "users": 5
     },
     "column_impact": {
-      "p50_ms": 300.0,
-      "p95_ms": 500.0,
-      "p99_ms": 600.0,
-      "rps": 15.46,
+      "p50_ms": 360.0,
+      "p95_ms": 840.0,
+      "p99_ms": 900.0,
+      "rps": 10.69,
       "error_rate": 0.0,
-      "requests": 450,
+      "requests": 310,
       "users": 5
     }
   }

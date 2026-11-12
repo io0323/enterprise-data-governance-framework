@@ -21,7 +21,7 @@
 | §6 Metadata | Catalog、Glossary、`edgf/api/glossary.py` | `test_catalog.py` | 実装済み | 自動収集は Data Plane の連携先が行う |
 | §7 Data Catalog | 検索、Certification ゲート、UI(`edgf/ui`)、Discovery(資産一覧の差分、未登録の検出、スキーマの反映) | `test_catalog.py`、`test_ui_api.py`、`tests/e2e`、`test_discovery.py`、`tests/data_plane_e2e` | 実装済み | 自動スキャンは Data Plane が行い、Control Plane は差分と照合を担う |
 | §8 MDM | `edgf/services/mdm.py`、`mdm_rules.py`、`refdata.py` | `test_mdm_*.py`、`test_refdata.py` | 一部 | MDM Hub の参照実装は無い(値は Data Plane) |
-| §9 Data Lineage | `edgf/services/lineage.py`、影響分析、OpenLineage 互換の取込 | `test_lineage_policy.py`、`test_perf_queries.py` | 実装済み | 自動収集は連携先が行う |
+| §9 Data Lineage | `edgf/services/lineage.py`、影響分析、OpenLineage 互換の取込。Phase 16: カラム単位のリネージ(`column_lineage.py`、columnLineage facet 1-x、探索と影響分析、Contract check の `column_impact`)、信頼できる生成元による消去・AI の版・PII の継承の絞り込み(`lineage_trust.py`)、CDE のカラム化(`cde`、LIN-002、PRV-006、KPI `cde_column_lineage_rate`) | `test_lineage_policy.py`、`test_perf_queries.py`、`test_column_lineage.py`、`test_column_lineage_traversal.py`、`test_column_lineage_trust.py`、`test_cde_columns.py` | 実装済み | 自動収集は連携先が行う。信頼できる生成元の facet が完全かは検証しない(宣言の承認で担保) |
 | §10 Data Lifecycle | `edgf/services/lifecycle.py`、`retention.py`、Legal Hold | `test_catalog.py`、`test_jobs.py`、`test_reviews.py` | 実装済み | 物理削除は Data Plane |
 | §11 Data Security | ABAC(`readable_clause`)、閲覧の承認、定期棚卸 | `test_authz.py`、`test_security_leak.py`、`test_reviews.py` | 実装済み | 暗号化とマスキングの実行は Data Plane |
 | §12 Data Privacy | `subject_ref`、同意、Right to Erasure、PII インベントリ | `test_privacy_*.py` | 実装済み | `EDGF_SUBJECT_KEY` のローテーションは未実装 |
