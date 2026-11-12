@@ -39,6 +39,7 @@ class ColumnSpec(BaseModel):
     nullable: bool | None = Field(default=None, description="§15 Contract とのずれの検出に使う (省略時は比較しない)")
     description: str = ""
     pii: bool = False
+    cde: bool = Field(default=False, description="§5.2 / §9 Critical Data Element のカラム。カラム単位のリネージが必須 (LIN-002)")
     # §12 PII Inventory (いずれも任意。既存の pii フラグと互換)
     pii_category: PiiCategory | None = None
     identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN,

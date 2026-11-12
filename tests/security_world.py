@@ -48,6 +48,12 @@ def build_world(client) -> dict[str, Any]:
     for source, target in ((visible["qualified_name"], neighbor["qualified_name"]), (neighbor["qualified_name"], hidden["qualified_name"]),
                            (hidden["qualified_name"], downstream["qualified_name"])):
         _ok(client.post(f"{API}/lineage/edges", headers=ADMIN, json={"source": source, "target": target, "job": f"{MARK}_job", "transformation": f"SELECT {MARK}_expr"}))
+    # カラム単位のリネージ: 見える資産のカラムの間に、見えない資産のカラムが挟まる (Phase 16)
+    for source, source_column, target, target_column in ((visible["qualified_name"], "vis_col", neighbor["qualified_name"], f"{MARK}_column"),
+                                                         (neighbor["qualified_name"], f"{MARK}_column", hidden["qualified_name"], f"{MARK}_column"),
+                                                         (hidden["qualified_name"], f"{MARK}_column", downstream["qualified_name"], "down_col")):
+        _ok(client.post(f"{API}/lineage/column-edges", headers=ADMIN, json={"source": source, "source_column": source_column, "target": target,
+                                                                            "target_column": target_column}))
     # Glossary、品質、Issue、Policy の評価
     term = _ok(client.post(f"{API}/glossary/terms", headers=ADMIN, json={"name": "用語", "definition": "定義"}))
     rule = _ok(client.post(f"{API}/quality/assets/{hidden['id']}/rules", headers=OWNER_H, json={
@@ -81,7 +87,7 @@ def build_world(client) -> dict[str, Any]:
         "hidden": hidden, "neighbor": neighbor, "visible": visible,
         "values": {
             "asset_id": [hidden["id"], dataset["id"], model["id"]],
-            "qualified_name": [hidden["qualified_name"], visible["qualified_name"]],
+            "qualified_name": [hidden["qualified_name"], visible["qualified_name"], downstream["qualified_name"]],
             "term_id": [term["id"]], "rule_id": [rule["id"]], "issue_id": [issue["id"]],
             "approval_id": [approval["id"]],
             "product_id": [product["id"]], "port_id": [port["id"]], "contract_id": [contract["id"]],
@@ -89,6 +95,8 @@ def build_world(client) -> dict[str, Any]:
             "model_version_id": [mv["id"]], "dataset_version_id": [dv["id"]],
             "version": ["1.0.0", "1"], "number": ["1"],
             "entity_type": ["party"], "name": ["party", "kpi_snapshot"],
+            # 目印の入ったカラム名は渡さない (呼び出す側が自分で渡した名前の反射は漏洩ではない)。機密のカラムは、見える資産から辿った経路の上で検査する
+            "column": ["vis_col", "down_col"],
         },
         "none": none,
     }

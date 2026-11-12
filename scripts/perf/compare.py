@@ -21,7 +21,7 @@ MAX_RETRIES = 2
 THROUGHPUT_SCENARIOS = ("audit_write",)  # 遅延ではなく件数で判定する
 MAX_ERROR_RATE = 0.01
 # 確定した性能目標 (PostgreSQL、資産 10 万件、p95)
-TARGET_P95_MS = {"search": 300, "asset_detail": 200, "impact": 1000, "rag_authorize": 150, "contract_check": 1000, "inbox": 500, "products": 2000}
+TARGET_P95_MS = {"search": 300, "asset_detail": 200, "impact": 1000, "column_impact": 1000, "rag_authorize": 150, "contract_check": 1000, "inbox": 500, "products": 2000}
 TARGET_MIN_RPS = {"audit_write": 200}
 
 

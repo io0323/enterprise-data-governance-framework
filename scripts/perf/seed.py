@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 from edgf import migrate  # noqa: E402
 from edgf.db import Base  # noqa: E402
-from edgf.models import (ApprovalRequest, ContractVersion, DataAsset, DataContract, DataProduct, Domain, GlossaryTerm, LineageEdge,  # noqa: E402
+from edgf.models import (ApprovalRequest, ColumnLineageEdge, ContractVersion, DataAsset, DataContract, DataProduct, Domain, GlossaryTerm, LineageEdge,  # noqa: E402
                          MeshSubscription, OutputPort, PrivacyPurpose, QualityRun, product_term, utcnow)
 from edgf.services import policy_bundles  # noqa: E402
 
@@ -132,6 +132,14 @@ def seed(url: str, assets_total: int, reset: bool, manifest_path: Path) -> dict:
         # Contract の check の影響範囲: 下流が 100 件
         edges += [{"source": check_asset["qualified_name"], "target": rows[rest_start + i * 11]["qualified_name"], "job": "perf-check", "transformation": ""} for i in range(100)]
         _insert(conn, LineageEdge, edges)
+        # カラム単位のリネージ (Phase 16): 影響分析の木の各辺に、DIRECT の id と INDIRECT の結合キーを付ける
+        now_utc = utcnow()
+        column_edges = []
+        for edge in _tree_edges([r["qualified_name"] for r in tree]):
+            base = {"source": edge["source"], "target": edge["target"], "job": edge["job"], "masking": False, "last_run_id": None, "updated_at": now_utc}
+            column_edges.append({**base, "source_column": "id", "target_column": "id", "type": "DIRECT", "subtype": "IDENTITY"})
+            column_edges.append({**base, "source_column": "region", "target_column": "id", "type": "INDIRECT", "subtype": "JOIN"})
+        _insert(conn, ColumnLineageEdge, column_edges)
         _insert(conn, QualityRun, [{"id": _uuid(rng), "asset_id": r["id"], "executed_at": now, "record_count": 100, "score": 0.995, "dimension_scores": {"completeness": 0.995}, "results": []}
                                    for r in [*port_assets, *rows[rest_start:rest_start + 5000]]])
         purpose_id = "perf-analytics"

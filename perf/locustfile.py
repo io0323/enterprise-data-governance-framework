@@ -39,6 +39,11 @@ def impact(user):
     user.client.get(f"{API}/lineage/{MANIFEST['impact_root']}/impact", params={"depth": 10}, headers=CONSUMER, name="impact")
 
 
+def column_impact(user):
+    """カラム単位の影響分析 (深さ 10。Phase 16)。"""
+    user.client.get(f"{API}/lineage/{MANIFEST['impact_root']}/columns/id/impact", params={"depth": 10}, headers=CONSUMER, name="column_impact")
+
+
 def rag_authorize(user):
     body = {"corpus_asset_id": MANIFEST["corpus_id"], "user": {"subject": "perf-consumer", "roles": ["consumer"]}, "hit_asset_ids": MANIFEST["rag_hits"]}
     with user.client.post(f"{API}/ai/rag/authorize", json=body, headers=_headers(MANIFEST["rag_service"]), name="rag_authorize", catch_response=True) as response:
@@ -83,7 +88,7 @@ def asset_register(user):
     user.client.post(f"{API}/assets", json=body, headers=_headers("perf-admin", "admin"), name="asset_register")
 
 
-SCENARIOS = {f.__name__: f for f in (search, asset_detail, impact, rag_authorize, contract_check, inbox, products, audit_write, asset_update, asset_register)}
+SCENARIOS = {f.__name__: f for f in (search, asset_detail, impact, rag_authorize, contract_check, inbox, products, audit_write, asset_update, asset_register, column_impact)}
 
 
 class Scenario(HttpUser):

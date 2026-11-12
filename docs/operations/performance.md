@@ -53,6 +53,7 @@ CI(`.github/workflows/perf.yml`)は手動と週次で動き、Pull Request ご�
 | inbox(1,000 件) | p95 500ms | 2,000ms | 280ms | 2,008 → 11 |
 | Product 一覧(500 件) | p95 2s | 5,200ms | 240ms | 10,045 → 54 |
 | 監査の書き込み | 200 件/秒以上 | 142 件/秒 | 277 件/秒 | ― |
+| カラム単位の影響分析(深さ 10、Phase 16) | p95 1s | 1,200ms | 450〜510ms | 深さに比例(変更なし) |
 
 ## CI のランナーでの結果
 
@@ -148,6 +149,26 @@ SQL の遅さではなく、速い SQL を何千回も発行していたこと(N
 - 出力の順序(幅優先、同じ段では登録順)と循環の扱いを既存と完全に揃えるには、結局 Python 側で並べ直す必要があること
 - SQLite と PostgreSQL の両方で同じ結果を保証しやすいこと
 - 深さ 10 で目標を満たしており、これ以上の複雑さに見合わないこと
+
+### カラム単位のリネージ: 同じく段ごとの一括取得にする (Phase 16)
+
+`column_lineage.traverse` も `WITH RECURSIVE` にせず、`lineage.traverse` と同じ方式です。1 段ごとに、その段の資産を `IN` でまとめて `column_lineage_edges` から読みます(500 件ごとに分割)。SQL の数は深さに比例します。理由は上の 3 つと同じで、加えて経路の種類(途中がすべて値の流れる辺なら DIRECT)を段ごとに決めるので、Python 側で持つ方が素直です。
+
+**最初の実装は目標に届きませんでした。** 段のノードごとに、その段で読んだすべての辺を走査していたため、計算量が「ノード数 × 辺の数」でした。開発機の 20 秒の計測で p95 は 1,200ms です。読んだ辺を「資産 → カラム → 辺」の辞書にまとめ、ノードごとに自分の辺だけを見るように変えて 510ms になりました。SQL は変えていません。
+
+`EXPLAIN ANALYZE`(性能のデータ、`column_lineage_edges` 4,092 行、1 段分の 500 資産):
+
+```
+Index Scan using pk_column_lineage_edges on column_lineage_edges (actual time=0.075..0.566 rows=2000 loops=1)
+  Filter: ((source)::text = ANY ('{...500 件...}'::text[]))
+  Rows Removed by Filter: 2092
+Planning Time: 1.769 ms
+Execution Time: 0.629 ms
+```
+
+行が少ないので、プランナは `ix_column_lineage_source` ではなく主キーの順に読んで絞り込む方を選びます(`ORDER BY id` を満たすため)。行が増えると `ix_column_lineage_source` に切り替わります(Phase 16 の開発中の計測で `Index Only Scan` を確認)。どちらも 1 段あたり数 ms で、応答時間の大半は Python 側の組み立てと ABAC の伏せる処理です。
+
+性能のデータ(`scripts/perf/seed.py`)は、データセット単位の辺ごとに `id → id` の DIRECT(IDENTITY)と `region → id` の INDIRECT(JOIN)の 2 本を入れます。起点から深さ 10 で 2,046 カラムに届きます。
 
 ### `readable_clause` に索引を足さない
 

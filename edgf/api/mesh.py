@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
-from edgf.api.lineage import redacted_impact
+from edgf.api.lineage import redacted_column_impact, redacted_impact
 from edgf.deps import get_principal, load_asset
 from edgf.errors import ProblemError
 from edgf.config import settings
@@ -429,7 +429,28 @@ def check_contract(contract_id: str, body: ContractCheckIn, db: Session = Depend
     proposal = body.model_dump(by_alias=False, exclude_unset=True, exclude={"version"}, mode="json")
     result = mesh_contracts.check(db, contract, asset, proposal, body.version)
     return {**result, "impact": redacted_impact(db, principal, asset.qualified_name),
+            "column_impact": _column_impact(db, principal, asset.qualified_name, result["changes"]),
             "subscribers": mesh_subscriptions.subscribers_of(db, contract.id)}
+
+
+# カラムの変化のうち、下流のカラムに及ぶもの (説明だけの変更は除く)
+COLUMN_IMPACT_EXCLUDED = frozenset({"description_changed"})
+
+
+def _column_impact(db: Session, principal: Principal, asset_name: str, changes: list[dict]) -> list[dict]:
+    """カラムの削除や型の変更が、下流のどのカラムに及ぶか (Phase 16)。カラム単位のリネージが無ければ impacted は空。"""
+    out = []
+    for change in changes:
+        column = change.get("target")
+        if not column or change["code"] in COLUMN_IMPACT_EXCLUDED or change["code"].startswith("column_added"):
+            continue
+        source = column
+        if change["code"] == "column_renamed" and " → " in (change.get("detail") or ""):
+            source = change["detail"].split(" → ")[0]  # 名前の変更は、下流が参照している旧い名前で辿る
+        found = redacted_column_impact(db, principal, asset_name, source)
+        out.append({"column": source, "code": change["code"], "breaking": change["breaking"], "impacted": found["impacted"],
+                    "owners_to_notify": found["owners_to_notify"]})
+    return out
 
 
 @router.post("/contracts/{contract_id}/majors/{major}/retire", response_model=list[ContractVersionOut])

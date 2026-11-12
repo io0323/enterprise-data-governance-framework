@@ -127,6 +127,24 @@ async function aiCard(asset) {
   }
 }
 
+function columnRef(item) {
+  if (item.redacted) return `${item.qualified_name} (${t("lineage.redacted")})`;
+  return `${item.qualified_name}.${item.column ?? "*"} (${item.type}${item.subtype ? ` / ${item.subtype}` : ""})`;
+}
+
+async function columnLineage(asset) {
+  // §9 カラム単位のリネージ: カラムごとの 1 段の上流と下流。閲覧できない資産は名前もカラムも伏せて返る
+  const {data} = await get(`/lineage/${encodeURIComponent(asset.qualified_name)}/columns`);
+  if (!data.columns.length) return h("p", {class: "muted"}, t("asset.column_lineage_none"));
+  return table(t("asset.column_lineage"), [
+    {title: t("asset.column"), render: (c) => (c.column
+      ? h("a", {href: hrefFor(["lineage", asset.qualified_name], {column: c.column})}, c.column)
+      : t("asset.column_whole"))},
+    {title: t("lineage.upstream"), render: (c) => (c.upstream || []).map(columnRef).join(", ") || "-"},
+    {title: t("lineage.downstream"), render: (c) => (c.downstream || []).map(columnRef).join(", ") || "-"},
+  ], data.columns);
+}
+
 export function assetPage(segments) {
   const root = h("div", {}, h("h1", {}, t("catalog.title")), loading());
   get(`/assets/${encodeURIComponent(segments[0] || "")}`).then(({data: asset}) => {
@@ -136,6 +154,7 @@ export function assetPage(segments) {
         h("a", {href: hrefFor(["lineage", asset.qualified_name])}, t("asset.lineage_link"))),
       h("div", {class: "grid"}, metadata(asset), ownership(asset), retention(asset), asyncSection(t("asset.terms"), () => terms(asset))),
       schema(asset),
+      asyncSection(t("asset.column_lineage"), () => columnLineage(asset)),
       asyncSection(t("asset.quality"), () => quality(asset)),
       asyncSection(t("asset.policies"), () => policies(asset)),
       asyncSection(t("asset.products"), () => products(asset)),

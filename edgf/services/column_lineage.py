@@ -184,3 +184,111 @@ def ingest(db: Session, specs: list[EdgeSpec], job: str, run_id: str | None) -> 
         upsert(db, spec, job, run_id)
         stored += 1
     return stored, warnings + unregistered_columns(db, specs)
+
+
+# ---------------------------------------------------------------- 探索と影響分析 (16b)
+WHOLE = None  # データセット全体を表すカラム
+CHUNK = 500
+
+
+def _edges_touching(db: Session, direction: str, assets: list[str]) -> list[ColumnLineageEdge]:
+    column = ColumnLineageEdge.source if direction == "downstream" else ColumnLineageEdge.target
+    out: list[ColumnLineageEdge] = []
+    for start in range(0, len(assets), CHUNK):
+        out.extend(db.scalars(select(ColumnLineageEdge).where(column.in_(assets[start:start + CHUNK])).order_by(ColumnLineageEdge.id)))
+    return out
+
+
+def _index(edges: list[ColumnLineageEdge], direction: str) -> dict[str, dict[str | None, list[ColumnLineageEdge]]]:
+    """資産 → カラム → 辺 (下流は source 側、上流は target 側)。段のノードごとに自分の辺だけを見る。"""
+    out: dict[str, dict[str | None, list[ColumnLineageEdge]]] = {}
+    for edge in edges:
+        asset, column = (edge.source, edge.source_column) if direction == "downstream" else (edge.target, edge.target_column)
+        out.setdefault(asset, {}).setdefault(column, []).append(edge)
+    return out
+
+
+def _following(index: dict[str, dict[str | None, list[ColumnLineageEdge]]], direction: str, node: tuple[str, str | None]) -> list[ColumnLineageEdge]:
+    asset, column = node
+    by_column = index.get(asset, {})
+    if column is WHOLE:
+        found = [e for edges in by_column.values() for e in edges]
+    elif direction == "downstream":
+        found = list(by_column.get(column, []))
+    else:  # 上流: そのカラムへの辺と、データセット全体に効く入力 (target_column が NULL)
+        found = [*by_column.get(column, []), *by_column.get(None, [])]
+    return sorted(found, key=lambda e: e.id)  # 登録順 (出力の順序を安定させる)
+
+
+def traverse(db: Session, asset: str, column: str | None, direction: str, max_depth: int = 10) -> list[dict[str, Any]]:
+    """カラムの幅優先探索 (循環しても止まる)。1 段ごとにまとめて読むので、クエリの数は深さに比例する。
+
+    path は起点からの経路の種類: 途中がすべて値の流れる辺 (DIRECT / AGGREGATION) なら DIRECT、そうでなければ INDIRECT。
+    """
+    start = (asset, column)
+    path_of: dict[tuple[str, str | None], str] = {start: DIRECT}
+    frontier = [start]
+    out: list[dict[str, Any]] = []
+    depth = 0
+    while frontier and depth < max_depth:
+        index = _index(_edges_touching(db, direction, sorted({a for a, _ in frontier})), direction)
+        following: list[tuple[str, str | None]] = []
+        for node in frontier:
+            for edge in _following(index, direction, node):
+                nxt = (edge.target, edge.target_column) if direction == "downstream" else (edge.source, edge.source_column)
+                path = DIRECT if path_of[node] == DIRECT and flows_values(edge.type, edge.subtype) else INDIRECT
+                out.append({"from": edge.source, "from_column": edge.source_column, "to": edge.target, "to_column": edge.target_column,
+                            "job": edge.job, "type": edge.type, "subtype": edge.subtype, "masking": edge.masking, "depth": depth + 1, "path": path})
+                if nxt not in path_of:
+                    path_of[nxt] = path
+                    following.append(nxt)
+                elif path == DIRECT and path_of[nxt] == INDIRECT:
+                    path_of[nxt] = DIRECT  # 値の流れる経路が後から見つかった (同じ段の中)
+        frontier = following
+        depth += 1
+    return out
+
+
+def _cde_columns(asset: DataAsset | None) -> set[str]:
+    return {c["name"] for c in (asset.schema_ or []) if c.get("cde")} if asset is not None else set()
+
+
+def impact(db: Session, asset: str, column: str, max_depth: int = 10) -> dict[str, Any]:
+    """カラムの変更の下流への影響 (DIRECT と INDIRECT の両方を辿る)。"""
+    edges = traverse(db, asset, column, "downstream", max_depth)
+    nodes: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for e in edges:
+        key = (e["to"], e["to_column"])
+        found = nodes.get(key)
+        if found is None:
+            nodes[key] = {"depth": e["depth"], "path": e["path"]}
+        else:
+            found["depth"] = min(found["depth"], e["depth"])
+            if e["path"] == DIRECT:
+                found["path"] = DIRECT
+    names = sorted({name for name, _ in nodes})
+    assets = {a.qualified_name: a for a in db.scalars(select(DataAsset).where(DataAsset.qualified_name.in_(names)))} if names else {}
+    impacted = []
+    for (name, col), info in sorted(nodes.items(), key=lambda kv: (kv[1]["depth"], kv[0][0], kv[0][1] or "")):
+        a = assets.get(name)
+        cde = _cde_columns(a)
+        impacted.append({"qualified_name": name, "column": col, "depth": info["depth"], "path": info["path"], "registered": a is not None,
+                         "asset_id": a.id if a else None, "owner": a.owner if a else None,
+                         "cde_column": bool(cde) if col is WHOLE else col in cde,
+                         "certified": bool(a and a.certification == "certified")})
+    owners = sorted({i["owner"] for i in impacted if i["owner"]})
+    risk = "high" if any(i["cde_column"] or i["certified"] for i in impacted) else ("medium" if impacted else "none")
+    return {"changed_asset": asset, "changed_column": column, "impacted_count": len(impacted), "risk": risk, "owners_to_notify": owners,
+            "cde_impacted": any(i["cde_column"] for i in impacted), "impacted": impacted}
+
+
+def neighbors(db: Session, asset: str) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """資産の各カラムの 1 段の上流と下流 (UI の資産の詳細の表示用)。"""
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for e in db.scalars(select(ColumnLineageEdge).where(ColumnLineageEdge.target == asset).order_by(ColumnLineageEdge.id)):
+        out.setdefault(e.target_column or "*", {"upstream": [], "downstream": []})["upstream"].append(
+            {"qualified_name": e.source, "column": e.source_column, "type": e.type, "subtype": e.subtype})
+    for e in db.scalars(select(ColumnLineageEdge).where(ColumnLineageEdge.source == asset).order_by(ColumnLineageEdge.id)):
+        out.setdefault(e.source_column, {"upstream": [], "downstream": []})["downstream"].append(
+            {"qualified_name": e.target, "column": e.target_column, "type": e.type, "subtype": e.subtype})
+    return out

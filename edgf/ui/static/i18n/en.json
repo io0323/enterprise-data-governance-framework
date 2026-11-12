@@ -262,5 +262,12 @@
  "jobs.failures": "Consecutive failures",
  "jobs.overdue": "Overdue",
  "kpi.areas": "KPIs by area",
- "kpi.catalog_registration_rate": "Catalog registration"
+ "kpi.catalog_registration_rate": "Catalog registration",
+ "asset.column_lineage": "Column lineage",
+ "asset.column_lineage_none": "No column-level lineage yet",
+ "asset.column_whole": "Whole dataset",
+ "lineage.column": "Column (optional)",
+ "lineage.column_graph": "Upstream and downstream of column {column}",
+ "lineage.column_impact": "Column impact",
+ "lineage.path": "Path"
 }

@@ -198,6 +198,21 @@ def test_lineage_depth_switch_shows_the_new_graph(session_of, api_as):
     assert distances and max(int(d) for d in distances) == 1
 
 
+def test_column_lineage_on_asset_and_lineage_pages(session_of, seed):
+    s = session_of(CONSUMER)
+    s.go(f"#/assets/{seed['assets']['internal']['id']}", "text=カラムのリネージ")
+    s.settled()
+    table = s.page.locator("table", has_text="sales.public.order_id")
+    assert table.count() == 1 and "閲覧権限なし" in table.inner_text() and "secret_amount" not in table.inner_text()
+    # カラムから Lineage の画面のカラム単位の表示へ移る
+    transition(s.page, lambda: table.locator("a", has_text="order_id").first.click(), "svg.lineage")
+    assert "column=order_id" in s.page.evaluate("() => window.location.hash")
+    svg = s.page.locator("svg.lineage").first.text_content()
+    assert "sales.public · order_id" in svg and "sales.internal · order_id" in svg
+    assert "sales.restricted" not in s.page.inner_text("main") and "secret_amount" not in s.page.inner_text("main")
+    assert s.page.locator("svg.lineage").first.locator(".node-redacted").count() == 1  # カラム単位のグラフ (データセット単位のグラフは下にある)
+
+
 def test_dashboard(session_of):
     s = session_of(CONSUMER)
     s.go("#/dashboard", "text=全社の KPI と目標")
