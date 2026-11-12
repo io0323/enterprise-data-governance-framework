@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 from edgf.auth import SENSITIVITY_LEVELS
 from edgf.enums import Certification, DataClass, EscalationLevel, PrivacyTechnique
 from edgf.models import DataAsset, LineageEdge
-from edgf.services import audit, issues, lineage
-from edgf.services.privacy import is_anonymized
+from edgf.services import audit, issues, lineage, lineage_trust
+from edgf.services.privacy import effective_pii_columns, is_anonymized
 
 AI = DataClass.AI.value
 MAX_DEPTH = 50
@@ -38,10 +38,18 @@ class Inherited:
     pii_from: list[str] = field(default_factory=list)
     released_by: list[str] = field(default_factory=list)  # 継承を解除した anonymized の資産
     unregistered_upstream: list[str] = field(default_factory=list)
+    # Phase 16: DIRECT 経路で PII のカラムが届くカラム (広げる方向) と、信頼できる生成元の辺だけで PII が届かない上流
+    pii_columns: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    pii_excluded: list[dict] = field(default_factory=list)
 
     def view(self) -> dict:
-        return {"sensitivity_from": self.sensitivity_from, "pii_from": self.pii_from, "released_by": self.released_by,
-                "unregistered_upstream": self.unregistered_upstream}
+        out = {"sensitivity_from": self.sensitivity_from, "pii_from": self.pii_from, "released_by": self.released_by,
+               "unregistered_upstream": self.unregistered_upstream}
+        if self.pii_columns:  # カラム単位のリネージが無ければ従来と同じ結果にする
+            out["pii_columns"] = self.pii_columns
+        if self.pii_excluded:
+            out["pii_excluded"] = self.pii_excluded
+        return out
 
 
 def compute(db: Session, asset: DataAsset) -> Inherited:
@@ -50,9 +58,11 @@ def compute(db: Session, asset: DataAsset) -> Inherited:
     queue = deque([asset.qualified_name])
     upstream: list[DataAsset] = []
     released, unregistered = [], []
+    edges: set[tuple[str, str]] = set()
     while queue:
         name = queue.popleft()
         for source in db.scalars(select(LineageEdge.source).where(LineageEdge.target == name).order_by(LineageEdge.id)):
+            edges.add((source, name))
             if source in seen:
                 continue
             seen.add(source)
@@ -68,10 +78,33 @@ def compute(db: Session, asset: DataAsset) -> Inherited:
                 queue.append(source)
     top = max([level(asset.sensitivity), *[level(a.sensitivity) for a in upstream]])
     sens_from = sorted(a.qualified_name for a in upstream if level(a.sensitivity) == top and top > level(asset.sensitivity))
-    pii_from = sorted(a.qualified_name for a in upstream if a.contains_pii)
+    pii_upstream = sorted((a for a in upstream if a.contains_pii), key=lambda a: a.qualified_name)
+    pii_from, excluded, columns = _narrow_pii(db, asset, pii_upstream, edges)
     return Inherited(sensitivity=SENSITIVITY_LEVELS[top], contains_pii=bool(asset.contains_pii or pii_from),
                      sensitivity_from=sens_from, pii_from=pii_from, released_by=sorted(released),
-                     unregistered_upstream=sorted(unregistered))
+                     unregistered_upstream=sorted(unregistered), pii_columns=columns, pii_excluded=excluded)
+
+
+def _narrow_pii(db: Session, asset: DataAsset, pii_upstream: list[DataAsset],
+                edges: set[tuple[str, str]]) -> tuple[list[str], list[dict], dict[str, list[dict[str, str]]]]:
+    """PII の継承をカラム単位で決める (Phase 16)。
+
+    機密度の継承はデータセット単位のまま。PII は、信頼できる生成元の辺だけを経由して PII のカラムからの
+    DIRECT 経路が無い上流に限って外す (masking=true や AGGREGATION の経路では外さない)。
+    """
+    if not pii_upstream:
+        return [], [], {}
+    need = lineage_trust.backward(db, asset.qualified_name, edges)
+    kept, excluded = [], []
+    pii_cols = {a.qualified_name: [c["name"] for c in effective_pii_columns(a.schema_)] for a in pii_upstream}
+    for a in pii_upstream:
+        if need.reaches(a.qualified_name, pii_cols[a.qualified_name]):
+            kept.append(a.qualified_name)
+        else:
+            producers = sorted({j for (src, _), pair in need.graph.items() if src == a.qualified_name for j in pair.jobs})
+            excluded.append({"qualified_name": a.qualified_name, "reason": lineage_trust.REASON, "trusted_producers": producers})
+    columns = lineage_trust.column_flow(need.graph, pii_cols, asset.qualified_name)
+    return kept, excluded, columns
 
 
 def is_violation(asset: DataAsset, inherited: Inherited) -> bool:

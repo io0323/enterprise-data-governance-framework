@@ -162,6 +162,11 @@ def seed(idp, app_url):
     }
     for source, target in (("sales.public", "sales.internal"), ("sales.internal", "sales.restricted"), ("sales.internal", "ext.unregistered")):
         assert admin.post("/lineage/edges", json={"source": source, "target": target}).status_code == 201
+    # カラム単位のリネージ (Phase 16): sales.public.order_id → sales.internal.order_id → sales.restricted.secret_amount
+    for source, source_column, target, target_column in (("sales.public", "order_id", "sales.internal", "order_id"),
+                                                         ("sales.internal", "order_id", "sales.restricted", "secret_amount")):
+        assert admin.post("/lineage/column-edges", json={"source": source, "source_column": source_column, "target": target,
+                                                         "target_column": target_column}).status_code == 201
     term = admin.post("/glossary/terms", json={"name": "受注", "definition": "顧客からの注文"}).json()
     owner = _client(idp, app_url, OWNER)
     assert owner.put(f"/glossary/terms/{term['id']}/assets/{assets['internal']['id']}").status_code == 200

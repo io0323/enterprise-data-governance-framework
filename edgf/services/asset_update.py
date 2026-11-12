@@ -25,6 +25,8 @@ def apply(db: Session, asset: DataAsset, changes: dict[str, Any], actor: str, *,
         was_anonymized = privacy.is_anonymized(asset.privacy_technique, asset.privacy_params)
     for k, v in changes.items():
         setattr(asset, k, v)
+    if "schema_" in changes and not asset.is_cde and any(c.get("cde") for c in asset.schema_ or []):
+        asset.is_cde = changes["is_cde"] = True  # is_cde は「CDE のカラムを含む」(Phase 16)
     if set(changes) & {"schema_", "contains_pii", "privacy_technique", "privacy_params"}:
         # 基準を満たす匿名化でなくなったら、個人データとして扱いに戻す (§12)
         lost_anonymity = was_anonymized and not privacy.is_anonymized(asset.privacy_technique, asset.privacy_params)

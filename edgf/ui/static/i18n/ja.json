@@ -176,6 +176,7 @@
  "kpi.trend_flat": "増加なし",
  "kpi.owner_assignment_rate": "Owner 割当率",
  "kpi.cde_quality_score_avg": "Quality Score (CDE)",
+ "kpi.cde_column_lineage_rate": "CDE カラムのカラム単位リネージ率",
  "kpi.metadata_completeness": "メタデータ充足率",
  "kpi.freshness_rate": "Freshness",
  "kpi.compliance_rate": "Policy 準拠率",
@@ -262,5 +263,12 @@
  "jobs.failures": "連続の失敗",
  "jobs.overdue": "遅延",
  "kpi.areas": "領域別の KPI",
- "kpi.catalog_registration_rate": "Catalog 登録率"
+ "kpi.catalog_registration_rate": "Catalog 登録率",
+ "asset.column_lineage": "カラムのリネージ",
+ "asset.column_lineage_none": "カラム単位のリネージはまだありません",
+ "asset.column_whole": "データセット全体",
+ "lineage.column": "カラム(任意)",
+ "lineage.column_graph": "カラム {column} の上流と下流",
+ "lineage.column_impact": "カラムの影響分析",
+ "lineage.path": "経路"
 }

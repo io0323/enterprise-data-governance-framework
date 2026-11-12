@@ -21,14 +21,14 @@ from sqlalchemy.orm import Session
 from edgf.db import SessionLocal
 from edgf.enums import BundleStatus
 from edgf.models import ApprovalRequest, DataAsset, PolicyBundle, utcnow
-from edgf.services import approvals, audit, outbox, policy
+from edgf.services import approvals, audit, lineage_trust, outbox, policy
 from edgf.services.approval_types import Step
 from edgf.services.policy import Policy, PolicyLoadError
 
 log = logging.getLogger("edgf.policy")
 B = BundleStatus
 BOOTSTRAP_ACTOR = "system:bootstrap"
-_PATH = re.compile(r"^(?:[A-Za-z0-9._-]+\.yaml|domains/[A-Za-z0-9._-]+\.yaml)$")
+_PATH = re.compile(r"^(?:[A-Za-z0-9._-]+\.yaml|domains/[A-Za-z0-9._-]+\.yaml|lineage/trusted_producers\.yaml)$")
 MAX_BUNDLE_BYTES = 2_000_000
 
 
@@ -100,13 +100,15 @@ def validate_files(files: Mapping[str, str]) -> list[Policy]:
         raise PolicyBundleInvalid(f"Bundle が大きすぎます (上限 {MAX_BUNDLE_BYTES} バイト)")
     for path, text in files.items():
         if not _PATH.match(path):
-            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml または domains/<ドメイン>.yaml)")
+            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml、domains/<ドメイン>.yaml、lineage/trusted_producers.yaml)")
         try:
             doc = yaml.safe_load(text) or {}
         except yaml.YAMLError as e:
             raise PolicyBundleInvalid(f"{path}: YAML を解釈できません") from e
         if not isinstance(doc, dict):
             raise PolicyBundleInvalid(f"{path}: オブジェクトで指定してください")
+        if path.startswith("lineage/"):
+            continue  # 信頼できる生成元の宣言。中身は parse_files で検証する。変更は Global の扱い (Committee の承認)
         if path.startswith("domains/"):
             # ファイルの置き場所と宣言を一致させ、Domain の変更に見せて Global を変えられないようにする
             expected = path.removeprefix("domains/").removesuffix(".yaml")
@@ -136,7 +138,7 @@ def apply_changes(db: Session, changes: Mapping[str, str | None]) -> tuple[dict[
     files = dict(active.files)
     for path, text in changes.items():
         if not _PATH.match(path):
-            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml または domains/<ドメイン>.yaml)")
+            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml、domains/<ドメイン>.yaml、lineage/trusted_producers.yaml)")
         if text is None:
             files.pop(path, None)
         else:
@@ -254,6 +256,7 @@ def publish(db: Session, actor: str, bundle: PolicyBundle, publisher: str) -> No
     if active is None or active.content_hash != bundle.base_hash:
         raise PolicyBundleConflict("提案の後に active の版が変わりました。影響評価をやり直すため、提案し直してください")
     validate_files(bundle.files)
+    trust_changed = (active.files or {}).get(lineage_trust.TRUST_FILE) != (bundle.files or {}).get(lineage_trust.TRUST_FILE)
     now = utcnow()
     active.status, active.superseded_at = B.SUPERSEDED.value, now
     db.flush()
@@ -263,3 +266,8 @@ def publish(db: Session, actor: str, bundle: PolicyBundle, publisher: str) -> No
         "version": bundle.version, "content_hash": bundle.content_hash, "superseded": active.version, "rollback_of": bundle.rollback_of})
     outbox.emit(db, "policy.published", str(bundle.version), {"version": bundle.version, "content_hash": bundle.content_hash,
                                                               "superseded": active.version, "rollback_of": bundle.rollback_of})
+    if trust_changed:
+        # 信頼できる生成元が変わると、保存済みの PII の継承の結果が変わりうる。公開と同じトランザクションで計算し直す
+        from edgf.services import ai_inherit  # 循環 import 回避
+
+        ai_inherit.recompute_all(db, actor)

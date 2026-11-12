@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare  # noqa: E402
 from probe import Probe  # noqa: E402
 
-SCENARIOS = ("search", "asset_detail", "impact", "rag_authorize", "contract_check", "inbox", "products", "audit_write", "asset_update", "asset_register")
+SCENARIOS = ("search", "asset_detail", "impact", "rag_authorize", "contract_check", "inbox", "products", "audit_write", "asset_update", "asset_register", "column_impact")
 # 重いシナリオは同時に動かす数を減らす (目標は同時実行時の遅延だが、単一の利用者の遅延と切り分けられるようにする)
 USERS = {"products": 2, "audit_write": 16}
 PROBED = ("audit_write",)  # 書き込みの詰まりの検証の対象

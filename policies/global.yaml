@@ -62,6 +62,12 @@ policies:
     when: {contains_pii: true}
     check: {type: pii_columns_documented}
 
+  - id: PRV-006
+    name: DIRECT 経路で PII のカラムが届くカラムは pii=true の宣言が必要
+    design_ref: "§12 PII / §9 Data Lineage"
+    severity: high  # カラム単位のリネージがある資産だけが対象 (Phase 16)
+    check: {type: pii_lineage_consistent}
+
   - id: MDM-001
     name: マスタ資産はエンティティ定義とSurvivorshipルールが必須
     design_ref: "§8 Master Data Management"
@@ -89,6 +95,12 @@ policies:
     severity: high
     when: {data_class: [analytical, ai]}
     check: {type: has_upstream_lineage}
+
+  - id: LIN-002
+    name: 上流を持つ資産の CDE カラムはカラム単位のリネージ必須
+    design_ref: "§9 Data Lineage (CDE はカラム単位)"
+    severity: high  # CDE のカラムは Phase 16 で導入したため、既存の資産の判定は変わらない
+    check: {type: cde_column_lineage}
 
   - id: AI-001
     name: AI学習データの承認

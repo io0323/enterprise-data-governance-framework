@@ -10,6 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from edgf.enums import DataClass, DatasetVersionStatus, ErasureStatus, ProductStatus, RemediationStatus, SubscriptionStatus
 from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, Domain, ErasureRequest, ErasureTask, GoldenRecord, Issue, KpiSnapshot,
                          MdmReview, MdmXref, MeshSubscription, ModelRemediation, utcnow)
+from edgf.services import lineage, lineage_trust
 from edgf.services.ai import card_complete
 from edgf.services.ai_inherit import compute as compute_inherited, is_violation
 from edgf.services.discovery import registration as discovery_registration
@@ -141,6 +142,7 @@ def compute(db: Session, domain: str | None = None, readable: ColumnElement[bool
         "certified_rate": _rate(certified, n),
         "quality_score_avg": round(sum(scores) / len(scores), 4) if scores else None,
         "cde_quality_score_avg": round(sum(cde_scores) / len(cde_scores), 4) if cde_scores else None,  # 目標 99%
+        "cde_column_lineage_rate": _cde_column_lineage_rate(db, assets),  # §9 CDE はカラム単位 (LIN-002 と同じ対象)
         "freshness_rate": _rate(fresh, len(sla_assets)),    # 目標 98%
         "compliance_rate": _rate(compliant, applicable),    # 目標 100%
         "open_issue_count": len(open_issues),
@@ -156,6 +158,17 @@ def compute(db: Session, domain: str | None = None, readable: ColumnElement[bool
         **_mesh_metrics(db, domain, ids),
         **_privacy_metrics(db, domain, list(assets), ids, now),
     }
+
+
+def _cde_column_lineage_rate(db: Session, assets) -> float | None:
+    """上流を持つ資産の CDE のカラムのうち、カラム単位のリネージを持つ割合。対象が無ければ None。"""
+    total = covered = 0
+    for a in assets:
+        cde = lineage_trust.cde_columns(a)
+        if cde and lineage.has_upstream(db, a.qualified_name):
+            total += len(cde)
+            covered += len(lineage_trust.columns_with_lineage(db, a.qualified_name, cde))
+    return _rate(covered, total)
 
 
 LEVEL_NAMES = {0: "No Governance", 1: "Basic Policy", 2: "Managed", 3: "Standardized", 4: "Federated Governance", 5: "Autonomous Governance"}

@@ -184,6 +184,8 @@ def update_asset(asset_id: str, body: AssetUpdate, db: Session = Depends(get_ses
     for key in ("privacy_technique", "privacy_params", "schema_", "tags", "controls"):
         if changes.get(key, "") is None:
             del changes[key]
+    if changes.get("is_cde") is False and any(c.get("cde") for c in changes.get("schema_", asset.schema_) or []):
+        raise HTTPException(422, "cde のカラムを持つ資産は is_cde を false にできません")
     was_anonymized = privacy.is_anonymized(asset.privacy_technique, asset.privacy_params)
     if "domain" in changes:
         _validate_domain(db, changes["domain"])

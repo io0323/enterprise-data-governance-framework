@@ -198,6 +198,22 @@ def _detail(db: Session, principal: Principal, req: ErasureRequest) -> ErasureRe
     out = ErasureRequestDetail.model_validate(req)
     out.tasks = [ErasureTaskOut.model_validate(t) for t in visible]
     out.hidden_task_count = len(pairs) - len(visible)
+    out.lineage_exclusions = _visible_exclusions(db, principal, (req.lineage_narrowing or {}).get("excluded", []))
+    return out
+
+
+def _visible_exclusions(db: Session, principal: Principal, excluded: list[dict]) -> list[dict]:
+    """外した資産のうち閲覧できるものだけ。経由した資産の名前も、閲覧できないものは出さない (Phase 14 と同じ扱い)。"""
+    if not excluded:
+        return []
+    names = {n for e in excluded for n in e.get("via", [])}
+    readable = {a.qualified_name for a in db.scalars(select(DataAsset).where(DataAsset.qualified_name.in_(names)))
+                if authz.can_read(db, principal, a)} if names else set()
+    out = []
+    for e in excluded:
+        asset = db.get(DataAsset, e["asset_id"])
+        if asset is not None and authz.can_read(db, principal, asset):
+            out.append({**e, "via": [n for n in e.get("via", []) if n in readable]})
     return out
 
 
@@ -260,7 +276,8 @@ def scope_erasure_request(request_id: str, db: Session = Depends(get_session), p
     audit.record(db, principal.audit_actor, "erasure.scope", "erasure", req.id, {
         "assets": [t.qualified_name for t in tasks],
         "withheld": [t.qualified_name for t in tasks if t.status == "withheld"],
-        "unregistered_downstream": req.unregistered_downstream, "ai_impact": req.ai_impact})
+        "unregistered_downstream": req.unregistered_downstream, "ai_impact": req.ai_impact,
+        "lineage_excluded": [e["qualified_name"] for e in (req.lineage_narrowing or {}).get("excluded", [])]})
     return _detail(db, principal, req)
 
 

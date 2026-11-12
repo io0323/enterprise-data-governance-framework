@@ -1,0 +1,16 @@
+# 信頼できる生成元 (Phase 16)。カラム単位のリネージで「絞る方向」の判断に使う job と、そのイベントを送る主体の宣言。
+#
+# 絞る方向: 消去の対象から外す、AI の Dataset Version を superseded にしない、AI 資産の PII の継承を外す。
+# ここに宣言した job の columnLineage facet を、principals の主体が OpenLineage で送った辺に限り、
+# PII のカラムからの DIRECT 経路が無い下流を外します。それ以外の辺は従来どおりデータセット単位で扱います。
+#
+# このファイルは Policy Bundle に含まれます。変更は POST /policies/reload で提案し、
+# Governance Committee の承認と公開 (policy.publish) を経て有効になります。ディスクを書き換えただけでは反映されません。
+#
+# 例:
+# producers:
+#   - job_namespace: dbt-prod          # OpenLineage の job.namespace
+#     jobs: [orders_mart, customers]   # 省略すると名前空間のすべての job
+#     principals: [svc-dbt-prod]       # イベントを送る主体 (JWT の sub)。必須
+#     reason: 本番の dbt。モデルのレビューで facet の正しさを確認済み
+producers: []

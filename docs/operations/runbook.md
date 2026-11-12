@@ -33,6 +33,20 @@ EDGF_ENV=production EDGF_AUTH_MODE=dev python -c "import edgf.main"
 
 新しく構築する環境は、起動時にディスクの Policy を v1 として取り込むので、`policies/global.yaml` の追加(MESH-007 など)は最初から入ります。**既存の環境**(稼働中の DB、手元の Docker のボリュームなど)では、`POST /policies/reload` で変更を提案し、Committee が承認して公開します(Phase 12 の Policy 変更のワークフロー。承認されるまで実行時の評価には反映されません)。
 
+Phase 16 の LIN-002、PRV-006 と `policies/lineage/trusted_producers.yaml` も同じ手順です。既存の環境では、承認されるまで次のようになります。
+
+- LIN-002 と PRV-006 は評価されません。`/ready` の `checks.policy_drift` で、ディスクと active の版が異なることが分かります
+- 信頼できる生成元は「宣言なし」として扱います。消去、AI の版、PII の継承は従来どおりデータセット単位です(保守的な側)
+
+### 信頼できる生成元を追加する(Phase 16)
+
+1. `policies/lineage/trusted_producers.yaml` に、job の名前空間、job(省略で名前空間のすべて)、イベントを送る主体(JWT の `sub`)、理由を書きます
+2. `POST /policies/reload` で提案します。このファイルの変更は Global の扱いで、Committee の承認が必要です
+3. 承認の前に、その job の columnLineage facet が出力のすべてのカラムを記述していることを確認します。記述の漏れたカラムは「値が流れない」とみなされ、消去の対象から外れることがあります
+4. 公開すると、保存済みの AI 資産の継承を計算し直します。公開の前に作った消去要求は、`scope` をやり直すまで以前の対象のままです
+
+取り消すときも同じ手順で宣言を消します。宣言を消すと、次の `scope` からデータセット単位に戻ります。
+
 ## 2. バックアップと復元
 
 ### バックアップ

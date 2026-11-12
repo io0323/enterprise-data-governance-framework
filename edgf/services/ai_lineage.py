@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from edgf.enums import AiKind, DataClass
 from edgf.models import DataAsset, DatasetVersion, DatasetVersionSource, ModelUsage, ModelVersion, model_version_dataset
-from edgf.services import ai, lineage
+from edgf.services import ai, lineage, lineage_trust
 
 MAX_DEPTH = 50
 VERSIONED_JOBS = (ai.DATASET_JOB, ai.MODEL_JOB)
@@ -26,6 +26,8 @@ class Impact:
     model_versions: list[ModelVersion] = field(default_factory=list)
     unversioned_models: list[str] = field(default_factory=list)  # 版が未登録で影響を特定できないモデル
     downstream: set[str] = field(default_factory=set)
+    excluded: list[dict[str, Any]] = field(default_factory=list)  # カラム単位のリネージで外した資産 (信頼できる生成元のみ)
+    excluded_ids: list[str] = field(default_factory=list)  # そのうち Catalog に登録済みの資産の ID
 
 
 def _models_using(db: Session, dataset_ids: Iterable[str]) -> list[ModelVersion]:
@@ -37,13 +39,20 @@ def _models_using(db: Session, dataset_ids: Iterable[str]) -> list[ModelVersion]
     return list(db.scalars(stmt))
 
 
-def affected_by_assets(db: Session, names: Iterable[str]) -> Impact:
-    """起点の資産の下流にある Dataset Version と Model Version を特定する。"""
+def affected_by_assets(db: Session, names: Iterable[str], *,
+                       root_columns: Mapping[str, Iterable[str] | None] | None = None) -> Impact:
+    """起点の資産の下流にある Dataset Version と Model Version を特定する。
+
+    root_columns (起点の PII のカラム) を渡すと、信頼できる生成元の辺だけを経由して PII が流れない資産を外す (消去)。
+    """
     roots = set(names)
     reached = set(roots)
+    taint = lineage_trust.forward(db, root_columns, MAX_DEPTH) if root_columns is not None else None
     unversioned_edge: set[str] = set()  # 版の情報と対応しないエッジで到達した資産
     for root in roots:
         for edge in lineage.traverse(db, root, "downstream", MAX_DEPTH):
+            if taint is not None and edge["to"] not in roots and not taint.tainted(edge["to"]):
+                continue
             reached.add(edge["to"])
             if edge["job"] not in VERSIONED_JOBS:
                 unversioned_edge.add(edge["to"])
@@ -68,9 +77,13 @@ def affected_by_assets(db: Session, names: Iterable[str]) -> Impact:
             unversioned_models.append(asset.qualified_name)
         if asset.qualified_name in roots or asset.qualified_name in unversioned_edge:
             models.update({m.id: m for m in versions})
+    excluded = taint.excluded if taint is not None else []
+    names = [e["qualified_name"] for e in excluded]
+    excluded_ids = sorted(db.scalars(select(DataAsset.id).where(DataAsset.qualified_name.in_(names)))) if names else []
     return Impact(dataset_versions=sorted(datasets.values(), key=lambda v: (v.asset_id, v.created_at, v.id)),
                   model_versions=sorted(models.values(), key=lambda v: (v.asset_id, v.created_at, v.id)),
-                  unversioned_models=sorted(unversioned_models), downstream=reached - roots)
+                  unversioned_models=sorted(unversioned_models), downstream=reached - roots,
+                  excluded=excluded, excluded_ids=excluded_ids)
 
 
 def affected_by_dataset_version(db: Session, version: DatasetVersion) -> Impact:

@@ -3,6 +3,23 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 16)
+
+**カラム単位のリネージを追加しました。** 既存の API の応答の項目は変えず、項目と API を追加しただけです。columnLineage facet を含まない OpenLineage のイベントの結果は従来と同じです。
+
+| 対象 | 変更 |
+|---|---|
+| `POST /lineage/openlineage` | 出力の `facets.columnLineage` を取り込みます(受け付け範囲は「[カラム単位のリネージ](#カラム単位のリネージ9)」)。facet があるときだけ `lineage.column_write` が必要で、応答に `column_edges` と `warnings` が加わります |
+| 新規 API | `POST /lineage/column-edges`、`GET /lineage/{name}/columns`、`/columns/{column}/upstream`、`/downstream`、`/impact` |
+| `POST /mesh/contracts/{id}/check` | `column_impact` を追加(既存の項目は変えていません) |
+| Catalog | スキーマのカラムに `cde`(既定 false)。`is_cde` は「CDE のカラムを含む」で、`cde` のカラムがあれば true になります。`cde` のカラムがあるのに `is_cde: false` を指定すると 422 |
+| Contract / ODCS | カラムに `cde`。ODCS の `criticalDataElement` で取り込み・書き出しします |
+| 消去 | 要求の詳細と消去証明に `lineage_exclusions`、`ai_impact` に `lineage_excluded_asset_ids`(どちらも信頼できる生成元の宣言が無ければ空) |
+| AI の継承 | `GET /ai/assets/{id}/inheritance` に `pii_columns` と `pii_excluded`。保存値(`inheritance`)には、値があるときだけ加わります |
+| KPI | `cde_column_lineage_rate`(ダッシュボードの目標 100%) |
+| Policy | LIN-002、PRV-006 と `policies/lineage/trusted_producers.yaml`(既定は空)。**既存の環境では、Phase 12 の Policy 変更の承認(`POST /policies/reload` の提案 → Committee の承認 → 公開)を経て適用してください。** 承認されるまで、LIN-002 と PRV-006 は評価されず、消去・AI の版・PII の継承は従来どおりデータセット単位です |
+| マイグレーション | 0033(`column_lineage_edges`)、0034(取り込みの経路と主体、消去で外した資産の記録) |
+
 ## 変更点(Phase 15)
 
 **成熟度 Level 3 の判定の指標を変えました(確定事項の変更です)。** これまでは Catalog 登録率を計測できなかったので、メタデータ完備率で代替していました。Phase 15 から Data Plane の資産一覧で未登録の資産を検出できるので、**Catalog 登録率(登録済み ÷ 検出された資産)が 95% 以上**であることを条件にします(§1.8、§20)。
@@ -55,7 +72,7 @@
 | §10 | ライフサイクルの状態遷移、Legal Hold、保持期限切れの検出 | `/assets/{id}/lifecycle`, `/assets/retention-due` |
 | §5 | 7ディメンションの品質ルール・Quality Score・閾値割れ時のIssue自動起票 | `/quality/...` |
 | §16 | Issue管理・エスカレーション(Steward→Owner→Committee)・SLA超過時の自動エスカレーション | `/issues` |
-| §9 | OpenLineage互換の取込・上流/下流トレース・影響分析(通知先Owner・リスク判定) | `/lineage/...` |
+| §9 | OpenLineage互換の取込(columnLineage facet を含む)・上流/下流トレース・影響分析(通知先Owner・リスク判定)・カラム単位のリネージと影響分析・CDE のカラム化(LIN-002) | `/lineage/...` |
 | §13 / §15 | Policy as Code(Global/Domain YAML、上書き禁止)・自動監査・期限付き例外の承認(職務分離あり) | `/policies/...` |
 | §13 / §19 | ハッシュチェーン監査ログ・改ざんの検知・Ed25519 のアンカリング | `/audit/events`, `/audit/verify`, `/audit/anchors` |
 | §17 / §20 | KPI(全社・ドメイン別)・成熟度の目安 | `/kpi`, `/kpi/domains` |
@@ -232,6 +249,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `issue.update` | Issue の更新 | ロール: admin, committee<br>対象の assignee / owner / steward |  |
 | `jobs.read` | ジョブの実行状況の参照 | ロール: admin, committee |  |
 | `jobs.run` | ジョブの手動実行 (通常は外部の cron や CronJob から実行する) | ロール: admin |  |
+| `lineage.column_write` | カラム単位のリネージの登録・取込 (columnLineage facet) | ロール: admin, custodian, owner, steward |  |
 | `lineage.write` | リネージの登録・取込 | ロール: admin, custodian, owner, steward |  |
 | `mdm.compose` | Golden Record の生成と内容ハッシュの検証 | ドメイン内ロール: steward<br>対象の custodian |  |
 | `mdm.match` | ソースレコードのマッチング | ドメイン内ロール: steward<br>対象の custodian |  |
@@ -292,6 +310,95 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 - clearance は claim(`EDGF_CLAIM_CLEARANCE`)で与えます。無い場合はロールから導きます(admin/committee=restricted、owner/steward/custodian=confidential、consumer=internal、consent_collector=public)。
 - 閲覧できない資産は、一覧(資産・保持期限・Issue・ポリシー例外・用語の紐付け先)から件数を含めて除外し、個別に取得しようとすると 403 になります。影響分析とリネージでは名前をラベルに置き換えて深さだけを返し、詳細を伏せます(通知先 Owner は変更管理に必要なので返します)。
 - Owner による閲覧承認: `POST /assets/{id}/access-grants`(`subject`, `purpose`, `expires_at`。期限は最大 365 日)。取り消しは `DELETE /assets/{id}/access-grants/{grant_id}` で、Owner と Committee が行えます。
+
+## カラム単位のリネージ(§9)
+
+データセット単位の `lineage_edges` に加えて、カラムの間の辺を `column_lineage_edges` に持ちます。カラムの辺を登録すると、対応するデータセット単位の辺も作るので、既存の影響分析、LIN-001、AI Lineage はそのまま使えます。データセットの識別は既存と同じで、OpenLineage の dataset の `name` を `qualified_name` として扱います(`namespace` は識別に使いません)。
+
+### columnLineage facet の受け付け範囲
+
+| 項目 | 扱い |
+|---|---|
+| `_schemaURL` | メジャー版 1(`…/1-x-y/ColumnLineageDatasetFacet.json`)だけ。それ以外と欠落は 422(`column-lineage-invalid`)。1 つでも不正ならイベント全体を取り込みません |
+| `fields.<出力カラム>.inputFields[]` | `name`(データセット)と `field`(カラム)を保存します。`namespace` は保存しません |
+| `transformations[].type` | `DIRECT` / `INDIRECT`。それ以外は `DIRECT` として保存し、`warnings` に `unknown_type` を返します(値が流れる側に倒す) |
+| `transformations[].subtype` | `IDENTITY`、`TRANSFORMATION`、`AGGREGATION`、`JOIN`、`GROUP_BY`、`FILTER`、`SORT`、`WINDOW`、`CONDITIONAL`。それ以外は `OTHER` として保存し、`unknown_subtype` を返します(拒否しません) |
+| `transformations[].masking` | 保存します。**masking=true でも PII の継承と消去の対象は止めません** |
+| `transformations[].description`、`transformationDescription` | **保存しません**(SQL のリテラルなどの値を含みうるため。DB、ログ、監査のいずれにも残しません) |
+| 廃止予定の `transformationType`(field 単位) | `transformations` が無いときだけ `type` に読み替えます(`MASKED` は `DIRECT` / `TRANSFORMATION` / masking=true) |
+| 種類の記録が無い入力 | `DIRECT` として扱います |
+| `dataset[]` | データセット全体に効く入力として、出力カラムを NULL にした `INDIRECT` の辺で保存します |
+| Catalog に無いカラム | 拒否せず保存し、`warnings` に `unregistered_column` を返します |
+| 同じデータセットの中の辺 | 保存せず `same_dataset` を返します(データセット単位の辺が自己ループになるため) |
+| 件数 | 1 つの facet で 20,000 辺まで |
+
+### 探索と影響分析
+
+| API | 内容 |
+|---|---|
+| `GET /lineage/{name}/columns` | 資産の各カラムの 1 段の上流と下流(資産の詳細の画面で使います) |
+| `GET /lineage/{name}/columns/{column}/upstream`、`/downstream` | カラムの上流・下流。`depth` は既定 10、上限 50(既存と同じ) |
+| `GET /lineage/{name}/columns/{column}/impact` | 影響を受けるカラム、深さ、経路の種類(`path`)、Owner、CDE のカラムへの影響(`cde_column`、`cde_impacted`)、リスク |
+
+- 影響分析は DIRECT と INDIRECT の両方を辿ります。`path` は起点からの経路の種類で、途中がすべて値の流れる辺(`DIRECT`、または `AGGREGATION`)なら `DIRECT`、そうでなければ `INDIRECT` です
+- 閲覧できない資産は、名前を `redacted-N` に置き換え、カラム名と `job` も返しません(Phase 14 と同じ。漏洩のテストもカラム単位の API に適用しています)。Owner とリスクは全資産で算出します
+- 探索は既存と同じく段ごとの一括取得です(`WITH RECURSIVE` にしない判断と `EXPLAIN` は [docs/operations/performance.md](docs/operations/performance.md))
+- UI は読み取り専用で、資産の詳細に「カラムのリネージ」、Lineage の画面にカラムの入力欄とカラム単位のグラフと影響の表を追加しました
+
+### 広げる方向と絞る方向
+
+**機密度・PII の継承と消去の対象の特定は、値の流れる経路(`DIRECT` と `AGGREGATION`)だけを見ます。** 方向によって、使える辺が違います。
+
+| 方向 | 例 | 使える辺 |
+|---|---|---|
+| 広げる | 影響分析の詳細化、PII のカラムの追加(継承の `pii_columns`、消去のタスクのカラム、PRV-006)、Contract check の `column_impact` | すべての辺 |
+| 絞る | 消去の対象から外す、AI の Dataset Version を superseded にしない、AI 資産の PII の継承を外す | 信頼できる生成元の辺だけ |
+
+データセットの辺の組(A → B)が「信頼できる」のは、次をすべて満たすときです。満たさない組は、従来どおりデータセット単位で扱います(A のどこかに PII があれば B 全体)。
+
+- A → B のデータセット単位の辺の job が、すべて `trusted_producers.yaml` で宣言されていること
+- その job ごとに A → B のカラムの辺があり、すべて **OpenLineage で、宣言された主体から**取り込まれていること。手動の登録(`POST /lineage/column-edges`)と、別の主体が同じ job の名前で送った辺は信頼しません。信頼できる辺を別の主体が書き直すと、その辺は信頼できなくなります
+
+起点(消去では identifier_type の一致した資産の **すべての** PII のカラム、継承では上流の PII のカラム)から値の流れる経路が無い資産だけを外します。外した資産と理由(`no_direct_path_from_pii_columns`、経由した資産、信頼できる生成元の job)は、消去証明の `lineage_exclusions` と継承の結果の `pii_excluded` に残します。機密度の継承はデータセット単位のままです。
+
+### 信頼できる生成元の承認
+
+`policies/lineage/trusted_producers.yaml` は Policy Bundle に含まれ、**変更には Committee の承認と公開(`policy.publish`)が必要です。** 承認されるまで、ディスクの変更は反映しません。
+
+```yaml
+producers:
+  - job_namespace: dbt-prod          # OpenLineage の job.namespace
+    jobs: [orders_mart]              # 省略すると名前空間のすべての job
+    principals: [svc-dbt-prod]       # イベントを送る主体 (JWT の sub)。必須
+    reason: 本番の dbt。facet の正しさをレビューで確認済み
+```
+
+公開すると、保存済みの AI 資産の継承を計算し直します。手順は [docs/operations/runbook.md](docs/operations/runbook.md) にあります。
+
+### CDE のカラム単位化
+
+| 項目 | 内容 |
+|---|---|
+| `cde`(スキーマのカラム) | Critical Data Element のカラム。`is_cde` は「CDE のカラムを含む」として残し、`cde` のカラムがあれば自動で true にします。`cde` のカラムが無い `is_cde: true`(データセット単位の CDE)も残せます |
+| LIN-002(high) | 上流を持つ資産の CDE のカラムは、カラム単位のリネージを持つこと。上流の無い資産(源泉)は対象外 |
+| PRV-006(high) | DIRECT の経路で上流の PII のカラムが届くカラムは `pii: true` を宣言すること(masking=true の経路も含む)。基準を満たす匿名化の資産の先は辿りません。カラム単位のリネージの無い資産は対象外 |
+| KPI `cde_column_lineage_rate` | 上流を持つ資産の CDE のカラムのうち、カラム単位のリネージを持つ割合(LIN-002 と同じ対象)。対象が無ければ `null` |
+| ODCS | `criticalDataElement: true` を `cde` として取り込み、書き出します。true / false 以外は警告にして false とします |
+
+### 権限
+
+| 操作 | 権限 |
+|---|---|
+| カラムの辺の登録、facet を含むイベントの取り込み | `lineage.column_write`(`lineage.write` と同じ主体: admin、custodian、owner、steward) |
+| 信頼できる生成元の変更 | Policy Bundle の提案と公開(`policy.publish`。Committee の承認が必要) |
+| 参照(探索、影響分析、カラムの一覧) | 認証済みの全員。ABAC で名前とカラム名を伏せます |
+
+### 既知の制約(カラム単位のリネージ)
+
+- 信頼できる生成元の facet が出力のすべてのカラムを記述しているかは検証しません。宣言の承認の前に確認してください(記述の漏れたカラムは「値が流れない」とみなされます)
+- カラムの辺の削除 API はありません。facet から消えた辺も残ります(残った辺は値の流れる側に倒れるので、絞り込みは保守的になります)
+- 消去の `scope` の結果は、その時点の宣言で決まります。宣言を変えた後は `scope` をやり直してください。AI の版の superseded は `dispatch` の時点で計算し直します
+- 列の名前の変更はカラムの辺に反映しません。Contract check の `column_impact` は、変更前の名前で影響を探します
 
 ## Data Privacy(§12 / §10)
 
@@ -520,6 +627,7 @@ stateDiagram-v2
 ### 統制属性の継承(§14 Embedding / Vector / RAG)
 
 - 実効機密度 = 自身と Lineage の全上流の最大値、実効の `contains_pii` = 自身と全上流の論理和です。ABAC は実効機密度で判定します。
+- Phase 16 から、信頼できる生成元の辺だけを経由して PII のカラムからの DIRECT の経路が無い上流は、PII の継承から外します(`pii_excluded` に理由)。DIRECT の経路で届くカラムは `pii_columns` に示します。
 - 解除できるのは、上流で PRV-003 を満たす `anonymized` を経た場合だけです。その資産より先は継承しません。すべての経路で匿名化を経る必要があり、仮名化では解除しません。
 - 上流の分類や保護手法の変更、資産の登録、Lineage の追加、版の登録で再計算します。実効値が宣言値を上回ると Owner 宛ての Issue(`policy:AI-002`)を起票し、Certified なら draft に戻します。
 
@@ -1168,6 +1276,7 @@ CI では `playwright` ジョブが常に実行されます。Keycloak との E2
 | 検索 | p95 300ms | 達成(55ms。書き込みの直後は 90〜150ms) | 未測定 | 120〜250ms(`pg_trgm` の導入後の 7 回) |
 | 資産詳細 | p95 200ms | 達成(6ms) | 未測定 | 6〜16ms |
 | 影響分析(深さ 10) | p95 1s | 達成(590ms) | 未測定 | 620〜1,500ms(目標ちょうどの 1,000ms が 4 回) |
+| カラム単位の影響分析(深さ 10、Phase 16) | p95 1s | 達成(320〜340ms) | 未測定 | 660〜900ms(2 回) |
 | RAG 認可(50 ヒット) | p95 150ms | 達成(27ms) | 未測定 | 34〜83ms |
 | Contract check | p95 1s | 達成(300ms) | 未測定 | 380〜850ms |
 | inbox(1,000 件) | p95 500ms | 達成(280ms) | 未測定 | 330〜740ms |
@@ -1280,7 +1389,7 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - 閲覧の申請は承認エンジンの `access_request` で扱います。Owner が直接付与する API も残っています。SLA の営業日は土日だけを除きます(祝日は考慮しません)
 - 棚卸はキャンペーンの作成時点の一覧で行います。作成後に付与された権限は次の四半期の対象です
 - リネージの `upstream`/`downstream`/`impact` はオブジェクトで返すため、ページネーションの対象外です(`depth` 上限 50 で件数を抑えています)
-- リネージはデータセット単位です → CDE はカラム単位にする(§9)
+- リネージはデータセットとカラムの 2 段です(Phase 16)。CDE のカラムは LIN-002 でカラム単位のリネージを求めます。絞る方向(消去の対象から外すなど)は、承認された信頼できる生成元の辺に限ります。詳しい制約は「[カラム単位のリネージ](#カラム単位のリネージ9)」の既知の制約を参照してください
 - Right to Erasure は pull 型の API に加えて、タスクの発行を `edgf.erasure.task.dispatched` で通知します。バックアップを含む物理削除の実施は Data Plane の責務で、Control Plane は報告された件数と証跡ハッシュを記録するだけです(内容は検証しません)
 - 発行後に Legal Hold で `withheld` になったタスクは、Hold が解除されても自動では再発行しません。新しい消去要求を出してください
 - `subject_ref` は消去後も Consent と消去要求の記録に残ります(元の識別子には戻せず、消去の証跡として必要なため)。HMAC 鍵のローテーションは未実装です

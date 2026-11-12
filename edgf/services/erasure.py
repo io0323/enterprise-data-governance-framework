@@ -22,7 +22,7 @@ from edgf.config import settings
 from edgf.enums import ESCALATION_ORDER, AiKind, ErasureStatus, ErasureTaskStatus
 from edgf.models import DataAsset, ErasureRequest, ErasureTask, Issue, utcnow
 from edgf.observability import request_id_var
-from edgf.services import ai_lineage, ai_remediation, issues, lineage, mdm, outbox
+from edgf.services import ai_lineage, ai_remediation, issues, lineage_trust, mdm, outbox
 from edgf.services.privacy import effective_pii_columns, pii_columns
 
 S, T = ErasureStatus, ErasureTaskStatus
@@ -90,24 +90,34 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
             goldens_by_name[asset.qualified_name] = golden_ids
             targets.setdefault(asset.qualified_name, ("mdm_golden", 0))
             roots.add(asset.qualified_name)
+    # 起点の PII のカラム (identifier_type 以外も) から伝播する。Golden Record の資産はカラムが分からないので全体
+    root_columns: dict[str, list[str] | None] = {
+        qn: None if qn in goldens_by_name else [c["name"] for c in effective_pii_columns(assets[qn].schema_)] for qn in sorted(roots)}
+    taint = lineage_trust.forward(db, root_columns, MAX_LINEAGE_DEPTH)
     unregistered: set[str] = set()
-    for start in sorted(roots):
-        for edge in lineage.traverse(db, start, "downstream", MAX_LINEAGE_DEPTH):
-            name, depth = edge["to"], edge["depth"]
-            asset = assets.get(name)
-            if asset is None:
-                unregistered.add(name)
-            elif asset.lifecycle_state != DELETED and asset.ai_kind != MODEL \
-                    and (asset.contains_pii or asset.ai_kind in AI_TASK_KINDS):
-                current = targets.get(name)
-                if current is None or (current[0] == "lineage" and depth < current[1]):
-                    targets[name] = ("lineage", depth)
+    excluded = {e["qualified_name"]: e for e in taint.excluded}
+    exclusions = []
+    for name, depth in sorted(taint.depth.items()):
+        asset = assets.get(name)
+        if asset is None:
+            unregistered.add(name)
+            continue
+        flowed = taint.columns.get(name)  # 値の流れが分かった PII のカラム (広げる方向: 宣言が無くても対象にする)
+        if asset.lifecycle_state == DELETED or asset.ai_kind == MODEL \
+                or not (asset.contains_pii or asset.ai_kind in AI_TASK_KINDS or flowed):
+            continue
+        if name in excluded:
+            exclusions.append({**excluded[name], "asset_id": asset.id})
+            continue
+        if name not in targets:
+            targets[name] = ("lineage", depth)
 
-    impact = ai_lineage.affected_by_assets(db, roots)
+    impact = ai_lineage.affected_by_assets(db, roots, root_columns=root_columns)
     versions_by_asset: dict[str, list[str]] = {}
     for version in impact.dataset_versions:
         versions_by_asset.setdefault(version.asset_id, []).append(version.id)
     req.ai_impact = ai_remediation.impact_view(roots, impact)
+    req.lineage_narrowing = {"roots": root_columns, "excluded": exclusions}
 
     no_custodian = []
     for qn, (origin, depth) in targets.items():
@@ -115,6 +125,7 @@ def scope(db: Session, req: ErasureRequest) -> Sequence[ErasureTask]:
         held = asset.legal_hold
         identifier_cols = _identifier_columns(asset, req.identifier_type)
         columns = identifier_cols or [c["name"] for c in pii_columns(asset.schema_)]
+        columns += sorted(taint.columns.get(qn, set()) - set(columns))
         db.add(ErasureTask(request_id=req.id, asset_id=asset.id, qualified_name=qn, origin=origin, depth=depth,
                            columns=columns, golden_ids=goldens_by_name.get(qn, []), ai_kind=asset.ai_kind,
                            dataset_version_ids=versions_by_asset.get(asset.id, []),
@@ -243,6 +254,8 @@ def certificate(db: Session, req: ErasureRequest) -> dict[str, Any]:
         "approved_at": req.approved_at, "dispatched_at": req.dispatched_at, "finished_at": req.finished_at,
         "verified_at": req.verified_at, "verified_by": req.verified_by,
         "unregistered_downstream": req.unregistered_downstream or [],
+        # 信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無いため対象から外した資産 (Phase 16)
+        "lineage_exclusions": (req.lineage_narrowing or {}).get("excluded", []),
         "tasks": [{"task_id": t.id, "asset_id": t.asset_id, "qualified_name": t.qualified_name, "origin": t.origin,
                    "depth": t.depth, "golden_ids": t.golden_ids, "ai_kind": t.ai_kind,
                    "dataset_version_ids": t.dataset_version_ids, "status": t.status, "records_deleted": t.records_deleted,

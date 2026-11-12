@@ -39,6 +39,7 @@ class ColumnSpec(BaseModel):
     nullable: bool | None = Field(default=None, description="§15 Contract とのずれの検出に使う (省略時は比較しない)")
     description: str = ""
     pii: bool = False
+    cde: bool = Field(default=False, description="§5.2 / §9 Critical Data Element のカラム。カラム単位のリネージが必須 (LIN-002)")
     # §12 PII Inventory (いずれも任意。既存の pii フラグと互換)
     pii_category: PiiCategory | None = None
     identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN,
@@ -85,6 +86,15 @@ class AssetCreate(AssetBase):
     def _ai_kind_only_for_ai(self) -> AssetCreate:
         if self.ai_kind is not None and self.data_class != DataClass.AI:
             raise ValueError("ai_kind は data_class=ai の資産にだけ指定できます")
+        return self
+
+    @model_validator(mode="after")
+    def _derive_is_cde(self) -> AssetCreate:
+        """is_cde は「CDE のカラムを含む」。cde のカラムがあれば true を導く (明示の false とは矛盾するので拒否)。"""
+        if any(c.cde for c in self.schema_):
+            if "is_cde" in self.model_fields_set and not self.is_cde:
+                raise ValueError("cde のカラムを持つ資産は is_cde を false にできません")
+            self.is_cde = True
         return self
 
 
@@ -252,6 +262,20 @@ class LineageEdgeIn(BaseModel):
 class OLDataset(BaseModel):
     namespace: str = ""
     name: str = Field(max_length=300)
+    facets: dict[str, Any] | None = Field(default=None, description="columnLineage だけを読む (Phase 16)。他の facet は保存しない")
+
+
+class ColumnEdgeIn(BaseModel):
+    """カラム単位のリネージの手動の登録。target_column を省略するとデータセット全体に効く入力 (INDIRECT)。"""
+    model_config = ConfigDict(extra="forbid")
+    source: str = Field(min_length=1, max_length=300)
+    source_column: str = Field(min_length=1, max_length=200)
+    target: str = Field(min_length=1, max_length=300)
+    target_column: str | None = Field(default=None, min_length=1, max_length=200)
+    job: str = Field(default="manual", min_length=1, max_length=300)
+    type: Literal["DIRECT", "INDIRECT"] = "DIRECT"
+    subtype: str | None = Field(default=None, max_length=30)
+    masking: bool = False
 
 
 class OLJob(BaseModel):
@@ -436,6 +460,8 @@ class ErasureRequestOut(ORM):
     unregistered_downstream: list[str]
     warnings: list[str]
     ai_impact: dict[str, Any] = Field(default_factory=dict, description="§14 影響を受ける Dataset Version / Model Version")
+    lineage_exclusions: list[dict[str, Any]] = Field(
+        default_factory=list, description="Phase 16: 信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無いため外した資産 (閲覧できるものだけ)")
 
 
 class ErasureRequestDetail(ErasureRequestOut):
@@ -777,6 +803,10 @@ class InheritanceOut(BaseModel):
     pii_from: list[str]
     released_by: list[str]
     unregistered_upstream: list[str]
+    pii_columns: dict[str, list[dict[str, str]]] = Field(
+        default_factory=dict, description="Phase 16: DIRECT 経路で PII のカラムが届くカラムと、その元 (資産とカラム)")
+    pii_excluded: list[dict[str, Any]] = Field(
+        default_factory=list, description="Phase 16: 信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無いため継承しない上流")
 
 
 class RemediationDecisionIn(AiInput):
@@ -929,6 +959,7 @@ class ContractColumn(MeshInput):
     pii: bool = False
     description: str = Field(default="", max_length=2000)
     identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN, description="ID の標準 (§15 命名/ID標準)")
+    cde: bool = Field(default=False, description="Critical Data Element のカラム (ODCS の criticalDataElement)")
     reference_set: str | None = Field(default=None, max_length=120, description="参照する Reference Data (<id>[@version])")
     renamed_from: str | None = Field(default=None, max_length=200, description="名前の変更を明示する (前の版のカラム名)")
 
