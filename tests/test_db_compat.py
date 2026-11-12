@@ -21,6 +21,8 @@ from edgf.services import audit
 from tests.conftest import H
 from tests.mdm_helpers import HUB, MDM, master_asset
 
+pytestmark = pytest.mark.fresh_schema  # 並行実行、コミットとロールバック、監査チェーンの競合、DDL を扱う (テストごとにスキーマを作り直す)
+
 API = "/api/v1"
 ADMIN = {"X-Actor": "root", "X-Roles": "admin", "X-Domains": "*"}
 COMMITTEE = {"X-Actor": "chair", "X-Roles": "committee", "X-Domains": ""}

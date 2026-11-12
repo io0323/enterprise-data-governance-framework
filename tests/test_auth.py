@@ -14,13 +14,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from edgf import migrate
 from edgf.auth import (AuthConfigError, AuthError, JwtAuthenticator, JwtConfig, Principal, build_authenticator,
                        get_claim, normalize_roles, resolve_clearance, validate_auth_settings)
 from edgf.config import Settings
-from edgf.db import engine
 from edgf.main import create_app
-from tests.conftest import reset_db
+from tests.conftest import prepare_database
 
 API = "/api/v1"
 ISS = "https://idp.example.test/realms/edgf"
@@ -86,11 +84,9 @@ def jwt_settings(jwks_url: str, **kw) -> Settings:
 
 @pytest.fixture()
 def jwt_client(jwks):
-    reset_db()
-    migrate.upgrade(engine)
+    prepare_database(fresh=False)  # スキーマは使い回し、データだけを消す (tests/conftest.py)
     with TestClient(create_app(jwt_settings(jwks.url))) as c:
         yield c
-    reset_db()
 
 
 def token(keys, kid="k1", signer=None, **claims) -> str:
@@ -171,12 +167,10 @@ def test_jwt_invalid_tokens_are_401(jwt_client, keys, case):
 
 
 def test_jwks_unreachable_fails_closed_with_503(keys):
-    reset_db()
-    migrate.upgrade(engine)
+    prepare_database(fresh=False)
     with TestClient(create_app(jwt_settings("http://127.0.0.1:9/jwks.json"))) as c:
         r = c.get(f"{API}/domains", headers=bearer(token(keys)))
     assert r.status_code == 503 and r.json()["type"] == "urn:edgf:problem:auth-unavailable"
-    reset_db()
 
 
 # ---------------------------------------------------------------- claim の対応付け (IdP 非依存)

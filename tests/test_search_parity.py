@@ -17,6 +17,8 @@ from edgf.models import DataAsset, GlossaryTerm
 from edgf.services.search_index import DEGRADED, SEARCH_INDEXES, search_index_warning
 from tests.process_helpers import ADMIN, API, U, asset
 
+pytestmark = pytest.mark.fresh_schema  # 索引と拡張の削除、マイグレーションの往復を行う (テストごとにスキーマを作り直す)
+
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("migration_0028", ROOT / "edgf" / "migrations" / "versions" / "0028_search_trgm_indexes.py")
 migration = importlib.util.module_from_spec(spec)
