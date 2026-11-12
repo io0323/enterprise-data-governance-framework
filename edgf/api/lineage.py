@@ -66,7 +66,7 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
         return {"accepted": True, "edges": count}
     column_edges, warnings = 0, []
     for specs, parse_warnings in parsed:
-        stored, ingest_warnings = column_lineage.ingest(db, specs, job, event.run.runId)
+        stored, ingest_warnings = column_lineage.ingest(db, specs, job, event.run.runId, principal.audit_actor)
         column_edges += stored
         warnings.extend([*parse_warnings, *ingest_warnings])
     audit.record(db, principal.audit_actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count,
@@ -87,7 +87,7 @@ def add_column_edge(body: ColumnEdgeIn, db: Session = Depends(get_session), prin
     if body.target_column is None:
         edge_type = column_lineage.INDIRECT
     spec = column_lineage.EdgeSpec(body.source, body.source_column, body.target, body.target_column, edge_type, subtype, body.masking)
-    edge = column_lineage.upsert(db, spec, body.job)
+    edge = column_lineage.upsert(db, spec, body.job, via="manual", recorded_by=principal.audit_actor)
     warnings += column_lineage.unregistered_columns(db, [spec])
     audit.record(db, principal.audit_actor, "lineage.column_edge", "lineage", entity, {"type": edge.type, "subtype": edge.subtype, "masking": edge.masking})
     ai_inherit.refresh(db, principal.audit_actor, [body.target])

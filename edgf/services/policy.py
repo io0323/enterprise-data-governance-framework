@@ -21,6 +21,7 @@ from edgf.config import settings
 from edgf.db import SessionLocal
 from edgf.enums import BundleStatus
 from edgf.models import DataAsset, PolicyBundle, PolicyException, QualityRule, utcnow, term_asset
+from edgf.services import lineage_trust
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
@@ -72,7 +73,8 @@ def read_disk_files(policy_dir: Path | None = None) -> dict[str, str]:
     """ディスクの Policy の YAML 一式 (相対パス → 本文)。実行時の正ではなく、提案と初回の取り込みの元にする。"""
     base = Path(policy_dir or settings.policy_dir)
     return {str(f.relative_to(base)): f.read_text(encoding="utf-8")
-            for f in [*sorted(base.glob("*.yaml")), *sorted((base / "domains").glob("*.yaml"))]}
+            for f in [*sorted(base.glob("*.yaml")), *sorted((base / "domains").glob("*.yaml")),
+                      *sorted((base / "lineage").glob("trusted_producers.yaml"))]}
 
 
 def parse_files(files: Mapping[str, str]) -> list[Policy]:
@@ -80,6 +82,12 @@ def parse_files(files: Mapping[str, str]) -> list[Policy]:
     policies: dict[str, Policy] = {}
     top_level = sorted(k for k in files if "/" not in k)
     for name in [*top_level, *sorted(k for k in files if "/" in k)]:
+        if name == lineage_trust.TRUST_FILE:  # Policy ではない。信頼できる生成元の宣言 (Phase 16)
+            try:
+                lineage_trust.parse(files[name])
+            except lineage_trust.TrustFileInvalid as e:
+                raise PolicyLoadError(str(e)) from e
+            continue
         try:
             doc = yaml.safe_load(files[name]) or {}
         except yaml.YAMLError as e:

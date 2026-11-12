@@ -183,6 +183,9 @@ class ColumnLineageEdge(Base):
     subtype: Mapped[str | None] = mapped_column(String(30))
     masking: Mapped[bool] = mapped_column(Boolean, default=False)
     last_run_id: Mapped[str | None] = mapped_column(String(100))
+    # 信頼できる生成元の判定に使う: 取り込みの経路 (openlineage / manual) と、最後に書いた主体
+    via: Mapped[str | None] = mapped_column(String(20))
+    recorded_by: Mapped[str | None] = mapped_column(String(200))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
@@ -275,6 +278,8 @@ class ErasureRequest(Base):
     warnings: Mapped[list] = mapped_column(JSON, default=list)
     # §14 消去の影響を受ける AI 資産 (起点の資産名と、Dataset Version / Model Version の ID。主体の情報は含まない)
     ai_impact: Mapped[dict] = mapped_column(JSON, default=dict)
+    # カラム単位のリネージで対象から外した資産と理由 (信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無い)
+    lineage_narrowing: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class ErasureTask(Base):

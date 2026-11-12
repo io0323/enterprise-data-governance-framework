@@ -138,8 +138,12 @@ def parse_facet(output_name: str, facet: Any) -> tuple[list[EdgeSpec], list[dict
     return list(specs.values()), warnings
 
 
-def upsert(db: Session, spec: EdgeSpec, job: str, run_id: str | None = None) -> ColumnLineageEdge:
-    """カラムの辺を保存し、対応するデータセット単位の辺も作る。"""
+def upsert(db: Session, spec: EdgeSpec, job: str, run_id: str | None = None, *, via: str = "manual",
+           recorded_by: str | None = None) -> ColumnLineageEdge:
+    """カラムの辺を保存し、対応するデータセット単位の辺も作る。
+
+    via と recorded_by は最後に書いた経路と主体。別の主体が同じ辺を書き直すと信頼できる生成元の辺ではなくなる (保守的な側)。
+    """
     lineage.upsert_edge(db, spec.source, spec.target, job, run_id=run_id)
     target_column = ColumnLineageEdge.target_column.is_(None) if spec.target_column is None else ColumnLineageEdge.target_column == spec.target_column
     edge = db.scalar(select(ColumnLineageEdge).where(ColumnLineageEdge.source == spec.source, ColumnLineageEdge.source_column == spec.source_column,
@@ -147,10 +151,12 @@ def upsert(db: Session, spec: EdgeSpec, job: str, run_id: str | None = None) -> 
                                                      ColumnLineageEdge.type == spec.type))
     if edge is None:
         edge = ColumnLineageEdge(source=spec.source, source_column=spec.source_column, target=spec.target, target_column=spec.target_column,
-                                 job=job, type=spec.type, subtype=spec.subtype, masking=spec.masking, last_run_id=run_id)
+                                 job=job, type=spec.type, subtype=spec.subtype, masking=spec.masking, last_run_id=run_id,
+                                 via=via, recorded_by=recorded_by)
         db.add(edge)
     else:
         edge.subtype, edge.masking, edge.updated_at = spec.subtype, spec.masking, utcnow()
+        edge.via, edge.recorded_by = via, recorded_by
         edge.last_run_id = run_id or edge.last_run_id
     db.flush()
     return edge
@@ -174,14 +180,15 @@ def unregistered_columns(db: Session, specs: Iterable[EdgeSpec]) -> list[dict[st
     return out
 
 
-def ingest(db: Session, specs: list[EdgeSpec], job: str, run_id: str | None) -> tuple[int, list[dict[str, Any]]]:
+def ingest(db: Session, specs: list[EdgeSpec], job: str, run_id: str | None, recorded_by: str | None = None) -> tuple[int, list[dict[str, Any]]]:
+    """OpenLineage の facet から取り込む (信頼できる生成元の判定の対象になる経路)。"""
     warnings = []
     stored = 0
     for spec in specs:
         if spec.source == spec.target:
             warnings.append({"code": "same_dataset", "asset": spec.source, "column": spec.source_column})
             continue  # データセット単位の辺は自己ループにできない
-        upsert(db, spec, job, run_id)
+        upsert(db, spec, job, run_id, via="openlineage", recorded_by=recorded_by)
         stored += 1
     return stored, warnings + unregistered_columns(db, specs)
 
@@ -191,24 +198,30 @@ WHOLE = None  # データセット全体を表すカラム
 CHUNK = 500
 
 
-def _edges_touching(db: Session, direction: str, assets: list[str]) -> list[ColumnLineageEdge]:
+_EDGE_FIELDS = (ColumnLineageEdge.id, ColumnLineageEdge.source, ColumnLineageEdge.source_column, ColumnLineageEdge.target,
+                ColumnLineageEdge.target_column, ColumnLineageEdge.job, ColumnLineageEdge.type, ColumnLineageEdge.subtype,
+                ColumnLineageEdge.masking)
+
+
+def _edges_touching(db: Session, direction: str, assets: list[str]) -> list[Any]:
+    """探索に使う列だけを行で読む (ORM のオブジェクトを作らない。深さ 10 で数千行になるため)。"""
     column = ColumnLineageEdge.source if direction == "downstream" else ColumnLineageEdge.target
-    out: list[ColumnLineageEdge] = []
+    out: list[Any] = []
     for start in range(0, len(assets), CHUNK):
-        out.extend(db.scalars(select(ColumnLineageEdge).where(column.in_(assets[start:start + CHUNK])).order_by(ColumnLineageEdge.id)))
+        out.extend(db.execute(select(*_EDGE_FIELDS).where(column.in_(assets[start:start + CHUNK])).order_by(ColumnLineageEdge.id)))
     return out
 
 
-def _index(edges: list[ColumnLineageEdge], direction: str) -> dict[str, dict[str | None, list[ColumnLineageEdge]]]:
+def _index(edges: list[Any], direction: str) -> dict[str, dict[str | None, list[Any]]]:
     """資産 → カラム → 辺 (下流は source 側、上流は target 側)。段のノードごとに自分の辺だけを見る。"""
-    out: dict[str, dict[str | None, list[ColumnLineageEdge]]] = {}
+    out: dict[str, dict[str | None, list[Any]]] = {}
     for edge in edges:
         asset, column = (edge.source, edge.source_column) if direction == "downstream" else (edge.target, edge.target_column)
         out.setdefault(asset, {}).setdefault(column, []).append(edge)
     return out
 
 
-def _following(index: dict[str, dict[str | None, list[ColumnLineageEdge]]], direction: str, node: tuple[str, str | None]) -> list[ColumnLineageEdge]:
+def _following(index: dict[str, dict[str | None, list[Any]]], direction: str, node: tuple[str, str | None]) -> list[Any]:
     asset, column = node
     by_column = index.get(asset, {})
     if column is WHOLE:
@@ -249,7 +262,7 @@ def traverse(db: Session, asset: str, column: str | None, direction: str, max_de
     return out
 
 
-def _cde_columns(asset: DataAsset | None) -> set[str]:
+def _cde_columns(asset: Any) -> set[str]:
     return {c["name"] for c in (asset.schema_ or []) if c.get("cde")} if asset is not None else set()
 
 
@@ -267,7 +280,9 @@ def impact(db: Session, asset: str, column: str, max_depth: int = 10) -> dict[st
             if e["path"] == DIRECT:
                 found["path"] = DIRECT
     names = sorted({name for name, _ in nodes})
-    assets = {a.qualified_name: a for a in db.scalars(select(DataAsset).where(DataAsset.qualified_name.in_(names)))} if names else {}
+    assets = {a.qualified_name: a for a in db.execute(
+        select(DataAsset.qualified_name, DataAsset.id, DataAsset.owner, DataAsset.certification, DataAsset.schema_)
+        .where(DataAsset.qualified_name.in_(names)))} if names else {}
     impacted = []
     for (name, col), info in sorted(nodes.items(), key=lambda kv: (kv[1]["depth"], kv[0][0], kv[0][1] or "")):
         a = assets.get(name)

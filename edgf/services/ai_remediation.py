@@ -35,9 +35,13 @@ def _sla_due(now: datetime) -> datetime:
 
 
 def impact_view(roots: Iterable[str], impact: Impact) -> dict[str, Any]:
-    return {"roots": sorted(roots), "dataset_version_ids": [v.id for v in impact.dataset_versions],
+    view = {"roots": sorted(roots), "dataset_version_ids": [v.id for v in impact.dataset_versions],
             "model_version_ids": [m.id for m in impact.model_versions if m.status != ModelVersionStatus.RETIRED.value],
             "unversioned_models": impact.unversioned_models}
+    if impact.excluded:  # 信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無い資産 (Phase 16)
+        # 名前と理由は lineage_exclusions (閲覧できるものだけ) と消去証明に残す。ここは ID だけ
+        view["lineage_excluded_asset_ids"] = sorted(impact.excluded_ids)
+    return view
 
 
 def _supersede(db: Session, actor: str, version: DatasetVersion, reason: str, now: datetime) -> None:
@@ -58,7 +62,8 @@ def apply_erasure(db: Session, req: ErasureRequest, actor: str) -> None:
     from edgf.services.erasure import tasks_of  # 循環 import 回避
 
     roots = (req.ai_impact or {}).get("roots", [])
-    impact = ai_lineage.affected_by_assets(db, roots)
+    root_columns = (req.lineage_narrowing or {}).get("roots")  # Phase 16 より前の依頼には無い (データセット単位のまま)
+    impact = ai_lineage.affected_by_assets(db, roots, root_columns=root_columns)
     now = utcnow()
     reason = f"erasure:{req.id}"
     versions_by_asset: dict[str, list[str]] = {}

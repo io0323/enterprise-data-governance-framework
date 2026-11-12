@@ -451,6 +451,8 @@ class ErasureRequestOut(ORM):
     unregistered_downstream: list[str]
     warnings: list[str]
     ai_impact: dict[str, Any] = Field(default_factory=dict, description="§14 影響を受ける Dataset Version / Model Version")
+    lineage_exclusions: list[dict[str, Any]] = Field(
+        default_factory=list, description="Phase 16: 信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無いため外した資産 (閲覧できるものだけ)")
 
 
 class ErasureRequestDetail(ErasureRequestOut):
@@ -792,6 +794,10 @@ class InheritanceOut(BaseModel):
     pii_from: list[str]
     released_by: list[str]
     unregistered_upstream: list[str]
+    pii_columns: dict[str, list[dict[str, str]]] = Field(
+        default_factory=dict, description="Phase 16: DIRECT 経路で PII のカラムが届くカラムと、その元 (資産とカラム)")
+    pii_excluded: list[dict[str, Any]] = Field(
+        default_factory=list, description="Phase 16: 信頼できる生成元の辺だけを経由し、PII のカラムからの DIRECT 経路が無いため継承しない上流")
 
 
 class RemediationDecisionIn(AiInput):
