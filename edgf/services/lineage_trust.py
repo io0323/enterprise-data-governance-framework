@@ -256,3 +256,61 @@ def column_flow(graph: Mapping[tuple[str, str], Pair], starts: Mapping[str, Iter
                 queue.append(nxt)
     return {col: [{"asset": a, "column": c} for a, c in sorted(origins)]
             for (name, col), origins in sorted(reached.items()) if name == target and (name, col) not in origin}
+
+
+# ---------------------------------------------------------------- ポリシー (16d): LIN-002 / PRV-006
+def cde_columns(asset: Any) -> list[str]:
+    return [c["name"] for c in (asset.schema_ or []) if c.get("cde")]
+
+
+def columns_with_lineage(db: Session, name: str, columns: Iterable[str]) -> set[str]:
+    wanted = list(columns)
+    if not wanted:
+        return set()
+    return set(db.scalars(select(ColumnLineageEdge.target_column).where(
+        ColumnLineageEdge.target == name, ColumnLineageEdge.target_column.in_(wanted)).distinct()))
+
+
+def check_cde_column_lineage(db: Session, asset: Any) -> tuple[bool | None, str]:
+    """LIN-002: 上流を持つ資産の CDE のカラムは、カラム単位のリネージを持つ。上流の無い資産 (源泉) は対象外。"""
+    cde = cde_columns(asset)
+    if not cde:
+        return None, "対象外"
+    if not lineage.has_upstream(db, asset.qualified_name):
+        return None, "上流が無いため対象外"
+    missing = sorted(set(cde) - columns_with_lineage(db, asset.qualified_name, cde))
+    return (False, f"カラム単位のリネージが無い CDE のカラムがあります: {missing}") if missing else (True, "ok")
+
+
+def derived_pii_columns(db: Session, asset: Any, max_depth: int = 50) -> dict[str, list[dict[str, str]]]:
+    """DIRECT 経路 (masking=true と AGGREGATION を含む) で上流の PII のカラムが届く、この資産のカラム。
+
+    広げる方向なので信頼の有無は問わない。上流の探索は、基準を満たす匿名化の資産の手前で止める (ai_inherit と同じ)。
+    """
+    from edgf.models import DataAsset
+    from edgf.services.privacy import effective_pii_columns, is_anonymized
+
+    edges = [(e["from"], e["to"]) for e in lineage.traverse(db, asset.qualified_name, "upstream", max_depth)]
+    names = sorted({a for a, _ in edges})
+    upstream = {a.qualified_name: a for chunk in _chunks(names)
+                for a in db.scalars(select(DataAsset).where(DataAsset.qualified_name.in_(chunk)))}
+    released = {n for n, a in upstream.items() if is_anonymized(a.privacy_technique, a.privacy_params)}
+    graph = pairs(db, [(a, b) for a, b in edges if b not in released], ())
+    starts = {n: [c["name"] for c in effective_pii_columns(a.schema_)] for n, a in upstream.items()}
+    return column_flow(graph, starts, asset.qualified_name)
+
+
+def check_pii_lineage_consistent(db: Session, asset: Any) -> tuple[bool | None, str]:
+    """PRV-006: DIRECT 経路から導いた実効の PII が、カラムの宣言 (pii=false) と矛盾しない。"""
+    if db.scalar(select(ColumnLineageEdge.id).where(ColumnLineageEdge.target == asset.qualified_name).limit(1)) is None:
+        return None, "カラム単位のリネージが無いため対象外"
+    from edgf.services.privacy import is_anonymized
+
+    declared = {c["name"]: c for c in asset.schema_ or []}
+    derived = derived_pii_columns(db, asset)
+    bad = sorted(col for col in derived if col in declared and not declared[col].get("pii")
+                 and not is_anonymized(declared[col].get("privacy_technique"), declared[col].get("privacy_params")))
+    if bad:
+        origins = sorted({f"{o['asset']}.{o['column']}" for col in bad for o in derived[col]})
+        return False, f"上流の PII のカラム {origins} が DIRECT で届くのに pii=false のカラムがあります: {bad}"
+    return True, "ok"

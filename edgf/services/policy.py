@@ -26,7 +26,8 @@ from edgf.services import lineage_trust
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
                "anonymization_k", "pseudonymization_controls", "pii_columns_documented", "mdm_entity_defined",
-               "ai_training_approved", "ai_inheritance", "ai_rag_certified_sources", "ai_embedding_protected"}
+               "ai_training_approved", "ai_inheritance", "ai_rag_certified_sources", "ai_embedding_protected",
+               "cde_column_lineage", "pii_lineage_consistent"}
 # §15 Data Product の出荷基準 (DATSIS)。評価の対象が Data Product のもの (target: product)
 MESH_CHECK_TYPES = {"mesh_discoverable", "mesh_addressable", "mesh_trustworthy", "mesh_self_describing", "mesh_interoperable",
                     "mesh_secure", "mesh_reachable"}
@@ -215,6 +216,10 @@ def _run_check(db: Session, asset: Any, check: dict) -> tuple[bool | None, str]:
         run = latest_run(db, asset.id)
         ok = run is not None and run.score >= check["score"]
         return ok, "ok" if ok else f"Quality Score {run.score if run else None} < {check['score']}"
+    if t == "cde_column_lineage":
+        return lineage_trust.check_cde_column_lineage(db, asset)
+    if t == "pii_lineage_consistent":
+        return lineage_trust.check_pii_lineage_consistent(db, asset)
     if t == "has_upstream_lineage":
         from edgf.services.lineage import has_upstream
         ok = has_upstream(db, asset.qualified_name)

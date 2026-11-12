@@ -176,6 +176,7 @@
  "kpi.trend_flat": "増加なし",
  "kpi.owner_assignment_rate": "Owner 割当率",
  "kpi.cde_quality_score_avg": "Quality Score (CDE)",
+ "kpi.cde_column_lineage_rate": "CDE カラムのカラム単位リネージ率",
  "kpi.metadata_completeness": "メタデータ充足率",
  "kpi.freshness_rate": "Freshness",
  "kpi.compliance_rate": "Policy 準拠率",

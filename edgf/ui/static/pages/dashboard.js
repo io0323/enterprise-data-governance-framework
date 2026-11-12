@@ -12,6 +12,7 @@ const TARGETS = [
   {metric: "metadata_completeness", target: 0.95, direction: "at_least", source: "§17"},
   {metric: "freshness_rate", target: 0.98, direction: "at_least", source: "§17"},
   {metric: "compliance_rate", target: 1, direction: "at_least", source: "§17"},
+  {metric: "cde_column_lineage_rate", target: 1, direction: "at_least", source: "§9 (LIN-002)"},
   {metric: "mean_time_to_resolve_days", target: 30, direction: "at_most", days: true, source: "§1.8 / §17"},
 ];
 const TREND_GROUPS = [["compliance_rate", "metadata_completeness", "owner_assignment_rate"], ["cde_quality_score_avg", "freshness_rate", "certified_rate"]];

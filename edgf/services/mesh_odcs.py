@@ -36,7 +36,8 @@ LOGICAL_TYPES = {
 TOP_KEYS = {"apiVersion", "kind", "id", "name", "version", "status", "domain", "dataProduct", "description", "schema", "slaProperties",
             "customProperties", "authoritativeDefinitions"}
 OBJECT_KEYS = {"name", "logicalType", "properties", "quality"}
-PROPERTY_KEYS = {"name", "logicalType", "physicalType", "required", "description", "classification", "customProperties"}
+PROPERTY_KEYS = {"name", "logicalType", "physicalType", "required", "description", "classification", "criticalDataElement",
+                 "customProperties"}
 
 
 def _as_custom(items: Any, where: str) -> dict[str, Any]:
@@ -76,6 +77,11 @@ def _column(prop: Any, index: int, warnings: list[str], classifications: list[st
             warnings.append(f"対応していない classification です: {where}classification")
     column = {"name": name, "type": str(type_name), "nullable": not prop.get("required", False), "pii": pii,
               "description": str(prop.get("description") or "")}
+    cde = prop.get("criticalDataElement")
+    if cde is True:
+        column["cde"] = True
+    elif cde not in (None, False):
+        warnings.append(f"criticalDataElement は true / false で指定してください: {where}criticalDataElement")
     column.update({field: custom[key] for key, field in COLUMN_EXTRAS.items() if custom.get(key) is not None})
     return column
 
@@ -183,6 +189,8 @@ def _export_property(column: Mapping[str, Any]) -> dict[str, Any]:
                             "required": not column.get("nullable", True)}
     if column.get("description"):
         prop["description"] = column["description"]
+    if column.get("cde"):
+        prop["criticalDataElement"] = True
     custom = [{"property": "pii", "value": True}] if column.get("pii") else []
     custom += [{"property": key, "value": column[field]} for key, field in COLUMN_EXTRAS.items() if column.get(field)]
     if custom:

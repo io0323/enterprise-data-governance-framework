@@ -88,6 +88,15 @@ class AssetCreate(AssetBase):
             raise ValueError("ai_kind は data_class=ai の資産にだけ指定できます")
         return self
 
+    @model_validator(mode="after")
+    def _derive_is_cde(self) -> AssetCreate:
+        """is_cde は「CDE のカラムを含む」。cde のカラムがあれば true を導く (明示の false とは矛盾するので拒否)。"""
+        if any(c.cde for c in self.schema_):
+            if "is_cde" in self.model_fields_set and not self.is_cde:
+                raise ValueError("cde のカラムを持つ資産は is_cde を false にできません")
+            self.is_cde = True
+        return self
+
 
 class AssetUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -950,6 +959,7 @@ class ContractColumn(MeshInput):
     pii: bool = False
     description: str = Field(default="", max_length=2000)
     identifier_type: str | None = Field(default=None, pattern=IDENTIFIER_TYPE_PATTERN, description="ID の標準 (§15 命名/ID標準)")
+    cde: bool = Field(default=False, description="Critical Data Element のカラム (ODCS の criticalDataElement)")
     reference_set: str | None = Field(default=None, max_length=120, description="参照する Reference Data (<id>[@version])")
     renamed_from: str | None = Field(default=None, max_length=200, description="名前の変更を明示する (前の版のカラム名)")
 
