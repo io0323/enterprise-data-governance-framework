@@ -165,6 +165,27 @@ class LineageEdge(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class ColumnLineageEdge(Base):
+    """§9 カラム単位のリネージ (OpenLineage の columnLineage facet と手動の登録)。
+
+    target_column が NULL の辺は、出力のデータセット全体に効く入力 (facet の dataset 配列。INDIRECT)。
+    変換の自由記述 (transformationDescription) は、SQL のリテラルなどの値を含みうるので保存しない。
+    """
+    __tablename__ = "column_lineage_edges"
+    __table_args__ = (Index("ix_column_lineage_source", "source", "source_column"), Index("ix_column_lineage_target", "target", "target_column"))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(300))
+    source_column: Mapped[str] = mapped_column(String(200))
+    target: Mapped[str] = mapped_column(String(300))
+    target_column: Mapped[str | None] = mapped_column(String(200))
+    job: Mapped[str] = mapped_column(String(300), default="manual")
+    type: Mapped[str] = mapped_column(String(10))  # DIRECT / INDIRECT
+    subtype: Mapped[str | None] = mapped_column(String(30))
+    masking: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_run_id: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class PolicyException(Base):
     """§13 Exception (期限付き必須・恒久例外禁止)"""
     __tablename__ = "policy_exceptions"

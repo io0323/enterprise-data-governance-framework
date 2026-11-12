@@ -14,8 +14,9 @@ from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal
 from edgf.models import DataAsset, fit_identifier
-from edgf.schemas import LineageEdgeIn, OpenLineageEvent
-from edgf.services import ai_inherit, audit, lineage
+from edgf.errors import ProblemError
+from edgf.schemas import ColumnEdgeIn, LineageEdgeIn, OpenLineageEvent
+from edgf.services import ai_inherit, audit, column_lineage, lineage
 
 router = APIRouter(prefix="/lineage", tags=["lineage"])
 
@@ -37,20 +38,60 @@ def ingest_openlineage(event: OpenLineageEvent, db: Session = Depends(get_sessio
     """OpenLineage RunEvent を受信し inputs×outputs のエッジを生成 (COMPLETE のみ確定)。
 
     データセット識別子は OpenLineage の dataset name を qualified_name として扱う。
+    出力の columnLineage facet があれば、カラム単位の辺も取り込む (facet が無いイベントの結果は従来と同じ)。
     """
     job = fit_identifier(f"{event.job.namespace}/{event.job.name}" if event.job.namespace else event.job.name, 300)
     authz.require(db, principal, "lineage.write", entity_type="job", entity_id=job)
+    facets = [(o.name, o.facets["columnLineage"]) for o in event.outputs if o.facets and "columnLineage" in o.facets]
+    if facets:
+        authz.require(db, principal, "lineage.column_write", entity_type="job", entity_id=job)
     if event.eventType != "COMPLETE":
         return {"accepted": True, "edges": 0, "note": f"{event.eventType} はエッジ確定対象外"}
+    parsed = []
+    for output, facet in facets:  # 先に全部検証する (一部だけ取り込まない)
+        try:
+            parsed.append(column_lineage.parse_facet(output, facet))
+        except column_lineage.ColumnLineageError as e:
+            raise ProblemError(422, str(e), type_="column-lineage-invalid") from e
     count = 0
     for i in event.inputs:
         for o in event.outputs:
             if i.name != o.name:
                 lineage.upsert_edge(db, i.name, o.name, job, run_id=event.run.runId)
                 count += 1
-    audit.record(db, principal.audit_actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count})
+    if not facets:
+        audit.record(db, principal.audit_actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count})
+        ai_inherit.refresh(db, principal.audit_actor, [o.name for o in event.outputs])
+        return {"accepted": True, "edges": count}
+    column_edges, warnings = 0, []
+    for specs, parse_warnings in parsed:
+        stored, ingest_warnings = column_lineage.ingest(db, specs, job, event.run.runId)
+        column_edges += stored
+        warnings.extend([*parse_warnings, *ingest_warnings])
+    audit.record(db, principal.audit_actor, "lineage.openlineage", "job", job, {"run_id": event.run.runId, "edges": count,
+                                                                                "column_edges": column_edges, "warnings": len(warnings)})
     ai_inherit.refresh(db, principal.audit_actor, [o.name for o in event.outputs])
-    return {"accepted": True, "edges": count}
+    return {"accepted": True, "edges": count, "column_edges": column_edges, "warnings": warnings}
+
+
+@router.post("/column-edges", status_code=201)
+def add_column_edge(body: ColumnEdgeIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """カラム単位の辺の手動の登録。対応するデータセット単位の辺も作る。"""
+    entity = f"{body.source}.{body.source_column}->{body.target}.{body.target_column or '*'}"
+    authz.require(db, principal, "lineage.column_write", entity_type="lineage", entity_id=entity)
+    if body.source == body.target:
+        raise HTTPException(422, "同じデータセットの中の辺は登録できません (データセット単位の辺が自己ループになるため)")
+    warnings: list[dict] = []
+    edge_type, subtype = column_lineage._normalize(body.type, body.subtype, warnings, "subtype")
+    if body.target_column is None:
+        edge_type = column_lineage.INDIRECT
+    spec = column_lineage.EdgeSpec(body.source, body.source_column, body.target, body.target_column, edge_type, subtype, body.masking)
+    edge = column_lineage.upsert(db, spec, body.job)
+    warnings += column_lineage.unregistered_columns(db, [spec])
+    audit.record(db, principal.audit_actor, "lineage.column_edge", "lineage", entity, {"type": edge.type, "subtype": edge.subtype, "masking": edge.masking})
+    ai_inherit.refresh(db, principal.audit_actor, [body.target])
+    return {"id": edge.id, "source": edge.source, "source_column": edge.source_column, "target": edge.target, "target_column": edge.target_column,
+            "job": edge.job, "type": edge.type, "subtype": edge.subtype, "masking": edge.masking, "warnings": warnings}
 
 
 CHUNK = 500

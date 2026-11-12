@@ -252,6 +252,20 @@ class LineageEdgeIn(BaseModel):
 class OLDataset(BaseModel):
     namespace: str = ""
     name: str = Field(max_length=300)
+    facets: dict[str, Any] | None = Field(default=None, description="columnLineage だけを読む (Phase 16)。他の facet は保存しない")
+
+
+class ColumnEdgeIn(BaseModel):
+    """カラム単位のリネージの手動の登録。target_column を省略するとデータセット全体に効く入力 (INDIRECT)。"""
+    model_config = ConfigDict(extra="forbid")
+    source: str = Field(min_length=1, max_length=300)
+    source_column: str = Field(min_length=1, max_length=200)
+    target: str = Field(min_length=1, max_length=300)
+    target_column: str | None = Field(default=None, min_length=1, max_length=200)
+    job: str = Field(default="manual", min_length=1, max_length=300)
+    type: Literal["DIRECT", "INDIRECT"] = "DIRECT"
+    subtype: str | None = Field(default=None, max_length=30)
+    masking: bool = False
 
 
 class OLJob(BaseModel):

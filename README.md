@@ -232,6 +232,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `issue.update` | Issue の更新 | ロール: admin, committee<br>対象の assignee / owner / steward |  |
 | `jobs.read` | ジョブの実行状況の参照 | ロール: admin, committee |  |
 | `jobs.run` | ジョブの手動実行 (通常は外部の cron や CronJob から実行する) | ロール: admin |  |
+| `lineage.column_write` | カラム単位のリネージの登録・取込 (columnLineage facet) | ロール: admin, custodian, owner, steward |  |
 | `lineage.write` | リネージの登録・取込 | ロール: admin, custodian, owner, steward |  |
 | `mdm.compose` | Golden Record の生成と内容ハッシュの検証 | ドメイン内ロール: steward<br>対象の custodian |  |
 | `mdm.match` | ソースレコードのマッチング | ドメイン内ロール: steward<br>対象の custodian |  |

@@ -90,6 +90,7 @@ PERMISSIONS: Mapping[str, Rule] = {
     "issue.escalate_overdue": rule(roles=(COMMITTEE, ADMIN), description="SLA 超過 Issue の一括エスカレーション"),
     # Lineage (§9): パイプラインによる自動収集
     "lineage.write": rule(roles=(ADMIN, OWNER, STEWARD, CUSTODIAN), description="リネージの登録・取込"),
+    "lineage.column_write": rule(roles=(ADMIN, OWNER, STEWARD, CUSTODIAN), description="カラム単位のリネージの登録・取込 (columnLineage facet)"),
     # Policy / Compliance (§13, §15)
     "policy.reload": rule(roles=(COMMITTEE, ADMIN), description="ディスクの内容から Policy の変更を提案する (即時には反映しない)"),
     "policy.propose": rule(roles=(ADMIN, COMMITTEE), domain_roles=(OWNER,),
