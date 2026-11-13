@@ -13,6 +13,7 @@ Policy as Code と同じく「何を許すか」を宣言的な表 (PERMISSIONS)
 restricted 資産は Owner の承認 (AccessGrant) が無い限り、当事者・Committee・admin 以外には見せない (一覧からも除外)。
 
 Business Ownership (§4): 承認行為 (approval=True) に Custodian を含めることはできない (ロード時に検証)。
+自動化の主体 (system:autonomy。Phase 19、docs/adr/0001) にも承認行為を与えることはできない (同じ仕組みで検証する)。
 """
 from __future__ import annotations
 
@@ -24,8 +25,8 @@ from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from edgf.auth import (ADMIN, COMMITTEE, CONSENT_COLLECTOR, CONSUMER, CUSTODIAN, OWNER, ROLES, SENSITIVITY_LEVELS,
-                       STEWARD, Principal)
+from edgf.auth import (ADMIN, AUTONOMY, AUTONOMY_SUBJECT, COMMITTEE, CONSENT_COLLECTOR, CONSUMER, CUSTODIAN, OWNER, ROLES,
+                       SENSITIVITY_LEVELS, STEWARD, SYSTEM_ROLES, Principal)
 from edgf.errors import ProblemError
 from edgf.models import AccessGrant, DataAsset, utcnow
 
@@ -202,6 +203,17 @@ PERMISSIONS: Mapping[str, Rule] = {
     "usage.push": rule(roles=(ADMIN,), domain_roles=(CUSTODIAN,), description="利用実績の集計値の送信 (資産のドメイン)"),
     "reachability.report": rule(relations=("custodian",), description="Output Port の到達の報告 (ポートの資産の Custodian)"),
     "probe.configure": rule(roles=(ADMIN,), description="Control Plane からの到達の確認の実行と設定の参照"),
+    # 自律統治 (§20 Level 5。Phase 19、docs/adr/0001)
+    "autonomy.read": rule(roles=(COMMITTEE, ADMIN), domain_roles=(OWNER, STEWARD),
+                          description="自動の是正の実行の記録、dry_run の結果、品質の異常、分類の提案の参照 (ABAC で絞り込む)"),
+    "autonomy.stop": rule(roles=(COMMITTEE, ADMIN), description="自動の是正の全体の停止 (安全側の操作なので、すぐに効く)"),
+    "autonomy.resume": rule(roles=(COMMITTEE,), approval=True, description="自動の是正の再開 (全体、または自動停止したプレイブック)"),
+    "remediation.undo": rule(roles=(COMMITTEE,), relations=("owner",), description="区分 A の自動の操作の取り消し (対象資産の Owner、Committee)"),
+    "classification.suggestion.decide": rule(relations=("owner", "steward"), approval=True,
+                                             description="分類の提案の確定と却下 (対象資産の Owner / Steward)"),
+    # 自動化の主体だけが持つ実行の権限。承認 (✓) は与えられない (validate_permissions で拒否する)
+    "autonomy.remediate": rule(roles=(AUTONOMY,), description="区分 A の操作の実行 (system:autonomy だけ)"),
+    "autonomy.propose": rule(roles=(AUTONOMY,), description="区分 B の提案の作成 (system:autonomy だけ)"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }
@@ -210,7 +222,7 @@ PERMISSIONS: Mapping[str, Rule] = {
 def validate_permissions(permissions: Mapping[str, Rule]) -> None:
     """権限表の整合検証。§4 に反する定義 (Custodian への承認権限) は起動を止める。"""
     for action, r in permissions.items():
-        unknown = (r.roles | r.domain_roles) - set(ROLES)
+        unknown = (r.roles | r.domain_roles) - set(ROLES) - set(SYSTEM_ROLES)
         if unknown:
             raise ValueError(f"{action}: unknown roles {sorted(unknown)}")
         if r.relations - RELATIONS:
@@ -221,6 +233,8 @@ def validate_permissions(permissions: Mapping[str, Rule]) -> None:
             raise ValueError(f"{action}: 承認行為を全員に開放することはできません")
         if r.approval and CONSENT_COLLECTOR in r.roles | r.domain_roles:
             raise ValueError(f"{action}: サービスアカウント用ロールに承認権限を与えることはできません")
+        if r.approval and AUTONOMY in r.roles | r.domain_roles:
+            raise ValueError(f"{action}: 自動化の主体 (system:autonomy) に承認権限を与えることはできません (docs/adr/0001)")
 
 
 validate_permissions(PERMISSIONS)
@@ -266,6 +280,11 @@ def deny(db: Session, principal: Principal, action: str, *, entity_type: str, en
     if required is not None:
         ext["required"] = required.as_dict()
     raise ProblemError(403, reason, type_="forbidden", **ext)
+
+
+def is_autonomy(principal: Principal) -> bool:
+    """自動化の主体か (承認エンジンが判断を拒否するために使う)。"""
+    return principal.subject == AUTONOMY_SUBJECT or principal.subject.startswith(f"{AUTONOMY_SUBJECT}:") or AUTONOMY in principal.roles
 
 
 def has_global_role(principal: Principal, action: str) -> bool:

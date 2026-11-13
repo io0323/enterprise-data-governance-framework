@@ -1463,3 +1463,22 @@ class MaturityDecisionIn(MeshInput):
 class MaturityReferenceIn(MeshInput):
     domain: str = Field(min_length=1, max_length=100)
     reason: str = Field(default="", max_length=1000)
+
+
+# ---------- 自律統治 (§20 Level 5。Phase 19) ----------
+class AutonomyStopIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class AutonomyResumeIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000)
+    playbook: str | None = Field(default=None, max_length=40, description="自動停止したプレイブック (省略時は全体の再開)")
+
+
+class RemediationUndoIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SuggestionDecisionIn(MeshInput):
+    accept: bool
+    reason: str = Field(default="", max_length=1000)

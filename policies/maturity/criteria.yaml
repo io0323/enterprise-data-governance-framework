@@ -92,20 +92,34 @@ levels:
   - level: 5
     name: Autonomous Governance
     automatic:
-      # Phase 19 で計測できるようになるまでは「計測できない」として扱い、目安は Level 5 にならない
+      # Phase 19 の自律統治の指標 (docs/adr/0001)。dry_run の記録は数えない
       - id: L5-AUTO-REMEDIATION
-        metric: auto_remediation_rate
+        metric: autonomy_remediation_rate
         op: ">="
-        threshold: 0.5
+        threshold: 0.3
         days: 90
-        description: 自動是正率 50% 以上を 90 日継続
+        description: 自動で解消した Issue の割合 30% 以上を 90 日継続
+      - id: L5-FALSE-POSITIVE
+        metric: autonomy_false_positive_rate
+        op: "<="
+        threshold: 0.05
+        days: 90
+        description: 自動の操作の取り消し率 (誤って実行した率) 5% 以下を 90 日継続
       - id: L5-PREDICTIVE
-        metric: predictive_quality_coverage
-        op: ">="
-        threshold: 0.5
+        metric: anomaly_detected_count
+        op: measured
         days: 90
-        description: 予測的品質管理の対象の割合 50% 以上を 90 日継続
+        description: 品質の異常の検知と劣化の予測が 90 日継続して動いている
+      - id: L5-CLASSIFICATION
+        metric: classification_suggestion_acceptance_rate
+        op: ">="
+        threshold: 0.7
+        days: 90
+        description: 分類の提案の受け入れ率 70% 以上を 90 日継続
     manual:
       - id: L5-SELF-IMPROVE
         description: KPI に基づいて統治 (Policy) を見直す仕組みが回っている
-        evidence: KPI からの Policy の見直しの記録
+        evidence: KPI からの Policy の見直しの記録 (統治の自己改善の Issue と、その対応)
+      - id: L5-AUTONOMY-SCOPE
+        description: 自動で是正してよい範囲 (docs/adr/0001) が承認され、見直しの条件に沿って運用されている
+        evidence: プレイブックの承認の記録と、dry_run から active への切り替えの判断の記録

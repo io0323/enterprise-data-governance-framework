@@ -105,11 +105,52 @@ def test_period_ends_yesterday_without_todays_snapshot(sales):
     assert body["period_end"] == yesterday.isoformat() and body["indicative_level"] == 4
 
 
-def test_level_5_is_not_reachable(sales):
+PHASE18_LEVEL5 = """
+  - level: 5
+    name: Autonomous Governance
+    automatic:
+      - {id: L5-AUTO-REMEDIATION, metric: auto_remediation_rate, op: ">=", threshold: 0.5, days: 90}
+      - {id: L5-PREDICTIVE, metric: predictive_quality_coverage, op: ">=", threshold: 0.5, days: 90}
+    manual:
+      - {id: L5-SELF-IMPROVE, description: d, evidence: e}
+"""
+
+
+def test_phase18_level_5_metrics_are_still_not_measurable(sales):
+    """Phase 18 の基準 (承認済みの既存の環境) は読めて、Level 5 の仮の指標は「計測できない」のまま (Phase 19 の更新は承認後に有効)。"""
+    from edgf.services import policy_bundles
+    from edgf.services.maturity_criteria import CRITERIA_FILE
+    with SessionLocal() as db:
+        bundle = policy_bundles.active_bundle(db)
+        text = bundle.files[CRITERIA_FILE]
+        bundle.files = {**bundle.files, CRITERIA_FILE: text[:text.index("  - level: 5")] + PHASE18_LEVEL5.lstrip("\n")}
+        db.commit()
     snapshots("sales", {**LEVEL4, "auto_remediation_rate": 1.0, "predictive_quality_coverage": 1.0}, days=90)
     body = evaluate(sales, create(sales)["id"])
     assert body["indicative_level"] == 4
     assert {result_of(body, c)["reason"] for c in ("L5-AUTO-REMEDIATION", "L5-PREDICTIVE")} == {"not_measurable"}
+
+
+LEVEL5 = {**LEVEL4, "autonomy_remediation_rate": 0.4, "autonomy_false_positive_rate": 0.01, "anomaly_detected_count": 3,
+          "classification_suggestion_acceptance_rate": 0.8}
+
+
+def test_level_5_is_reachable_with_the_phase19_metrics(sales):
+    snapshots("sales", LEVEL5, days=90)
+    body = evaluate(sales, create(sales)["id"])
+    assert body["indicative_level"] == 5
+    assert all(result_of(body, c)["met"] for c in ("L5-AUTO-REMEDIATION", "L5-FALSE-POSITIVE", "L5-PREDICTIVE", "L5-CLASSIFICATION"))
+
+
+@pytest.mark.parametrize("override,criterion", [
+    ({"autonomy_false_positive_rate": 0.2}, "L5-FALSE-POSITIVE"),
+    ({"anomaly_detected_count": None}, "L5-PREDICTIVE"),
+    ({"classification_suggestion_acceptance_rate": None}, "L5-CLASSIFICATION"),
+])
+def test_level_5_needs_every_metric_for_90_days(sales, override, criterion):
+    snapshots("sales", LEVEL5, days=90, override={45: override})
+    body = evaluate(sales, create(sales)["id"])
+    assert body["indicative_level"] == 4 and result_of(body, criterion)["met"] is False
 
 
 # ---------------------------------------------------------------- 上限

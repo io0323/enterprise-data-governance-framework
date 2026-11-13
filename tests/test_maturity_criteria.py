@@ -28,7 +28,9 @@ def test_initial_criteria_cover_levels_1_to_5():
     assert [lv.level for lv in criteria.levels] == [1, 2, 3, 4, 5]
     assert [lv.name for lv in criteria.levels] == ["Basic Policy", "Managed", "Standardized", "Federated Governance", "Autonomous Governance"]
     assert all(a.days >= 90 for lv in criteria.levels if lv.level >= 4 for a in lv.automatic)
-    assert not any(a.measurable for a in criteria.level(5).automatic)  # Phase 19 まで計測できない
+    assert all(a.measurable for a in criteria.level(5).automatic)  # Phase 19 から autonomy_* などで計測できる
+    assert {a.metric for a in criteria.level(5).automatic} == {"autonomy_remediation_rate", "autonomy_false_positive_rate",
+                                                               "anomaly_detected_count", "classification_suggestion_acceptance_rate"}
     assert all(lv.manual for lv in criteria.levels)
 
 

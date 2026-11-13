@@ -40,6 +40,8 @@ Phase 16 の LIN-002、PRV-006 と `policies/lineage/trusted_producers.yaml` も
 
 Phase 18 の成熟度の評価の基準(`policies/maturity/criteria.yaml`)も同じ手順です。承認されるまで基準は空で、評価の目安は 0、判定の上限も 0 になります。
 
+Phase 19 の自律統治のプレイブック(`policies/remediation/playbooks.yaml`)、分類の提案の辞書規則(`policies/classification/rules.yaml`)、成熟度の基準の Level 5 の更新も同じ手順です。承認されるまでプレイブックは無く、`EDGF_AUTONOMY_ENABLED=true` でも自動の是正と提案(承認の案件や Issue の作成)は動きません。品質の異常の検知と分類の提案の記録(分析)は動きます(状態は変えません)。
+
 ### 信頼できる生成元を追加する(Phase 16)
 
 1. `policies/lineage/trusted_producers.yaml` に、job の名前空間、job(省略で名前空間のすべて)、イベントを送る主体(JWT の `sub`)、理由を書きます
@@ -157,6 +159,17 @@ openssl ts -verify -in token.tsr -digest <署名対象の SHA-256> -CAfile tsa-c
 `consecutive_failures` が増えているときは、`last_error`(例外の型だけが入ります)を確認し、ログで `job failed` を検索します。
 
 `audit_anchor` が失敗している間はアンカーが進みません。**アンカー以降の行の改ざんは、チェーンの検証の範囲に限られます。** `AnchorConfigError` は鍵の設定を、`OSError` はファイルの配置先を確認してください。TSA の失敗はジョブの失敗にせず、`sink_failures` に記録します。
+
+### 自律統治を止める(Phase 19)
+
+自動の操作に問題が見つかったら、まず全体を止めます。停止は承認を待たずにすぐ効きます。
+
+1. `POST /api/v1/autonomy/stop`(Committee、admin。本文 `{"reason": "..."}`)。実行中のジョブも次の操作の前に止まります。UI の `#/autonomy` からも行えます
+2. `GET /api/v1/autonomy/runs?status=executed` で直近の操作を確認し、誤っていたものを `POST /api/v1/autonomy/runs/{id}/undo`(対象資産の Owner、Committee)で取り消します
+3. 原因のプレイブックを `mode: dry_run` に戻すか取り除く Policy 変更を提案し、承認と公開を経て反映します
+4. `POST /api/v1/autonomy/resume`(Committee の承認行為)で再開します
+
+プレイブックが自動で止まったとき(誤って実行した率が閾値を超えたとき)は、Committee に Issue(`autonomy-suspended:<id>`)が起票されます。取り消された操作を確認してから、`POST /api/v1/autonomy/resume` に `{"playbook": "<id>", "reason": "..."}` を送って再開します。すぐにすべてを止めるなら `EDGF_AUTONOMY_ENABLED=false` にしてプロセスを再起動します(dry_run も含めて何も実行しなくなります)。
 
 ## 6. デッドレターの処理
 

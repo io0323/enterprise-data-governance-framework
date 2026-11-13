@@ -78,7 +78,7 @@ def excluded(db: Session, principal: Principal, req: ApprovalRequest) -> str | N
 
 
 def _decidable(principal: Principal, req: ApprovalRequest, asset: DataAsset | None) -> bool:
-    if req.status != A.PENDING.value or principal.subject == req.requested_by:
+    if req.status != A.PENDING.value or principal.subject == req.requested_by or authz.is_autonomy(principal):
         return False
     if asset is not None and asset.custodian == principal.subject:
         return False
@@ -110,6 +110,8 @@ def _require_decider(db: Session, principal: Principal, req: ApprovalRequest) ->
     def deny(reason: str, required: Any = None) -> None:
         authz.deny(db, principal, "approval.decide", entity_type="approval", entity_id=req.id, reason=reason, required=required)
 
+    if authz.is_autonomy(principal):
+        deny("自動化の主体 (system:autonomy) は承認できません (docs/adr/0001)")
     if principal.subject == req.requested_by:
         deny("申請者本人は承認できません (職務分離)")
     asset = db.get(DataAsset, req.asset_id) if req.asset_id else None

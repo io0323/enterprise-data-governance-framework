@@ -33,6 +33,10 @@ ADMIN, COMMITTEE, OWNER, STEWARD, CUSTODIAN, CONSUMER = "admin", "committee", "o
 # 同意取得システム (CMP など) のサービスアカウント専用。privacy.consent.* だけを許可する最小権限のロール
 CONSENT_COLLECTOR = "consent_collector"
 ROLES: tuple[str, ...] = (ADMIN, COMMITTEE, OWNER, STEWARD, CUSTODIAN, CONSUMER, CONSENT_COLLECTOR)
+# 自動化の主体 (system:autonomy) だけが持つロール (Phase 19。docs/adr/0001)。IdP や開発用のヘッダからは得られない (ROLES に含めない)
+AUTONOMY = "autonomy"
+SYSTEM_ROLES: tuple[str, ...] = (AUTONOMY,)
+AUTONOMY_SUBJECT = "system:autonomy"
 
 SENSITIVITY_LEVELS: tuple[str, ...] = tuple(s.value for s in Sensitivity)  # public < internal < confidential < restricted
 

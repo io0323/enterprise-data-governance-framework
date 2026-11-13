@@ -1117,3 +1117,103 @@ class AuditAnchor(Base):
     key_id: Mapped[str] = mapped_column(String(32))
     signature: Mapped[str] = mapped_column(String(128))
     sinks: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AutonomyControl(Base):
+    """§20 Level 5 自律統治の全体の停止スイッチ (1 行だけ。id=1)。停止は即時、再開は Committee の承認 (✓) による (docs/adr/0001)。"""
+    __tablename__ = "autonomy_control"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    stopped: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    changed_by: Mapped[str | None] = mapped_column(String(200))
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_detection_at: Mapped[datetime | None] = mapped_column(DateTime)  # 検知を最後に行った時刻 (KPI の計測の有無に使う)
+
+
+class AutonomyPlaybookState(Base):
+    """プレイブックごとの実行の状態。誤って実行した率が閾値を超えると自動で止まる (suspended)。"""
+    __tablename__ = "autonomy_playbook_states"
+    playbook_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    suspended: Mapped[bool] = mapped_column(Boolean, default=False)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    suspended_reason: Mapped[str] = mapped_column(Text, default="")
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime)  # 誤って実行した率は、再開の後の実行から数え直す
+    resumed_by: Mapped[str | None] = mapped_column(String(200))
+    event_cursor: Mapped[datetime | None] = mapped_column(DateTime)  # イベントを契機にするプレイブックの、処理済みのイベントの時刻
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class RemediationRun(Base):
+    """自動の操作の記録 (プレイブック、対象、操作、モード、操作の前後の状態、結果)。
+
+    status: dry_run (行うはずだった操作だけを記録) / executed (区分 A を実行) / proposed (区分 B の提案を作成) /
+    undone (取り消し済み) / failed。取り消しは undo_until までで、取り消した人と理由を残す。
+    """
+    __tablename__ = "remediation_runs"
+    __table_args__ = (Index("ix_remediation_runs_target", "playbook_id", "target_type", "fingerprint", "mode"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(String(36), index=True)  # 1 回の実行
+    playbook_id: Mapped[str] = mapped_column(String(40), index=True)
+    playbook_digest: Mapped[str | None] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(200))
+    trigger: Mapped[str] = mapped_column(String(100))
+    target_type: Mapped[str] = mapped_column(String(40))
+    target_id: Mapped[str] = mapped_column(String(300))
+    fingerprint: Mapped[str] = mapped_column(String(300))  # 同じ対象に同じ操作を繰り返さないための目印
+    asset_id: Mapped[str | None] = mapped_column(ForeignKey("data_assets.id", ondelete="SET NULL"), index=True)
+    action: Mapped[str] = mapped_column(String(60))
+    category: Mapped[str] = mapped_column(String(1))
+    mode: Mapped[str] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    before: Mapped[dict] = mapped_column(JSON, default=dict)
+    after: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)  # 契機の根拠 (検知の値など)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    approval_id: Mapped[str | None] = mapped_column(String(36))
+    issue_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    undo_until: Mapped[datetime | None] = mapped_column(DateTime)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime)
+    undone_by: Mapped[str | None] = mapped_column(String(200))
+    undo_reason: Mapped[str] = mapped_column(Text, default="")
+
+
+class QualityAnomaly(Base):
+    """§5 Continuous Data Quality: 品質の異常の検知の結果 (Phase 19)。
+
+    品質検査の実行履歴 (スコア、ディメンション別のスコア、件数) と実行の間隔だけから求める。データの値は使わない。
+    根拠 (使った値、中央値、MAD、z 値、傾き、予測の時期) を evidence に残す。同じ実行の同じ異常は 1 回だけ記録する。
+    """
+    __tablename__ = "quality_anomalies"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), index=True)  # outlier / trend / volume_drop / freshness
+    metric: Mapped[str] = mapped_column(String(100))  # score / dimension:<名前> / record_count / interval
+    run_id: Mapped[str] = mapped_column(String(36))  # 判定に使った最新の実行
+    fingerprint: Mapped[str] = mapped_column(String(300), unique=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ClassificationSuggestion(Base):
+    """§3 / §12 分類の提案 (Phase 19)。根拠はメタデータだけ (辞書規則、Lineage の DIRECT の経路、Glossary)。
+
+    status: pending (提案) / proposed (承認の案件にした) / accepted (確定) / rejected (却下) / superseded (根拠が変わった) / cancelled。
+    却下された提案は、根拠のハッシュ (evidence_hash) が変わらない限り作り直さない。
+    """
+    __tablename__ = "classification_suggestions"
+    __table_args__ = (Index("ix_classification_suggestions_target", "asset_id", "column", "evidence_hash"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    column: Mapped[str] = mapped_column(String(200))
+    proposal: Mapped[dict] = mapped_column(JSON, default=dict)  # pii / pii_category / sensitivity / cde (保護を強める項目だけ)
+    current: Mapped[dict] = mapped_column(JSON, default=dict)   # 提案の時点の値
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float)
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    approval_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decision_reason: Mapped[str] = mapped_column(Text, default="")

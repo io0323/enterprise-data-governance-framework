@@ -102,6 +102,16 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "fresh_schema: テストごとにスキーマを作り直す (監査チェーン、並行実行、DDL を扱うテスト)")
 
 
+@pytest.fixture()
+def autonomy_on(monkeypatch):
+    """EDGF_AUTONOMY_ENABLED=true に相当する (Phase 19。設定は不変なので、使う側のモジュールの設定を差し替える)。"""
+    from dataclasses import replace
+
+    from edgf.config import settings
+    from edgf.services import autonomy
+    monkeypatch.setattr(autonomy, "settings", replace(settings, autonomy_enabled=True))
+
+
 ALL_ROLES = "admin,committee,owner,steward,custodian"
 
 
