@@ -46,6 +46,10 @@ class ApprovalType:
     on_rejected: str | None = None
     on_cancelled: str | None = None
     sla_managed_by_source: bool = False  # 期限の処理を種別の側で行う (棚卸は猶予期間があるので共通の SLA を使わない)
+    # 種別に固有の判断者の除外 "module:function(db, principal, req) -> 理由 | None"。共通の職務分離に加えて適用する
+    excludes: str | None = None
+    # 判断を送る先の API が種別に固有の場合 (共通の POST /approvals/{id}/decision では判断できない)
+    decision_path: str | None = None
 
 
 def _validate(definition: ApprovalType) -> None:
@@ -114,3 +118,10 @@ def add_business_days(start: datetime, days: int) -> datetime:
         if current.weekday() < 5:
             remaining -= 1
     return current
+
+
+MATURITY = "edgf.services.maturity"
+register(ApprovalType(
+    "maturity_assessment", "ドメイン別の成熟度の判定 (§20。Committee が判定する。対象ドメインの Owner と Steward は加われない)",
+    steps=(Step("committee", "committee"),), sla_managed_by_source=True, excludes=f"{MATURITY}:excluded_decider",
+    on_cancelled=None, decision_path="/api/v1/maturity/assessments/{target_id}/decision"))

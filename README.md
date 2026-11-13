@@ -3,6 +3,21 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 18)
+
+**ドメイン別の成熟度の評価を追加しました(§20)。** 既存の API の項目は変えていません。`GET /kpi` の `maturity` は、KPI だけによる**目安**として残します。正式な評価は Committee の判定で、`/maturity/...` で扱います。
+
+| 対象 | 変更 |
+|---|---|
+| 新規 API | `/maturity/criteria`、`/maturity/assessments`(起票、自動の判定、自己評価、判定、取り消し)、`/maturity/enterprise`、`/maturity/domains/{domain}`、`/maturity/references` |
+| Policy Bundle | `policies/maturity/criteria.yaml`(評価の基準)。**既存の環境では、Phase 12 の Policy 変更の承認(`POST /policies/reload` の提案 → Committee の承認 → 公開)を経て適用してください。** 承認されるまで基準は空で、目安は 0 です |
+| 承認エンジン | 種別 `maturity_assessment` を追加しました。この種別は共通の `POST /approvals/{id}/decision` では判断できず、409(`approval-decision-elsewhere`)で判定の API を案内します |
+| 承認箱 | Committee に成熟度の判定の案件(判定するレベル、手動の基準ごとの判断、理由)を出します |
+| ジョブ | `maturity_cycle`(1 日ごと。周期は `EDGF_MATURITY_CYCLE_DAYS`、期限は `EDGF_MATURITY_DUE_DAYS`) |
+| UI | 成熟度の画面(`#/maturity`)。目安と正式な評価を分けて表示します |
+| 権限 | `maturity.assessment.create`、`maturity.self_assess`、`maturity.decide` ✓、`maturity.reference.set` ✓、`maturity.read` |
+| マイグレーション | 0036(`maturity_assessments`、`maturity_references`) |
+
 ## 変更点(Phase 17)
 
 **UI のログインを BFF に置き換え、UI から書き込めるようにしました。** Phase 13 のブラウザ側の OIDC(Authorization Code + PKCE)は廃止しました。サーバが OIDC の機密クライアントとしてログインを処理し、ブラウザにはトークンを渡しません。
@@ -94,7 +109,7 @@
 | §9 | OpenLineage互換の取込(columnLineage facet を含む)・上流/下流トレース・影響分析(通知先Owner・リスク判定)・カラム単位のリネージと影響分析・CDE のカラム化(LIN-002) | `/lineage/...` |
 | §13 / §15 | Policy as Code(Global/Domain YAML、上書き禁止)・自動監査・期限付き例外の承認(職務分離あり) | `/policies/...` |
 | §13 / §19 | ハッシュチェーン監査ログ・改ざんの検知・Ed25519 のアンカリング | `/audit/events`, `/audit/verify`, `/audit/anchors` |
-| §17 / §20 | KPI(全社・ドメイン別)・成熟度の目安 | `/kpi`, `/kpi/domains` |
+| §17 / §20 | KPI(全社・ドメイン別)・成熟度の目安、ドメイン別の成熟度の評価(Committee の判定、全社の分布、参照ドメイン) | `/kpi`, `/kpi/domains`, `/maturity/...` |
 | §19 | スキーマ版管理(Alembic)・統一エラーモデル(RFC 9457)・ページネーション・構造化ログ/request_id・liveness/readiness | `/health`, `/ready` |
 | §12 / §10 | PII Inventory(カラム単位)・Consent Registry・Right to Erasure ワークフロー・匿名化/仮名化の管理(PRV-003〜005) | `/privacy/...` |
 | §8 | Golden Record(値は持たず、xref・由来・版の情報のみ)、2 段階のマッチング、Survivorship、裁定キュー、as-of、Reference Data の版管理 | `/mdm/...`, `/reference-data/...` |
@@ -270,6 +285,11 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `jobs.run` | ジョブの手動実行 (通常は外部の cron や CronJob から実行する) | ロール: admin |  |
 | `lineage.column_write` | カラム単位のリネージの登録・取込 (columnLineage facet) | ロール: admin, custodian, owner, steward |  |
 | `lineage.write` | リネージの登録・取込 | ロール: admin, custodian, owner, steward |  |
+| `maturity.assessment.create` | 成熟度の評価の起票、自動の判定、取り消し (定期の評価はジョブが起票する) | ロール: admin, committee |  |
+| `maturity.decide` | 成熟度の判定 (対象ドメインの Owner と Steward は Committee でも加われない) | ロール: committee | ✓ |
+| `maturity.read` | 成熟度の評価と全社の成熟度の参照 | 認証済みの全員 |  |
+| `maturity.reference.set` | 参照ドメイン (先行ドメイン) の指定と解除 | ロール: committee | ✓ |
+| `maturity.self_assess` | 成熟度の自己評価 (対象ドメインの Owner) | ドメイン内ロール: owner |  |
 | `mdm.compose` | Golden Record の生成と内容ハッシュの検証 | ドメイン内ロール: steward<br>対象の custodian |  |
 | `mdm.match` | ソースレコードのマッチング | ドメイン内ロール: steward<br>対象の custodian |  |
 | `mdm.read` | MDM のメタデータの参照 (ABAC で絞り込む。値は返さない) | 認証済みの全員 |  |
@@ -418,6 +438,93 @@ producers:
 - カラムの辺の削除 API はありません。facet から消えた辺も残ります(残った辺は値の流れる側に倒れるので、絞り込みは保守的になります)
 - 消去の `scope` の結果は、その時点の宣言で決まります。宣言を変えた後は `scope` をやり直してください。AI の版の superseded は `dispatch` の時点で計算し直します
 - 列の名前の変更はカラムの辺に反映しません。Contract check の `column_impact` は、変更前の名前で影響を探します
+
+## 成熟度の評価(§20)
+
+ドメインごとに、年に 1 回、成熟度を評価します。KPI による自動の判定と、ドメインの Owner の自己評価をもとに、Committee が判定します。1 レベルずつ引き上げ、飛び級はできません。
+
+### 評価の流れ
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: 起票 (Committee / admin、または定期のジョブ)
+    draft --> auto_evaluated: 自動の判定 (KPI のスナップショット)
+    auto_evaluated --> auto_evaluated: 判定のやり直し
+    auto_evaluated --> self_assessed: 自己評価 (ドメインの Owner)
+    self_assessed --> self_assessed: 自己評価の出し直し
+    self_assessed --> decided: 判定 (Committee。承認エンジンの maturity_assessment)
+    draft --> cancelled: 取り消し
+    auto_evaluated --> cancelled
+    self_assessed --> cancelled
+    decided --> [*]: 変更できない
+```
+
+| 段階 | 内容 |
+|---|---|
+| 自動の判定 | 基準の自動の指標を、評価の期間(`EDGF_MATURITY_CYCLE_DAYS`、既定 365 日)のドメイン別の KPI のスナップショットで判定します。期間の終わりは、今日のスナップショットがあれば今日、無ければ昨日です。使ったスナップショットの ID と値を、基準ごとに証拠として残します。判定に使った基準も評価に写して残すので、後で基準を変えても記録は変わりません |
+| 自己評価 | ドメインの Owner(ドメイン内のロール)が、手動の基準ごとに、達成したかどうかと証拠を入力します。最初の提出で、承認エンジンに `maturity_assessment` の案件を起票します。判定の前なら出し直せます |
+| 判定 | Committee が承認箱から判定します(✓。UI の経路ではステップアップが必要)。判定の記録には、目安、上限、判定したレベル、手動の基準ごとの判断、理由を残し、以後は変更できません |
+
+**証拠**は、https の URI と説明文(1,000 文字まで)だけで参照します。Control Plane はその URI に接続しません。説明文は監査の payload のガードを通し、個人情報の可能性がある値(メールアドレスなど)は保存せずに 422 にします。
+
+### 判定の上限
+
+| 用語 | 意味 |
+|---|---|
+| 目安(indicative) | 自動の指標を、レベル 1 から順にすべて満たした最も高いレベル |
+| 前回のレベル | そのドメインの最新の判定のレベル。初回は 0 |
+| 上限(cap) | `min(目安, 前回のレベル + 1)` |
+
+- 上限を超える判定は 422(`maturity-invalid`。応答に `level_cap`、`indicative_level`、`previous_level`)。初回の上限は 1 です
+- レベルを下げる判定(前回より低い)はできますが、理由が必須です
+- 判定するレベルまでの手動の基準は、すべて Committee が「認める」必要があります
+- Level 5 の自動の指標は Phase 19 まで計測できないので、目安は Level 5 になりません
+
+### 基準の定義
+
+基準は `policies/maturity/criteria.yaml` に、レベルごとに宣言します。Policy Bundle に含まれるので、変更には Committee の承認が必要です。ロード時に、存在しない KPI の参照、レベルの順序(1 から飛ばさずに)、Level 4 以上の継続の日数を検証します。
+
+```yaml
+levels:
+  - level: 4
+    name: Federated Governance
+    automatic:
+      - id: L4-CERTIFIED
+        metric: certified_rate      # GET /kpi の項目
+        op: ">="                    # ">=" / "<=" / "measured" (計測している)
+        threshold: 0.5
+        days: 90                    # 継続の日数。Level 4 以上は必須。その日数のスナップショットがすべて満たすこと (欠けた日は不合格)
+    manual:
+      - id: L4-FEDERATION
+        description: ドメインが自律的に統治している
+        evidence: ドメインの統治の体制と、Domain Policy の運用の記録
+```
+
+初期の基準(自動の指標の閾値は `GET /kpi` の目安と同じ値です):
+
+| Level | 自動の指標 | 手動の項目 |
+|---|---|---|
+| 1 Basic Policy | Owner の割当率 ≥ 50% | Committee の設置と Policy の承認、主要データの Owner の任命 |
+| 2 Managed | Owner の割当率 ≥ 80%、Quality Score を計測している | CDE の定義、重要データの Catalog・品質測定・Ownership の運用 |
+| 3 Standardized | Catalog 登録率 ≥ 95%、遵守率 ≥ 90% | 全社標準(分類・プロセス・KPI)の適用、自動監査に基づく是正 |
+| 4 Federated Governance | Certified 率 ≥ 50% と遵守率 ≥ 98% を、それぞれ 90 日継続 | ドメインの自律的な統治、Data Product の運用の定着 |
+| 5 Autonomous Governance | 自動是正率 ≥ 50%、予測的品質管理の対象 ≥ 50% を 90 日継続(Phase 19 まで計測できない) | KPI に基づく統治の見直し |
+
+### 職務分離
+
+- 対象ドメインの Owner と Steward(ドメイン内のロール、またはドメインの記録の Owner)は、Committee のロールを持っていても、そのドメインの判定に加われません(403。`authz.denied` を残します)。承認箱にも出しません
+- 既存の職務分離(申請者本人の禁止、Custodian の禁止)も適用します。自己評価を提出した Owner が申請者になります
+- 除外は承認エンジンの種別の定義(`excludes`)で判定するので、承認箱の表示と判定の API で同じ結果になります
+
+### 全社の成熟度と参照ドメイン
+
+`GET /maturity/enterprise` は、ドメインごとの最新の判定のレベルの分布と、**全ドメインが到達しているレベル(最小値)**を返します。評価されていないドメインは 0 として数え、その数も返します。これは正式な評価の集計で、`GET /kpi` の `maturity`(目安)とは別です。UI では両者を分けて表示します。
+
+Committee は、判定済みのドメインを**参照ドメイン**(先行ドメイン)に指定できます(✓)。ドメイン別の画面では、次に目指すレベル以上の参照ドメインを示します。
+
+### 定期の評価
+
+ジョブ `maturity_cycle`(1 日ごと)が、`EDGF_MATURITY_CYCLE_DAYS`(既定 365 日)に 1 回、全ドメインの評価を `system:jobs` の主体で起票し、自動の判定まで進めます。周期の中で既に起票した(取り消しを含む)ドメインと、判定の済んでいない評価があるドメインには起票しません。起票から `EDGF_MATURITY_DUE_DAYS`(既定 60 日)を過ぎても判定が済まなければ、ドメインの Owner に Issue(`kind: maturity`)を起票し、以後は Issue の SLA でエスカレーションします。
 
 ## Data Privacy(§12 / §10)
 
@@ -1128,6 +1235,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 | `review_campaigns` | 1 日 | レビューキャンペーンの作成と期限の処理 |
 | `kpi_snapshot` | 1 日 | KPI の日次のスナップショット(同じ日に 2 回実行しても 1 日分) |
 | `audit_anchor` | 1 時間 | 監査チェーンのアンカリング(`EDGF_ANCHOR_ENABLED=true` のときだけ動作) |
+| `maturity_cycle` | 1 日 | ドメイン別の成熟度の評価の起票(`EDGF_MATURITY_CYCLE_DAYS` ごと)と、期限超過の Issue(Phase 18) |
 | `ui_session_cleanup` | 1 時間 | 期限切れの UI のセッションとログインの途中の状態を削除する(Phase 17) |
 | `unused_assets` | 1 日 | `EDGF_UNUSED_DAYS`(既定 90 日)使われていない資産を、廃止の候補として Owner に Issue で知らせる(利用実績が届くまでは何もしない) |
 | `reachability_probe` | 1 時間 | Control Plane からの Output Port の到達の確認(`EDGF_PROBE_ENABLED=true` のときだけ動作) |
@@ -1261,6 +1369,8 @@ UI のオリジンは `EDGF_UI_PUBLIC_URL` で指定します(省略時は要求
 | | Contract の版の公開 | `POST /mesh/contract-versions/{id}/publish` | `mesh.contract.publish` ✓ |
 | | CDM の再検証の対応(Issue の更新) | `PATCH /issues/{id}` | `issue.update` |
 | | モデルの是正の判断(retrain / unlearn / accept) | `POST /ai/remediations/{id}/decision` | `ai.remediation.decide` ✓ |
+| | 成熟度の判定(レベル、手動の基準ごとの判断、理由) | `POST /maturity/assessments/{id}/decision` | `maturity.decide` ✓ |
+| 成熟度(`#/maturity/{domain}`) | 自己評価(ドメインの Owner) | `PUT /maturity/assessments/{id}/self-assessment` | `maturity.self_assess` |
 | 棚卸と証明(`#/reviews`) | 権限の継続・取り消し、Owner の証明・修正が必要 | `POST /reviews/items/{id}/decision` | `review.decide` ✓ |
 | Issue(`#/issues`) | 状態、担当者、コメントの更新 | `PATCH /issues/{id}` | `issue.update` |
 
@@ -1333,7 +1443,8 @@ UI は dev モードに対応しません(dev モードでは `/ui/auth/login` �
 | [資産の詳細](docs/ui/asset.png) | `#/assets/{id}` | `/assets/{id}`, `/quality/...`, `/policies/evaluate/...`, `/glossary/terms`, `/mesh/products?asset_id=`, `/ai/assets/...` |
 | [用語集](docs/ui/glossary.png) | `#/glossary`, `#/glossary/{id}` | `/glossary/terms` |
 | [リネージと影響分析](docs/ui/lineage.png) | `#/lineage/{name}?depth=` | `/lineage/{name}/graph`, `/lineage/{name}/impact` |
-| [KPI と成熟度](docs/ui/dashboard.png) | `#/dashboard` | `/kpi`, `/kpi/history` |
+| [KPI と成熟度の目安](docs/ui/dashboard.png) | `#/dashboard` | `/kpi`, `/kpi/history` |
+| 成熟度の評価 | `#/maturity`, `#/maturity/{domain}` | `/maturity/enterprise`, `/maturity/domains/{domain}`、自己評価は `PUT /maturity/assessments/{id}/self-assessment` |
 | [Data Product](docs/ui/products.png) | `#/products` | `/mesh/products/overview` |
 | [Issue](docs/ui/issues.png) | `#/issues` | `/issues`、更新は `PATCH /issues/{id}` |
 | [承認箱](docs/ui/inbox.png) | `#/inbox` | `/approvals/inbox`。判断は案件ごとの `operations` の既存の API |
@@ -1484,6 +1595,8 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 
 ## 既知の制約と次フェーズ
 
+- **成熟度の評価(Phase 18)**: 組織の体制や運用の実績(手動の項目)は、自己評価と証拠の参照で記録するだけで、Control Plane は証拠の中身を確かめません(URI に接続しません)。自動の指標はドメイン別の KPI のスナップショットに基づくので、日次の `kpi_snapshot` が止まっていた期間は、Level 4 以上の継続の日数を満たせません。Level 5 の指標は Phase 19 まで計測できません。基準の変更は、変更の後に自動の判定をした評価から適用します(判定に使った基準は評価に写して残します)
+- 成熟度の判定の定足数は 1 です(Committee の 1 人)。ドメインの Owner と Steward を除いた Committee の構成員がいないドメインは判定できません
 - dev モード(`X-Actor`)は開発・テスト専用の恒久的な機能です。本番では起動を拒否します
 - 閲覧の申請は承認エンジンの `access_request` で扱います。Owner が直接付与する API も残っています。SLA の営業日は土日だけを除きます(祝日は考慮しません)
 - 棚卸はキャンペーンの作成時点の一覧で行います。作成後に付与された権限は次の四半期の対象です

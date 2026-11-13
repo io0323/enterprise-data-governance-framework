@@ -9,10 +9,15 @@ function input(field, id) {
   const common = {id, name: field.name, required: field.required || null, "aria-required": field.required ? "true" : null};
   if (field.kind === "select") {
     return h("select", common, h("option", {value: ""}, t("form.unchanged")),
-      field.options.map((option) => h("option", {value: option}, t(`form.option.${option}`))));
+      field.options.map((option) => h("option", {value: option}, /^\d+$/.test(option) ? `Level ${option}` : t(`form.option.${option}`))));
   }
   if (field.kind === "datetime") return h("input", {...common, type: "datetime-local"});
   return h("textarea", {...common, rows: "3", maxlength: field.max_length ? String(field.max_length) : null});
+}
+
+function fieldLabel(name) {
+  const [head, key] = name.split(".", 2);
+  return key ? `${t(`form.field.${head}`)}: ${key}` : t(`form.field.${name}`);
 }
 
 function valueOf(field, element) {
@@ -37,11 +42,14 @@ export function decisionForm({title, operation, onDone, onCancel}) {
       for (const [field, element] of inputs) {
         const value = valueOf(field, element);
         if (field.required && value === null) {
-          error.textContent = t(operation.id === "reject" ? "form.reason_required" : "form.required", {field: t(`form.field.${field.name}`)});
+          error.textContent = t(operation.id === "reject" ? "form.reason_required" : "form.required", {field: fieldLabel(field.name)});
           element.focus();
           return;
         }
-        if (value !== null) body[field.name] = value;
+        if (value === null) continue;
+        const [head, key] = field.name.split(".", 2);
+        if (key) body[head] = {...(body[head] || {}), [key]: value}; // manual.<id> → {manual: {<id>: 値}}
+        else body[field.name] = value;
       }
       submit.disabled = true;
       try {
@@ -56,7 +64,7 @@ export function decisionForm({title, operation, onDone, onCancel}) {
     h("h2", {id: "decision-title"}, title, " - ", t(`form.op.${operation.id}`)),
     operation.step_up ? h("p", {class: "muted"}, t("form.step_up_note")) : null,
     inputs.map(([field, element]) => h("div", {class: "field"},
-      h("label", {for: element.id}, t(`form.field.${field.name}`), field.required ? ` (${t("form.required_mark")})` : ""), element)),
+      h("label", {for: element.id}, fieldLabel(field.name), field.required ? ` (${t("form.required_mark")})` : ""), element)),
     error,
     h("div", {class: "form-actions"}, submit, h("button", {type: "button", id: "decision-cancel", onClick: onCancel}, t("form.cancel"))));
   return form;

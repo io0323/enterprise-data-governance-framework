@@ -93,6 +93,9 @@ class Settings:
     session_max_hours: int = field(default_factory=lambda: int(os.getenv("EDGF_SESSION_MAX_HOURS", "8")))
     # ✓ の付いた操作 (承認行為) を UI から行うときに、ログインからの経過を何分まで許すか
     step_up_minutes: int = field(default_factory=lambda: int(os.getenv("EDGF_STEP_UP_MINUTES", "15")))
+    # §20 ドメイン別の成熟度の評価 (Phase 18): 評価の周期 (日) と、起票から判定までの期限 (日)
+    maturity_cycle_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MATURITY_CYCLE_DAYS", "365")))
+    maturity_due_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MATURITY_DUE_DAYS", "60")))
     # §12 Anonymization: anonymized と宣言するために必要な k-匿名性の下限 (PRV-003)
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)

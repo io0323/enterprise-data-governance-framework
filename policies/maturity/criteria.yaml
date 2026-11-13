@@ -1,0 +1,111 @@
+# §20 成熟度の評価の基準 (Phase 18)。ドメイン別の評価で使う。
+#
+# - automatic: 自動の指標。ドメイン別の KPI のスナップショットで判定する
+#     metric: KPI の名前 (GET /kpi の項目)、op: ">=" / "<=" / "measured" (計測している)、threshold: 閾値
+#     days: 継続の日数。0 または省略は評価の期間の最新のスナップショットだけで判定する。
+#           Level 4 以上は必須で、その日数のスナップショットがすべて閾値を満たすこと (欠けた日は満たしていない)
+# - manual: 手動の項目。ドメインの Owner が証拠 (https の URI と説明) を付けて自己評価し、Committee が判断する
+#
+# このファイルは Policy Bundle に含まれます。変更は POST /policies/reload で提案し、Committee の承認と公開を経て有効になります。
+# 自動の指標の閾値は、GET /kpi の maturity (目安) と同じ値にしています (edgf/services/kpi.py の LEVEL_CONDITIONS)。
+levels:
+  - level: 1
+    name: Basic Policy
+    automatic:
+      - id: L1-OWNER-RATE
+        metric: owner_assignment_rate
+        op: ">="
+        threshold: 0.5
+        description: 主要データの Owner 任命 (Owner の割当率 50% 以上)
+    manual:
+      - id: L1-COMMITTEE
+        description: Data Governance Committee が設置され、基本の Policy を承認している
+        evidence: Committee の設置の決定と、Policy の承認の記録 (議事録など)
+      - id: L1-OWNER-APPOINT
+        description: ドメインの主要データの Owner が任命され、責任範囲が文書化されている
+        evidence: Owner の任命の記録
+
+  - level: 2
+    name: Managed
+    automatic:
+      - id: L2-OWNER-RATE
+        metric: owner_assignment_rate
+        op: ">="
+        threshold: 0.8
+        description: Owner の割当率 80% 以上
+      - id: L2-QUALITY-MEASURED
+        metric: quality_score_avg
+        op: measured
+        description: Quality KPI の測定を開始している
+    manual:
+      - id: L2-CDE
+        description: ドメインの CDE (Critical Data Element) が定義されている
+        evidence: CDE の一覧と、その決定の記録
+      - id: L2-OPERATION
+        description: 重要データについて、Catalog・品質測定・Ownership が運用されている
+        evidence: 運用の手順と、直近の運用の実績 (品質の Issue の対応など)
+
+  - level: 3
+    name: Standardized
+    automatic:
+      - id: L3-CATALOG-RATE
+        metric: catalog_registration_rate
+        op: ">="
+        threshold: 0.95
+        description: Catalog 登録率 95% 以上 (Data Plane の資産一覧に対して)
+      - id: L3-COMPLIANCE
+        metric: compliance_rate
+        op: ">="
+        threshold: 0.9
+        description: Policy の遵守率 90% 以上 (Policy as Code の執行)
+    manual:
+      - id: L3-STANDARD
+        description: 全社標準 (分類・プロセス・KPI) をドメインに適用している
+        evidence: 標準の適用の記録 (分類の基準、プロセスの手順)
+      - id: L3-AUDIT
+        description: 自動監査 (policy_evaluate) の結果に基づいて是正を回している
+        evidence: 自動監査の Issue の対応の実績
+
+  - level: 4
+    name: Federated Governance
+    automatic:
+      - id: L4-CERTIFIED
+        metric: certified_rate
+        op: ">="
+        threshold: 0.5
+        days: 90
+        description: Certification の流通 (Certified 率 50% 以上を 90 日継続)
+      - id: L4-COMPLIANCE
+        metric: compliance_rate
+        op: ">="
+        threshold: 0.98
+        days: 90
+        description: Policy の遵守率 98% 以上を 90 日継続
+    manual:
+      - id: L4-FEDERATION
+        description: ドメインが自律的に統治している (Domain Policy の運用、Global Policy との整合)
+        evidence: ドメインの統治の体制と、Domain Policy の運用の記録
+      - id: L4-PRODUCT
+        description: Data Product の運用が定着している (Contract の公開、利用登録の承認)
+        evidence: Data Product の運用の実績
+
+  - level: 5
+    name: Autonomous Governance
+    automatic:
+      # Phase 19 で計測できるようになるまでは「計測できない」として扱い、目安は Level 5 にならない
+      - id: L5-AUTO-REMEDIATION
+        metric: auto_remediation_rate
+        op: ">="
+        threshold: 0.5
+        days: 90
+        description: 自動是正率 50% 以上を 90 日継続
+      - id: L5-PREDICTIVE
+        metric: predictive_quality_coverage
+        op: ">="
+        threshold: 0.5
+        days: 90
+        description: 予測的品質管理の対象の割合 50% 以上を 90 日継続
+    manual:
+      - id: L5-SELF-IMPROVE
+        description: KPI に基づいて統治 (Policy) を見直す仕組みが回っている
+        evidence: KPI からの Policy の見直しの記録

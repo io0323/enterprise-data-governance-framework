@@ -32,7 +32,7 @@
 | §17 KPI / Metrics | `edgf/services/kpi.py`、`kpi_snapshots`、ダッシュボード、利用実績(`edgf/services/usage.py`) | `test_ai_kpi.py`、`test_mesh_kpi.py`、`test_ui_api.py`、`test_usage.py` | 実装済み | Usage は Data Plane の集計値の申告で、Control Plane は検証しない。利用者の数だけで、Certified データの利用者の内訳は取らない |
 | §18 Reference Architecture | 製品に依存しない構成、PostgreSQL / SQLite、OIDC、OTLP | `test_db_compat.py`、`tests/e2e_keycloak` | 一部 | 参照アーキテクチャのうち Data Plane 側の製品の組み合わせは対象外 |
 | §19 非機能要件 | 下の表を参照 | `test_perf_*.py`、`test_security_*.py`、`test_audit_anchor.py`、`scripts/ops/restore_drill.py` | 一部 | 下の表を参照 |
-| §20 Maturity Model | Level 3 の判定を Catalog 登録率で行い、ダッシュボードに表示 | `test_ui_api.py`、`test_discovery.py` | 一部 | 下の「成熟度」を参照(Level 4 / 5 の判定は Phase 18 / 19) |
+| §20 Maturity Model | KPI による目安(Level 3 は Catalog 登録率)。Phase 18: ドメイン別の成熟度の評価(基準の宣言 `policies/maturity/criteria.yaml`、KPI のスナップショットによる自動の判定、自己評価、承認エンジンでの Committee の判定、`min(目安, 前回 + 1)` の上限で飛び級を防ぐ、全社の分布と最小値、参照ドメイン、年次の起票のジョブ) | `test_ui_api.py`、`test_discovery.py`、`test_maturity_criteria.py`、`test_maturity_evaluate.py`、`test_maturity_decide.py`、`test_maturity_enterprise.py`、`tests/e2e/test_ui_maturity.py` | 一部 | 下の「成熟度」を参照(Level 5 の指標は Phase 19) |
 | §21 ベストプラクティス | §4、§5、§6、§7、§16 の実装で支える | 各章のテスト | 文書 | 年次サイクルの運営は組織の運用 |
 | §22 アンチパターン | Unknown Owner の検出、Certification、Lineage の必須化などで対策 | 各章のテスト | 文書 | |
 
@@ -71,14 +71,15 @@
 | 1 Basic Policy | Policy 承認、Owner 任命 | Policy Bundle の承認、Owner の割当 | Committee の設置 |
 | 2 Managed | CDE 定義、Quality KPI | CDE、品質検査、KPI | 重要ドメインでの運用 |
 | 3 Standardized | Catalog 登録率 95%、自動監査 | 自動監査のジョブ、全社標準の Policy、Catalog 登録率(Data Plane の資産一覧から) | 全ドメインへの適用、全ソースからの資産一覧の送信 |
+| 4 Federated Governance | 連邦体制・Certification 流通の定着 | ドメイン別の成熟度の評価(Phase 18): Certified 率と遵守率の 90 日継続、手動の項目の自己評価と Committee の判断、飛び級の防止、参照ドメイン | ドメインの統治の体制と運用の実績、年次の評価の運用 |
 
 ### Level 4 Federated Governance に残ること
 
 機能はあります(Domain Policy は Global を緩められない、Data Product、Certification)。定着の判定に次が必要です。
 
-- ドメインごとの運用の実績(連邦体制の定着は期間を要する)
+- ドメインごとの運用の実績(連邦体制の定着は期間を要する)。Phase 18 の評価では、Certified 率と遵守率を 90 日継続して満たすことを自動の指標にし、体制と Data Product の運用の定着は手動の項目(自己評価と Committee の判断)で確かめる
 - Data Plane との連携のうち、Contract の実行時の強制(到達の報告と MESH-007 は Phase 15 で実装)
-- ドメイン別の成熟度評価の機能(現在はドメイン別の KPI だけで、評価の記録は無い)
+- ~~ドメイン別の成熟度評価の機能~~ → Phase 18 で実装(評価の記録、1 レベルずつの引き上げ、参照ドメイン)。評価を年次で回し、記録を積み上げるのは組織の運用
 
 ### Level 5 Autonomous Governance に残ること
 

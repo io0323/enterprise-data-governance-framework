@@ -8,6 +8,7 @@ import {productsPage} from "./products.js";
 import {issuesPage} from "./issues.js";
 import {inboxPage} from "./inbox.js";
 import {reviewsPage} from "./reviews.js";
+import {maturityPage} from "./maturity.js";
 import {jobsPage} from "./jobs.js";
 
 export const routes = {
@@ -20,6 +21,7 @@ export const routes = {
   issues: issuesPage,
   inbox: inboxPage,
   reviews: reviewsPage,
+  maturity: maturityPage,
   jobs: jobsPage,
 };
 
@@ -28,6 +30,7 @@ export const navigation = [
   {href: "#/glossary", label: "nav.glossary", keys: ["glossary"]},
   {href: "#/lineage", label: "nav.lineage", keys: ["lineage"]},
   {href: "#/dashboard", label: "nav.dashboard", keys: ["dashboard"]},
+  {href: "#/maturity", label: "nav.maturity", keys: ["maturity"]},
   {href: "#/products", label: "nav.products", keys: ["products"]},
   {href: "#/issues", label: "nav.issues", keys: ["issues"]},
   {href: "#/inbox", label: "nav.inbox", keys: ["inbox"]},

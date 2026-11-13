@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from edgf.enums import (AiKind, Certification, ConsentStatus, DataClass, ErasureStatus, ErasureTaskStatus, EscalationLevel,
                         DatasetVersionStatus, IssueStatus, LegalBasis, LifecycleState, ModelVersionStatus,
@@ -1418,3 +1418,48 @@ class UsageRecordIn(BaseModel):
 class UsagePushIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     records: list[UsageRecordIn] = Field(min_length=1, max_length=10_000)
+
+
+# ---------------------------------------------------------------- §20 ドメイン別の成熟度の評価 (Phase 18)
+class MaturityCreateIn(MeshInput):
+    domain: str = Field(min_length=1, max_length=100)
+
+
+class MaturityCancelIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class EvidenceIn(MeshInput):
+    """証拠の参照。Control Plane はこの URI に接続しない (Data Plane や文書の保管先にある証拠を指すだけ)。"""
+    uri: str = Field(min_length=9, max_length=2000, description="https の URI だけ")
+    description: str = Field(default="", max_length=1000, description="説明。個人情報を含めないこと (監査のガードで拒否する)")
+
+    @field_validator("uri")
+    @classmethod
+    def _https_only(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parts = urlsplit(value)
+        if parts.scheme != "https" or not parts.netloc or any(c.isspace() for c in value):
+            raise ValueError("証拠の URI は https だけです")
+        return value
+
+
+class SelfAssessmentItemIn(MeshInput):
+    criterion_id: str = Field(min_length=1, max_length=40)
+    achieved: bool
+    evidence: list[EvidenceIn] = Field(default_factory=list, max_length=10)
+
+
+class MaturitySelfAssessmentIn(MeshInput):
+    items: list[SelfAssessmentItemIn] = Field(min_length=1, max_length=50)
+
+
+class MaturityDecisionIn(MeshInput):
+    level: int = Field(ge=0, le=5)
+    manual: dict[str, str] = Field(default_factory=dict, description="手動の基準ごとの判断 (accepted / rejected)")
+    reason: str = Field(default="", max_length=1000, description="前回より下げるときは必須")
+
+
+class MaturityReferenceIn(MeshInput):
+    domain: str = Field(min_length=1, max_length=100)
+    reason: str = Field(default="", max_length=1000)
