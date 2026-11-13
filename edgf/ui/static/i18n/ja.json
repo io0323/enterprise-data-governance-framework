@@ -302,5 +302,16 @@
  "form.option.open": "未着手",
  "form.option.in_progress": "対応中",
  "form.option.resolved": "解決",
- "form.option.closed": "完了"
+ "form.option.closed": "完了",
+ "nav.reviews": "棚卸と証明",
+ "reviews.title": "棚卸と証明",
+ "reviews.description": "自分が Owner の資産について、権限を継続するか取り消すか、Owner・分類などが正しいかを判断します。取り消しと修正が必要には理由が必須です。",
+ "reviews.kind": "種類",
+ "reviews.kind.access": "権限の棚卸",
+ "reviews.kind.attestation": "Owner の証明",
+ "reviews.target": "対象",
+ "reviews.asset": "資産",
+ "reviews.status": "状態",
+ "reviews.decided": "判断の日時",
+ "issues.updated": "「{title}」を更新しました。"
 }

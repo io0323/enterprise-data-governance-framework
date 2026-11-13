@@ -302,5 +302,16 @@
  "form.option.open": "Open",
  "form.option.in_progress": "In progress",
  "form.option.resolved": "Resolved",
- "form.option.closed": "Closed"
+ "form.option.closed": "Closed",
+ "nav.reviews": "Reviews",
+ "reviews.title": "Reviews and attestations",
+ "reviews.description": "Decide whether to keep or revoke access, and attest that the owner and classification of your assets are correct. Revoking and requesting a fix need a reason.",
+ "reviews.kind": "Kind",
+ "reviews.kind.access": "Access review",
+ "reviews.kind.attestation": "Ownership attestation",
+ "reviews.target": "Target",
+ "reviews.asset": "Asset",
+ "reviews.status": "Status",
+ "reviews.decided": "Decided at",
+ "issues.updated": "\"{title}\" was updated."
 }

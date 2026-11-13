@@ -7,6 +7,7 @@ import {lineagePage} from "./lineage.js";
 import {productsPage} from "./products.js";
 import {issuesPage} from "./issues.js";
 import {inboxPage} from "./inbox.js";
+import {reviewsPage} from "./reviews.js";
 import {jobsPage} from "./jobs.js";
 
 export const routes = {
@@ -18,6 +19,7 @@ export const routes = {
   products: productsPage,
   issues: issuesPage,
   inbox: inboxPage,
+  reviews: reviewsPage,
   jobs: jobsPage,
 };
 
@@ -29,5 +31,6 @@ export const navigation = [
   {href: "#/products", label: "nav.products", keys: ["products"]},
   {href: "#/issues", label: "nav.issues", keys: ["issues"]},
   {href: "#/inbox", label: "nav.inbox", keys: ["inbox"]},
+  {href: "#/reviews", label: "nav.reviews", keys: ["reviews"]},
   {href: "#/jobs", label: "nav.jobs", keys: ["jobs"]},
 ];
