@@ -62,10 +62,10 @@ def build_router(s: Settings) -> APIRouter:
 
     @router.get("/ui/config.json")
     def config() -> Response:
-        """OIDC クライアントの設定 (秘密は含まない)。製品固有の項目は持たない。"""
-        issuer = issuer_of(s)
-        return JSONResponse({"configured": bool(issuer and s.ui_oidc_client_id), "issuer": issuer, "client_id": s.ui_oidc_client_id,
-                             "scopes": list(s.ui_oidc_scopes), "audience": s.ui_oidc_audience or s.oidc_audience}, headers=headers)
+        """ログインが使えるか (Phase 17)。ログインはサーバが処理するので、OIDC の設定はブラウザに渡さない。"""
+        from edgf.ui.bff import ui_enabled  # 循環 import 回避
+
+        return JSONResponse({"configured": ui_enabled(s)}, headers=headers)
 
     @router.get("/ui/{path:path}")
     def static(path: str, request: Request) -> Response:

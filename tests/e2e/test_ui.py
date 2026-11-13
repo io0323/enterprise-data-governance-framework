@@ -42,70 +42,48 @@ def test_committee_sees_restricted_and_badges(session_of, seed):
     assert "Restricted" in row.inner_text() and "Draft" in row.inner_text()
 
 
-def test_only_get_requests_except_token_exchange(session_of, idp, app_url):
+def test_browsing_sends_only_get_and_no_tokens(session_of, idp, app_url):
     s = session_of(ADMIN)
     for route in ROUTES:
         s.go(route).settled()
     assert {"/kpi", "/mesh/products/overview", "/approvals/inbox", "/ops/jobs", "/issues"} <= {r.url.split("/api/v1")[1].split("?")[0] for r in s.requests if "/api/v1" in r.url}
-    non_get = [r for r in s.requests if r.method not in ("GET", "HEAD", "OPTIONS")]
-    # 自オリジンへの GET 以外は 0 件。それ以外の POST はトークンエンドポイントの 1 件だけ
-    assert [r for r in non_get if r.url.startswith(app_url["url"])] == []
-    assert [r.url for r in non_get] == [idp.token_endpoint]
-    # X-Actor は送らない。API には Bearer を付ける
+    # 閲覧では GET 以外を送らない。ブラウザは IdP のトークンエンドポイントと通信しない (交換は BFF が行う)
+    assert [r for r in s.requests if r.method not in ("GET", "HEAD", "OPTIONS")] == []
+    assert not [r for r in s.requests if r.url.startswith(idp.token_endpoint)]
+    # API には Authorization も X-Actor も付けない。認証はセッションの Cookie
     api_calls = [r for r in s.requests if "/api/v1/" in r.url]
-    assert api_calls and all("x-actor" not in r.all_headers() for r in api_calls)
-    assert all(r.all_headers().get("authorization", "").startswith("Bearer ") for r in api_calls)
-    # 通信先は自身と IdP の issuer だけ
+    assert api_calls and all("x-actor" not in r.all_headers() and "authorization" not in r.all_headers() for r in api_calls)
+    assert all("__Host-edgf_session=" in r.all_headers().get("cookie", "") for r in api_calls)
+    # 通信先は自身と、ログインの画面遷移の IdP だけ
     assert {r.url.split("/")[2] for r in s.requests} <= {app_url["url"].split("/")[2], idp.issuer.split("/")[2]}
+    assert {r.url.split("?")[0] for r in s.requests if r.url.startswith(idp.issuer)} <= {f"{idp.issuer}/authorize"}
     assert not [m for m in s.console if "Content Security Policy" in m]
 
 
-def test_token_is_kept_only_in_memory(session_of, idp):
+def test_javascript_cannot_read_the_session(session_of, idp):
     s = session_of(OWNER)
     stored = s.page.evaluate("() => [localStorage.length, sessionStorage.length, document.cookie]")
-    assert stored == [0, 0, ""]
-    assert s.context.cookies() == []
-    # PKCE で交換している
-    assert idp.token_requests[-1]["code_verifier"] and "client_secret" not in idp.token_requests[-1]
-    # 再読み込みするとトークンは残らない
+    assert stored == [0, 0, ""]  # HttpOnly なので document.cookie には出ない
+    [cookie] = [c for c in s.context.cookies() if c["name"] == "__Host-edgf_session"]
+    assert cookie["httpOnly"] and cookie["secure"] and cookie["sameSite"] == "Strict" and cookie["path"] == "/" and not cookie["domain"].startswith(".")
+    # トークンの交換はサーバが機密クライアントとして行う (PKCE と秘密)
+    assert idp.token_requests[-1]["code_verifier"] and idp.token_requests[-1]["client_secret"]
+    # 再読み込みしてもログインは続く (セッションはサーバにある)
     s.page.reload()
-    s.page.wait_for_selector("#login")
-    assert s.page.locator(".site-nav").count() == 0
+    s.page.wait_for_selector(".site-nav")
 
 
-def test_login_rejects_wrong_state_and_requires_pkce(browser, idp, app_url, seed):
-    """ログインの応答を待っている間に、別の state の応答を送る。
-
-    受け手 (state を照合するチャンネル) はログインの開始後にしか無いので、IdP の画面を保留して応答待ちの状態を作る。
-    """
+def test_forged_callback_does_not_log_in(browser, idp, app_url, seed):
+    """IdP を経ない callback (state の無い、または一致しない応答) ではログインしない。"""
     s = Session(browser, idp, app_url, CONSUMER).open()
-    held = []
-    s.context.route(f"{idp.issuer}/authorize*", lambda route: held.append(route))
     try:
-        with s.context.expect_event("request", lambda request: "/authorize" in request.url):
-            s.page.click("#login")
-        expect(s.page.locator(".login [role=status]")).to_have_text("別のウィンドウでログインしてください。")
         exchanges = len(idp.token_requests)
-        # 同じチャンネルのメッセージは送った順に処理されるので、目印が届いた時点で偽の応答の処理は終わっている
-        s.page.evaluate("""() => new Promise((resolve) => {
-            const probe = new BroadcastChannel('edgf-oidc');
-            probe.onmessage = (event) => { if (event.data.probe) { probe.close(); resolve(); } };
-            const sender = new BroadcastChannel('edgf-oidc');
-            sender.postMessage({code: 'forged', state: 'forged'});
-            sender.postMessage({probe: true});
-            sender.close();
-        })""")
-        assert len(idp.token_requests) == exchanges  # 偽の応答ではトークンの交換をしない
-        assert s.page.locator(".site-nav").count() == 0
-        expect(s.page.locator(".login [role=status]")).to_have_text("別のウィンドウでログインしてください。")
-        # 本物の応答はまだ受け付ける (受け手がいたことの確認)
-        held.pop().continue_()
-        expect(s.page.locator(".site-nav")).to_be_visible()
-        assert idp.token_requests[-1]["code_verifier"] and "client_secret" not in idp.token_requests[-1]
-        assert len(idp.token_requests) == exchanges + 1
+        s.page.goto(f"{app_url['url']}/ui/auth/callback?code=forged&state=forged")
+        s.page.wait_for_selector("#login")
+        expect(s.page.locator(".login [role=status]")).to_have_text("ログインできませんでした。")
+        assert len(idp.token_requests) == exchanges and s.page.locator(".site-nav").count() == 0
+        assert "error=" not in s.page.url  # 表示したら URL から消す
     finally:
-        for route in held:
-            route.continue_()
         s.close()
 
 
@@ -116,8 +94,7 @@ def test_401_asks_to_log_in_again(session_of):
     assert "期限が切れました" in s.page.inner_text("main")
     # 再ログインすると同じ画面に戻る
     s.page.unroute("**/api/v1/issues*")
-    with s.context.expect_page():
-        s.page.click("#login")
+    s.page.click("#login")
     s.page.wait_for_selector(".site-nav")
     assert s.page.locator("main h1").inner_text() == "Issue"
 
@@ -283,8 +260,7 @@ def test_keyboard_only_flow(browser, idp, app_url, seed):
     try:
         # ログインもキーボードだけで
         _tab_until(page, "() => document.activeElement?.id === 'login'")
-        with s.context.expect_page():
-            page.keyboard.press("Enter")
+        page.keyboard.press("Enter")
         page.wait_for_selector(".site-nav")
         # スキップリンク
         page.keyboard.press("Tab")

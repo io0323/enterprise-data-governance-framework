@@ -1,7 +1,10 @@
 """E2E テスト用の IdP の模擬 (標準ライブラリとローカルの署名鍵だけ).
 
-OIDC のディスカバリ、認可エンドポイント (PKCE を記録して即座にリダイレクト)、トークンエンドポイント (PKCE を検証)、
-JWKS を提供する。本番のコードからは使わない。
+OIDC のディスカバリ、認可エンドポイント (PKCE を記録して即座にリダイレクト)、トークンエンドポイント (PKCE と
+機密クライアントの秘密を検証)、JWKS を提供する。本番のコードからは使わない。
+
+Phase 17 から、ブラウザは IdP と通信しない。認可エンドポイントへの画面遷移だけがブラウザから来て、トークンの要求は
+Control Plane (BFF) から来る。
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 AUDIENCE = "edgf-control-plane"
 CLIENT_ID = "edgf-ui"
+CLIENT_SECRET = "e2e-client-secret"
 KID = "e2e-key"
 
 
@@ -25,6 +29,8 @@ class FakeIdp:
     def __init__(self) -> None:
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.user: dict = {}
+        self.auth_time_offset = 0  # 認証の時刻を過去にずらす (ステップアップの確認用)
+        self.authorize_requests: list[dict] = []
         self.codes: dict[str, dict] = {}
         self.token_requests: list[dict] = []
         # Client Credentials のクライアント (Data Plane のサービスの主体): client_id → {secret, roles, domains, clearance}
@@ -93,9 +99,12 @@ class FakeIdp:
                     self._json(200, idp._jwks())
                 elif parts.path == "/authorize":
                     code = f"code-{len(idp.codes)}-{int(time.time() * 1000)}"
+                    idp.authorize_requests.append(dict(query))
+                    # max_age を付けた要求は再認証したものとして、今の時刻を認証の時刻にする
+                    auth_time = int(time.time()) - (0 if "max_age" in query else idp.auth_time_offset)
                     with idp.lock:
                         idp.codes[code] = {"user": dict(idp.user), "challenge": query.get("code_challenge"), "method": query.get("code_challenge_method"),
-                                           "nonce": query.get("nonce"), "redirect_uri": query.get("redirect_uri")}
+                                           "nonce": query.get("nonce"), "redirect_uri": query.get("redirect_uri"), "auth_time": auth_time}
                     self.send_response(302)
                     self.send_header("Location", f"{query['redirect_uri']}?{urlencode({'code': code, 'state': query['state']})}")
                     self.end_headers()
@@ -120,7 +129,8 @@ class FakeIdp:
                     self._json(200, {"access_token": token, "token_type": "Bearer", "expires_in": idp.client_token_lifetime})
                     return
                 grant = idp.codes.pop(form.get("code"), None)
-                if grant is None or form.get("grant_type") != "authorization_code" or form.get("client_id") != CLIENT_ID:
+                if grant is None or form.get("grant_type") != "authorization_code" or form.get("client_id") != CLIENT_ID \
+                        or form.get("client_secret") != CLIENT_SECRET:
                     self._json(400, {"error": "invalid_grant"})
                     return
                 digest = hashlib.sha256(form.get("code_verifier", "").encode()).digest()
@@ -130,5 +140,6 @@ class FakeIdp:
                     return
                 user = grant["user"]
                 self._json(200, {"access_token": idp.access_token(user), "token_type": "Bearer", "expires_in": 3600,
-                                 "id_token": idp.sign({"sub": user["sub"], "aud": CLIENT_ID, "nonce": grant["nonce"], "preferred_username": user["sub"]})})
+                                 "id_token": idp.sign({"sub": user["sub"], "aud": CLIENT_ID, "nonce": grant["nonce"], "preferred_username": user["sub"],
+                                                       "auth_time": grant["auth_time"]})})
         return Handler

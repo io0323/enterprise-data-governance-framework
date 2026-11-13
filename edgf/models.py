@@ -1013,6 +1013,39 @@ class IdempotencyRecord(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
+class UiSession(Base):
+    """UI のログインのセッション (BFF。Phase 17)。
+
+    ID と CSRF のトークンはハッシュだけを持つ。IdP のトークン (アクセス、リフレッシュ、ID) は保存しない。
+    ログイン時に検証した Principal の写しを持つので、IdP 側のロールの変更は次のログインから反映される。
+    """
+    __tablename__ = "ui_sessions"
+    id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    subject: Mapped[str] = mapped_column(String(200), index=True)
+    roles: Mapped[list] = mapped_column(JSON, default=list)
+    clearance: Mapped[str] = mapped_column(String(20))
+    domains: Mapped[list] = mapped_column(JSON, default=list)
+    name: Mapped[str] = mapped_column(String(200), default="")  # 画面の表示名 (ID トークンの preferred_username など)
+    auth_time: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)  # ログインからの最大時間
+
+
+class UiLoginState(Base):
+    """ログインの途中の state / nonce / code_verifier (10 分で失効)。Cookie には参照の値だけを入れ、DB にはそのハッシュを持つ。"""
+    __tablename__ = "ui_login_states"
+    ref_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[str] = mapped_column(String(100))
+    nonce: Mapped[str] = mapped_column(String(100))
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    return_to: Mapped[str] = mapped_column(String(500), default="")
+    max_age: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 class AuditEvent(Base):
     """§13 Evidence: append-only, hash-chained"""
     __tablename__ = "audit_events"

@@ -83,6 +83,16 @@ class Settings:
     ui_oidc_client_id: str = field(default_factory=lambda: os.getenv("EDGF_UI_OIDC_CLIENT_ID", ""))
     ui_oidc_scopes: tuple[str, ...] = field(default_factory=lambda: _env_list("EDGF_UI_OIDC_SCOPES", "openid,profile"))
     ui_oidc_audience: str = field(default_factory=lambda: os.getenv("EDGF_UI_OIDC_AUDIENCE", ""))
+    # Phase 17 BFF: UI は機密クライアント。秘密はこの環境変数からだけ読む (production では UI を有効にするなら必須)
+    ui_client_secret: str = field(default_factory=lambda: os.getenv("EDGF_UI_CLIENT_SECRET", ""))
+    # ディスカバリの取得先 (省略時は issuer の /.well-known/openid-configuration)。コンテナの中から IdP の名前が違う場合に使う
+    ui_oidc_discovery_url: str = field(default_factory=lambda: os.getenv("EDGF_UI_OIDC_DISCOVERY_URL", ""))
+    # ブラウザから見える UI の origin (例: https://governance.example.com)。省略時は要求の URL から決める
+    ui_public_url: str = field(default_factory=lambda: os.getenv("EDGF_UI_PUBLIC_URL", "").rstrip("/"))
+    session_idle_minutes: int = field(default_factory=lambda: int(os.getenv("EDGF_SESSION_IDLE_MINUTES", "30")))
+    session_max_hours: int = field(default_factory=lambda: int(os.getenv("EDGF_SESSION_MAX_HOURS", "8")))
+    # ✓ の付いた操作 (承認行為) を UI から行うときに、ログインからの経過を何分まで許すか
+    step_up_minutes: int = field(default_factory=lambda: int(os.getenv("EDGF_STEP_UP_MINUTES", "15")))
     # §12 Anonymization: anonymized と宣言するために必要な k-匿名性の下限 (PRV-003)
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)

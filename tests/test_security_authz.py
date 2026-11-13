@@ -37,9 +37,14 @@ def test_route_listing_is_complete():
     assert documented <= listed and len([r for r in routes if r.mutating]) >= 100
 
 
+# 権限表ではなく、セッションと CSRF で守るルート (Phase 17)。自分のセッションを終えるだけで、他の主体やデータに作用しない。
+# セッションと CSRF のトークンが無ければ拒否することは tests/test_ui_bff.py::test_logout_requires_csrf_and_invalidates で確かめる
+SESSION_ONLY_ROUTES = {"/ui/auth/logout"}
+
+
 def test_every_mutating_route_is_protected_by_permissions():
     missing = [f"{sorted(r.methods)} {r.path}" for r in api_routes(create_app())
-               if r.mutating and not reachable_actions(r.route.endpoint)]
+               if r.mutating and not reachable_actions(r.route.endpoint) and r.path not in SESSION_ONLY_ROUTES]
     assert missing == [], f"PERMISSIONS で保護されていないルート: {missing}"
 
 
@@ -59,7 +64,8 @@ def test_every_api_route_requires_authentication(client):
 def test_non_api_routes_are_only_read():
     """/api/v1 の外には更新系のルートを置かない (health、ready と UI の静的ファイルだけ)。"""
     outside = [r.path for r in api_routes(create_app()) if not r.path.startswith(API)]
-    assert outside and not [r.path for r in api_routes(create_app()) if not r.path.startswith(API) and r.mutating]
+    mutating = [r.path for r in api_routes(create_app()) if not r.path.startswith(API) and r.mutating]
+    assert outside and mutating == sorted(SESSION_ONLY_ROUTES)
 
 
 def test_detector_catches_an_unprotected_route():

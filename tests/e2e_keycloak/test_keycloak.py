@@ -26,13 +26,11 @@ def _login(browser, username):
     page = context.new_page()
     page.goto(f"{BASE}/ui/")
     page.wait_for_selector("#login")
-    with context.expect_page() as popup_info:
-        page.click("#login")
-    popup = popup_info.value
-    popup.wait_for_selector("#username")
-    popup.fill("#username", username)
-    popup.fill("#password", PASSWORD)
-    popup.click("#kc-login")
+    page.click("#login")  # Keycloak のログインの画面に移動する (BFF。ポップアップは使わない)
+    page.wait_for_selector("#username")
+    page.fill("#username", username)
+    page.fill("#password", PASSWORD)
+    page.click("#kc-login")
     page.wait_for_selector(".site-nav", timeout=20000)
     return context, page, requests
 
@@ -46,9 +44,10 @@ def test_login_and_roles(browser, username, jobs_allowed):
         page.wait_for_selector("#catalog-results")
         page.evaluate("() => { window.location.hash = '#/jobs'; }")
         page.wait_for_selector("text=outbox_deliver" if jobs_allowed else ".notice-denied")
+        # 閲覧では自オリジンへ GET 以外を送らない。ブラウザは IdP のトークンエンドポイントと通信しない (交換は BFF が行う)
         non_get = [r.url for r in requests if r.method not in ("GET", "HEAD", "OPTIONS")]
-        same_origin = [u for u in non_get if u.startswith(BASE)]
-        assert same_origin == [] and all(u.endswith("/protocol/openid-connect/token") or "/login-actions/" in u for u in non_get)
+        assert [u for u in non_get if u.startswith(BASE)] == [] and all("/login-actions/" in u for u in non_get)
+        assert page.evaluate("() => document.cookie") == ""
     finally:
         context.close()
 
@@ -57,6 +56,10 @@ def test_logout_returns_to_login(browser):
     context, page, _ = _login(browser, "dg-consumer")
     try:
         page.click("text=ログアウト")
+        # id_token_hint を持たないので、Keycloak はログアウトの確認の画面を出す
+        page.wait_for_selector("#kc-logout, #login", timeout=20000)
+        if page.locator("#kc-logout").count():
+            page.click("#kc-logout")
         page.wait_for_selector("#login", timeout=20000)
         assert page.locator(".site-nav").count() == 0
     finally:
