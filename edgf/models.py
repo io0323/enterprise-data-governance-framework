@@ -1193,3 +1193,27 @@ class QualityAnomaly(Base):
     fingerprint: Mapped[str] = mapped_column(String(300), unique=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ClassificationSuggestion(Base):
+    """§3 / §12 分類の提案 (Phase 19)。根拠はメタデータだけ (辞書規則、Lineage の DIRECT の経路、Glossary)。
+
+    status: pending (提案) / proposed (承認の案件にした) / accepted (確定) / rejected (却下) / superseded (根拠が変わった) / cancelled。
+    却下された提案は、根拠のハッシュ (evidence_hash) が変わらない限り作り直さない。
+    """
+    __tablename__ = "classification_suggestions"
+    __table_args__ = (Index("ix_classification_suggestions_target", "asset_id", "column", "evidence_hash"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    column: Mapped[str] = mapped_column(String(200))
+    proposal: Mapped[dict] = mapped_column(JSON, default=dict)  # pii / pii_category / sensitivity / cde (保護を強める項目だけ)
+    current: Mapped[dict] = mapped_column(JSON, default=dict)   # 提案の時点の値
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float)
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    approval_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decision_reason: Mapped[str] = mapped_column(Text, default="")

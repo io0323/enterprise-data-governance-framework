@@ -1477,3 +1477,8 @@ class AutonomyResumeIn(MeshInput):
 
 class RemediationUndoIn(MeshInput):
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class SuggestionDecisionIn(MeshInput):
+    accept: bool
+    reason: str = Field(default="", max_length=1000)

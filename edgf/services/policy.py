@@ -21,7 +21,7 @@ from edgf.config import settings
 from edgf.db import SessionLocal
 from edgf.enums import BundleStatus
 from edgf.models import DataAsset, PolicyBundle, PolicyException, QualityRule, utcnow, term_asset
-from edgf.services import autonomy_catalog, lineage_trust, maturity_criteria
+from edgf.services import autonomy_catalog, classification_rules, lineage_trust, maturity_criteria
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
@@ -76,7 +76,7 @@ def read_disk_files(policy_dir: Path | None = None) -> dict[str, str]:
     return {str(f.relative_to(base)): f.read_text(encoding="utf-8")
             for f in [*sorted(base.glob("*.yaml")), *sorted((base / "domains").glob("*.yaml")),
                       *sorted((base / "lineage").glob("trusted_producers.yaml")), *sorted((base / "maturity").glob("criteria.yaml")),
-                      *sorted((base / "remediation").glob("playbooks.yaml"))]}
+                      *sorted((base / "remediation").glob("playbooks.yaml")), *sorted((base / "classification").glob("rules.yaml"))]}
 
 
 def parse_files(files: Mapping[str, str]) -> list[Policy]:
@@ -100,6 +100,12 @@ def parse_files(files: Mapping[str, str]) -> list[Policy]:
             try:
                 autonomy_catalog.parse(files[name])
             except autonomy_catalog.PlaybookInvalid as e:
+                raise PolicyLoadError(str(e)) from e
+            continue
+        if name == classification_rules.RULES_FILE:  # Policy ではない。分類の提案の辞書規則 (Phase 19)
+            try:
+                classification_rules.parse(files[name])
+            except classification_rules.RulesInvalid as e:
                 raise PolicyLoadError(str(e)) from e
             continue
         try:

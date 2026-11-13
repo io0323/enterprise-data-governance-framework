@@ -20,6 +20,7 @@ APPROVER_RULES: dict[str, Rule] = {
     "asset_owner": rule(relations=("owner",), approval=True, description="対象資産の Owner"),
     "committee": rule(roles=(COMMITTEE,), approval=True, description="Committee"),
     "domain_owner": rule(domain_roles=(OWNER,), approval=True, description="対象ドメインの Owner"),
+    "asset_owner_or_steward": rule(relations=("owner", "steward"), approval=True, description="対象資産の Owner または Steward"),
 }
 authz.validate_permissions(APPROVER_RULES)
 
@@ -131,3 +132,9 @@ AUTONOMY = "edgf.services.autonomy"
 register(ApprovalType(
     "owner_assignment", "Owner の割当の提案 (§4。自動化の主体が作る区分 B の提案。Committee が判断する。docs/adr/0001)",
     steps=(Step("committee", "committee"),), on_approved=f"{AUTONOMY}:on_owner_assignment_approved"))
+CLASSIFICATION = "edgf.services.classification"
+register(ApprovalType(
+    "classification_suggestion", "分類の提案の確定 (§3 / §12。自動化の主体が作る区分 B の提案。対象資産の Owner / Steward が判断する)",
+    steps=(Step("owner_or_steward", "asset_owner_or_steward"),), on_approved=f"{CLASSIFICATION}:on_approved",
+    on_rejected=f"{CLASSIFICATION}:on_rejected", on_cancelled=f"{CLASSIFICATION}:on_cancelled",
+    decision_path="/api/v1/autonomy/suggestions/{target_id}/decision"))

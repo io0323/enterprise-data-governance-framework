@@ -274,6 +274,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `autonomy.resume` | 自動の是正の再開 (全体、または自動停止したプレイブック) | ロール: committee | ✓ |
 | `autonomy.stop` | 自動の是正の全体の停止 (安全側の操作なので、すぐに効く) | ロール: admin, committee |  |
 | `cdm.import` | 外部の CDM 定義の版の取り込み (作成・編集の機能は持たない) | ロール: admin, committee | ✓ |
+| `classification.suggestion.decide` | 分類の提案の確定と却下 (対象資産の Owner / Steward) | 対象の owner / steward | ✓ |
 | `discovery.apply_breaking` | 破壊的なスキーマの変化を確認して Catalog に反映 | 対象の owner / steward | ✓ |
 | `discovery.push` | 資産一覧のスナップショットの送信 (ソースのドメイン) | ロール: admin<br>ドメイン内ロール: custodian |  |
 | `discovery.read` | 検出された資産と保留のスキーマの変化の参照 | ロール: admin, committee<br>ドメイン内ロール: owner, steward |  |

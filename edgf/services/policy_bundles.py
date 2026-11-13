@@ -28,7 +28,7 @@ from edgf.services.policy import Policy, PolicyLoadError
 log = logging.getLogger("edgf.policy")
 B = BundleStatus
 BOOTSTRAP_ACTOR = "system:bootstrap"
-_PATH = re.compile(r"^(?:[A-Za-z0-9._-]+\.yaml|domains/[A-Za-z0-9._-]+\.yaml|lineage/trusted_producers\.yaml|maturity/criteria\.yaml|remediation/playbooks\.yaml)$")
+_PATH = re.compile(r"^(?:[A-Za-z0-9._-]+\.yaml|domains/[A-Za-z0-9._-]+\.yaml|lineage/trusted_producers\.yaml|maturity/criteria\.yaml|remediation/playbooks\.yaml|classification/rules\.yaml)$")
 MAX_BUNDLE_BYTES = 2_000_000
 
 
@@ -100,14 +100,14 @@ def validate_files(files: Mapping[str, str]) -> list[Policy]:
         raise PolicyBundleInvalid(f"Bundle が大きすぎます (上限 {MAX_BUNDLE_BYTES} バイト)")
     for path, text in files.items():
         if not _PATH.match(path):
-            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml、domains/<ドメイン>.yaml、lineage/trusted_producers.yaml、maturity/criteria.yaml、remediation/playbooks.yaml)")
+            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml、domains/<ドメイン>.yaml、lineage/trusted_producers.yaml、maturity/criteria.yaml、remediation/playbooks.yaml、classification/rules.yaml)")
         try:
             doc = yaml.safe_load(text) or {}
         except yaml.YAMLError as e:
             raise PolicyBundleInvalid(f"{path}: YAML を解釈できません") from e
         if not isinstance(doc, dict):
             raise PolicyBundleInvalid(f"{path}: オブジェクトで指定してください")
-        if path.startswith(("lineage/", "maturity/", "remediation/")):
+        if path.startswith(("lineage/", "maturity/", "remediation/", "classification/")):
             continue  # 信頼できる生成元の宣言、成熟度の基準、自動の是正のプレイブック。中身は parse_files で検証する。変更は Global の扱い (Committee の承認)
         if path.startswith("domains/"):
             # ファイルの置き場所と宣言を一致させ、Domain の変更に見せて Global を変えられないようにする
@@ -138,7 +138,7 @@ def apply_changes(db: Session, changes: Mapping[str, str | None]) -> tuple[dict[
     files = dict(active.files)
     for path, text in changes.items():
         if not _PATH.match(path):
-            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml、domains/<ドメイン>.yaml、lineage/trusted_producers.yaml、maturity/criteria.yaml、remediation/playbooks.yaml)")
+            raise PolicyBundleInvalid(f"パスが不正です: {path} (*.yaml、domains/<ドメイン>.yaml、lineage/trusted_producers.yaml、maturity/criteria.yaml、remediation/playbooks.yaml、classification/rules.yaml)")
         if text is None:
             files.pop(path, None)
         else:

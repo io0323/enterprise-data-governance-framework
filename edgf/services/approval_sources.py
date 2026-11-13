@@ -81,6 +81,9 @@ class EngineSource:
                 if req.type == "maturity_assessment":  # 判定はレベルと手動の基準の判断を入力する専用の API (§20)
                     from edgf.services import maturity
                     title, ops = maturity.inbox_operations(db, req)
+                elif req.type == "classification_suggestion":  # 分類の提案の確定と却下は専用の API (Phase 19)
+                    from edgf.services import classification
+                    title, ops = classification.inbox_operations(db, req)
                 yield InboxItem(self.kind, req.id, title, f"{ops[0]['method']} {ops[0]['path']}",
                                 asset_id=req.asset_id, requested_by=req.requested_by, due_at=req.due_at, created_at=req.created_at,
                                 operations=ops)

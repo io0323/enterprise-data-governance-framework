@@ -1,0 +1,65 @@
+# §3 Data Classification / §12 PII: 分類の提案の辞書規則 (Phase 19。docs/adr/0001-autonomous-remediation-scope.md)
+#
+# カラム名と説明文 (と、資産に紐付いた Glossary の用語) に対して照合する。データの値は見ない。
+# 英語の語はカラム名を語 (snake_case / camelCase / 記号で区切る) に分けて照合する。日本語の語は部分一致で照合する。
+# 提案は保護を強める方向 (pii を立てる、sensitivity を上げる、cde を立てる) だけ。確定は対象資産の Owner / Steward が行う。
+rules:
+  - id: CLS-EMAIL
+    description: メールアドレス
+    patterns: [email, e mail, mail address, email address, メールアドレス, メアド, 電子メール]
+    suggest: {pii: true, pii_category: contact, sensitivity: confidential}
+    confidence: 0.9
+
+  - id: CLS-PHONE
+    description: 電話番号
+    patterns: [phone, telephone, phone number, tel no, mobile phone, mobile number, 電話番号, 携帯番号, 連絡先電話]
+    suggest: {pii: true, pii_category: contact, sensitivity: confidential}
+    confidence: 0.85
+
+  - id: CLS-ADDRESS
+    description: 住所・郵便番号
+    patterns: [address, street, postal code, zip code, zipcode, postcode, 住所, 郵便番号, 所在地]
+    suggest: {pii: true, pii_category: location, sensitivity: confidential}
+    confidence: 0.8
+
+  - id: CLS-NAME
+    description: 個人の氏名
+    patterns: [full name, first name, last name, given name, family name, 氏名, 姓名, 名前, フリガナ, カナ氏名]
+    suggest: {pii: true, pii_category: identifier, sensitivity: confidential}
+    confidence: 0.75
+
+  - id: CLS-BIRTH
+    description: 生年月日
+    patterns: [birth date, birthdate, date of birth, dob, birthday, 生年月日, 誕生日]
+    suggest: {pii: true, pii_category: identifier, sensitivity: confidential}
+    confidence: 0.85
+
+  - id: CLS-NATIONAL-ID
+    description: 公的な識別番号 (マイナンバー・旅券・運転免許など)
+    patterns: [ssn, social security, national id, passport, driver license, drivers license, マイナンバー, 個人番号, 旅券番号, 運転免許]
+    suggest: {pii: true, pii_category: identifier, sensitivity: restricted}
+    confidence: 0.95
+
+  - id: CLS-FINANCIAL
+    description: 口座・カード番号
+    patterns: [credit card, card number, iban, bank account, account number, 口座番号, クレジットカード, カード番号]
+    suggest: {pii: true, pii_category: financial, sensitivity: restricted}
+    confidence: 0.9
+
+  - id: CLS-HEALTH
+    description: 健康・医療の情報
+    patterns: [diagnosis, medical, health, disease, blood type, 診断, 病名, 既往歴, 健康診断, 血液型]
+    suggest: {pii: true, pii_category: health, sensitivity: restricted}
+    confidence: 0.85
+
+  - id: CLS-LOCATION
+    description: 位置情報
+    patterns: [latitude, longitude, geo location, geolocation, gps, 緯度, 経度, 位置情報]
+    suggest: {pii: true, pii_category: location, sensitivity: confidential}
+    confidence: 0.7
+
+  - id: CLS-REVENUE-CDE
+    description: 売上・請求の金額 (経営指標の重要データの候補)
+    patterns: [revenue, invoice amount, billing amount, 売上金額, 請求金額, 売上高]
+    suggest: {cde: true}
+    confidence: 0.6

@@ -14,10 +14,10 @@ from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal
 from edgf.errors import ProblemError
-from edgf.models import DataAsset, QualityAnomaly, RemediationRun
+from edgf.models import ApprovalRequest, ClassificationSuggestion, DataAsset, QualityAnomaly, RemediationRun
 from edgf.pagination import Page, page_params, paginate
-from edgf.schemas import AutonomyResumeIn, AutonomyStopIn, RemediationUndoIn
-from edgf.services import autonomy, quality_anomaly
+from edgf.schemas import AutonomyResumeIn, AutonomyStopIn, RemediationUndoIn, SuggestionDecisionIn
+from edgf.services import approvals, autonomy, classification, quality_anomaly
 
 router = APIRouter(prefix="/autonomy", tags=["autonomy"])
 
@@ -141,3 +141,48 @@ def anomaly_check(asset_id: str, db: Session = Depends(get_session), principal: 
     if asset is None:
         raise ProblemError(404, "資産が見つかりません", type_="not-found")
     return quality_anomaly.assess(db, asset)
+
+
+# ---------------------------------------------------------------- 分類の提案 (§3 / §12)
+def _suggestion_view(db: Session, row: ClassificationSuggestion) -> dict:
+    return classification.view(row, db.get(DataAsset, row.asset_id), db.get(ApprovalRequest, row.approval_id) if row.approval_id else None)
+
+
+@router.get("/suggestions")
+def list_suggestions(request: Request, response: Response, asset_id: str | None = None, status: str | None = None,
+                     page: Page = Depends(page_params()), db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """分類の提案 (確度の高い順)。根拠 (一致した規則、Lineage の経路、Glossary の用語) と確度を含む。"""
+    stmt = scoped(db, principal, select(ClassificationSuggestion), ClassificationSuggestion.asset_id)
+    for column, value in ((ClassificationSuggestion.asset_id, asset_id), (ClassificationSuggestion.status, status)):
+        if value is not None:
+            stmt = stmt.where(column == value)
+    stmt = stmt.order_by(ClassificationSuggestion.created_at.desc(), ClassificationSuggestion.confidence.desc(), ClassificationSuggestion.id)
+    return [_suggestion_view(db, row) for row in paginate(db, stmt, page, request, response)]
+
+
+@router.get("/suggestions/{suggestion_id}")
+def get_suggestion(suggestion_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    row = classification.get(db, suggestion_id)
+    if row is None:
+        raise ProblemError(404, "分類の提案が見つかりません", type_="not-found")
+    require_visible(db, principal, row.asset_id, "分類の提案", row.id)
+    return _suggestion_view(db, row)
+
+
+@router.post("/suggestions/{suggestion_id}/decision")
+def decide_suggestion(suggestion_id: str, body: SuggestionDecisionIn, db: Session = Depends(get_session),
+                      principal: Principal = Depends(get_principal)):
+    """確定 (accept) と却下。対象資産の Owner / Steward の承認行為 (✓。UI ではステップアップ)。却下には理由が必要。"""
+    row = classification.get(db, suggestion_id, lock=True)
+    if row is None:
+        raise ProblemError(404, "分類の提案が見つかりません", type_="not-found")
+    asset = db.get(DataAsset, row.asset_id)
+    authz.require_read(db, principal, asset)
+    authz.require(db, principal, "classification.suggestion.decide", asset=asset, entity_type="classification_suggestion", entity_id=row.id)
+    if not body.accept and not body.reason.strip():
+        raise ProblemError(422, "却下には理由が必要です", type_="validation-error")
+    try:
+        classification.decide(db, principal, row, accept=body.accept, reason=body.reason)
+    except approvals.ApprovalConflict as e:
+        raise ProblemError(409, str(e), type_="autonomy-conflict") from e
+    return _suggestion_view(db, row)
