@@ -270,6 +270,11 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `jobs.run` | ジョブの手動実行 (通常は外部の cron や CronJob から実行する) | ロール: admin |  |
 | `lineage.column_write` | カラム単位のリネージの登録・取込 (columnLineage facet) | ロール: admin, custodian, owner, steward |  |
 | `lineage.write` | リネージの登録・取込 | ロール: admin, custodian, owner, steward |  |
+| `maturity.assessment.create` | 成熟度の評価の起票、自動の判定、取り消し (定期の評価はジョブが起票する) | ロール: admin, committee |  |
+| `maturity.decide` | 成熟度の判定 (対象ドメインの Owner と Steward は Committee でも加われない) | ロール: committee | ✓ |
+| `maturity.read` | 成熟度の評価と全社の成熟度の参照 | 認証済みの全員 |  |
+| `maturity.reference.set` | 参照ドメイン (先行ドメイン) の指定と解除 | ロール: committee | ✓ |
+| `maturity.self_assess` | 成熟度の自己評価 (対象ドメインの Owner) | ドメイン内ロール: owner |  |
 | `mdm.compose` | Golden Record の生成と内容ハッシュの検証 | ドメイン内ロール: steward<br>対象の custodian |  |
 | `mdm.match` | ソースレコードのマッチング | ドメイン内ロール: steward<br>対象の custodian |  |
 | `mdm.read` | MDM のメタデータの参照 (ABAC で絞り込む。値は返さない) | 認証済みの全員 |  |

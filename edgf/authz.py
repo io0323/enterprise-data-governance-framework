@@ -185,6 +185,13 @@ PERMISSIONS: Mapping[str, Rule] = {
     "review.decide": rule(relations=("owner",), approval=True, description="棚卸と証明の判断 (対象資産の Owner)"),
     "review.read": rule(roles=(ADMIN, COMMITTEE), description="キャンペーンと全項目の参照"),
     "policy.review": rule(roles=(COMMITTEE,), approval=True, description="Policy の年次見直しの記録"),
+    # ドメイン別の成熟度の評価 (§20。Phase 18)
+    "maturity.assessment.create": rule(roles=(COMMITTEE, ADMIN), description="成熟度の評価の起票、自動の判定、取り消し (定期の評価はジョブが起票する)"),
+    "maturity.self_assess": rule(domain_roles=(OWNER,), description="成熟度の自己評価 (対象ドメインの Owner)"),
+    "maturity.decide": rule(roles=(COMMITTEE,), approval=True,
+                            description="成熟度の判定 (対象ドメインの Owner と Steward は Committee でも加われない)"),
+    "maturity.reference.set": rule(roles=(COMMITTEE,), approval=True, description="参照ドメイン (先行ドメイン) の指定と解除"),
+    "maturity.read": rule(authenticated=True, description="成熟度の評価と全社の成熟度の参照"),
     # ジョブ (§16 / §19 Observability)
     "jobs.run": rule(roles=(ADMIN,), description="ジョブの手動実行 (通常は外部の cron や CronJob から実行する)"),
     "jobs.read": rule(roles=(ADMIN, COMMITTEE), description="ジョブの実行状況の参照"),

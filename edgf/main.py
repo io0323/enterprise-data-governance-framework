@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from edgf import __version__
-from edgf.api import ai, approvals, audit, catalog, discovery, usage, glossary, issues, jobs, kpi, lineage, mdm, mesh, ops, policy, privacy, quality, refdata, reviews, webhooks
+from edgf.api import ai, approvals, audit, catalog, discovery, maturity, usage, glossary, issues, jobs, kpi, lineage, mdm, mesh, ops, policy, privacy, quality, refdata, reviews, webhooks
 from edgf.auth import build_authenticator
 from edgf.config import Settings, settings
 from edgf.deps import get_principal
@@ -63,7 +63,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestContextMiddleware)  # 後に追加したものが外側になる (413 にも request_id を付ける)
     for r in (catalog.router, glossary.router, quality.router, issues.router,
               lineage.router, policy.router, audit.router, kpi.router, privacy.router, mdm.router, refdata.router, ai.router, mesh.router, approvals.router, webhooks.router, reviews.router, jobs.router,
-              discovery.router, usage.router):
+              discovery.router, usage.router, maturity.router):
         # /api/v1 はすべて認証必須 (認可は各エンドポイントで edgf.authz が判定)
         app.include_router(r, prefix="/api/v1", responses=PROBLEM_RESPONSES, dependencies=[Depends(get_principal)])
     app.include_router(ops.router)

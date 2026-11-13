@@ -1418,3 +1418,12 @@ class UsageRecordIn(BaseModel):
 class UsagePushIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     records: list[UsageRecordIn] = Field(min_length=1, max_length=10_000)
+
+
+# ---------------------------------------------------------------- §20 ドメイン別の成熟度の評価 (Phase 18)
+class MaturityCreateIn(MeshInput):
+    domain: str = Field(min_length=1, max_length=100)
+
+
+class MaturityCancelIn(MeshInput):
+    reason: str = Field(min_length=1, max_length=1000)

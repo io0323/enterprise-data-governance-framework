@@ -1013,6 +1013,51 @@ class IdempotencyRecord(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
+class MaturityAssessment(Base):
+    """§20 ドメイン別の成熟度の評価 (Phase 18)。draft → auto_evaluated → self_assessed → decided (または cancelled)。
+
+    自動の判定の結果 (使ったスナップショットの ID と値)、自己評価 (証拠は https の URI と説明だけ)、
+    Committee の判定 (目安、上限、判定したレベル、手動の基準ごとの判断、理由) を残す。判定が済んだ記録は変更できない。
+    """
+    __tablename__ = "maturity_assessments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    domain: Mapped[str] = mapped_column(String(100), index=True)
+    cycle: Mapped[str] = mapped_column(String(20))  # 評価の回 (起票した年)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    criteria: Mapped[dict] = mapped_column(JSON, default=dict)  # 判定に使った基準の写し (後の変更の影響を受けない)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    auto_results: Mapped[list] = mapped_column(JSON, default=list)
+    indicative_level: Mapped[int | None] = mapped_column(Integer)
+    previous_level: Mapped[int | None] = mapped_column(Integer)
+    level_cap: Mapped[int | None] = mapped_column(Integer)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    self_assessment: Mapped[list] = mapped_column(JSON, default=list)
+    self_assessed_by: Mapped[str | None] = mapped_column(String(200))
+    self_assessed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    approval_id: Mapped[str | None] = mapped_column(String(36))
+    decided_level: Mapped[int | None] = mapped_column(Integer)
+    decision: Mapped[dict] = mapped_column(JSON, default=dict)
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    cancel_reason: Mapped[str] = mapped_column(Text, default="")
+
+
+class MaturityReference(Base):
+    """§20 先行ドメイン (参照ドメイン)。Committee が判定済みのドメインを指定する。"""
+    __tablename__ = "maturity_references"
+    domain: Mapped[str] = mapped_column(String(100), primary_key=True)
+    level: Mapped[int] = mapped_column(Integer)  # 指定した時点の判定のレベル
+    assessment_id: Mapped[str] = mapped_column(String(36))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    designated_by: Mapped[str] = mapped_column(String(200))
+    designated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class UiSession(Base):
     """UI のログインのセッション (BFF。Phase 17)。
 
