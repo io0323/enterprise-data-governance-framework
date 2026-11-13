@@ -21,7 +21,7 @@ from edgf.config import settings
 from edgf.db import SessionLocal
 from edgf.enums import BundleStatus
 from edgf.models import DataAsset, PolicyBundle, PolicyException, QualityRule, utcnow, term_asset
-from edgf.services import lineage_trust
+from edgf.services import lineage_trust, maturity_criteria
 
 CHECK_TYPES = {"required_fields", "field_in", "required_controls", "min_quality_rules",
                "min_quality_score", "has_upstream_lineage", "glossary_linked",
@@ -75,7 +75,7 @@ def read_disk_files(policy_dir: Path | None = None) -> dict[str, str]:
     base = Path(policy_dir or settings.policy_dir)
     return {str(f.relative_to(base)): f.read_text(encoding="utf-8")
             for f in [*sorted(base.glob("*.yaml")), *sorted((base / "domains").glob("*.yaml")),
-                      *sorted((base / "lineage").glob("trusted_producers.yaml"))]}
+                      *sorted((base / "lineage").glob("trusted_producers.yaml")), *sorted((base / "maturity").glob("criteria.yaml"))]}
 
 
 def parse_files(files: Mapping[str, str]) -> list[Policy]:
@@ -87,6 +87,12 @@ def parse_files(files: Mapping[str, str]) -> list[Policy]:
             try:
                 lineage_trust.parse(files[name])
             except lineage_trust.TrustFileInvalid as e:
+                raise PolicyLoadError(str(e)) from e
+            continue
+        if name == maturity_criteria.CRITERIA_FILE:  # Policy ではない。成熟度の評価の基準 (Phase 18)
+            try:
+                maturity_criteria.parse(files[name])
+            except maturity_criteria.CriteriaInvalid as e:
                 raise PolicyLoadError(str(e)) from e
             continue
         try:
