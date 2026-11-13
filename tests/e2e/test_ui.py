@@ -208,8 +208,11 @@ def test_products_issues_inbox(session_of):
     s.go("#/products", "text=orders")
     assert "MESH-001" in s.page.inner_text("main")
     s.go("#/issues", "text=E2E の Issue")
-    s.go("#/inbox", "code")
-    assert "POST /api/v1/approvals/" in s.page.inner_text("main") and "読み取り専用" in s.page.inner_text("main")
+    # Phase 17: 承認箱は読み取り専用ではなくなった。案件ごとに既存の API の操作 (承認、却下) を出す
+    s.go("#/inbox", ".op-buttons")
+    group = s.page.locator(".op-buttons").first
+    assert group.locator("button[data-op=approve]").count() == 1 and group.locator("button[data-op=reject]").count() == 1
+    assert "承認" in s.page.inner_text("main") and "読み取り専用" not in s.page.inner_text("main")
 
 
 def test_pagination_uses_headers(session_of, api_as):

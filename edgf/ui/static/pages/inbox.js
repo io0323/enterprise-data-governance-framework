@@ -22,7 +22,7 @@ export function inboxPage(_segments, params) {
         {title: t("inbox.status"), render: (i) => i.status},
         {title: t("inbox.requested_by"), render: (i) => i.requested_by || "-"},
         {title: t("inbox.due"), render: (i) => formatDate(i.due_at)},
-        {title: t("inbox.operations"), render: (i) => operationButtons(i.operations || [], (operation) => open(i, operation), i.title)},
+        {title: t("inbox.operations"), render: (i) => operationButtons(i.operations || [], (operation) => open(i, operation), i.title, i.id)},
       ], result.data), pager(result, (next) => navigate(["inbox"], {offset: next})));
     }));
   }

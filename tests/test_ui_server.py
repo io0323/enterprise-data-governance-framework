@@ -70,13 +70,15 @@ def test_security_headers_on_every_response(ui_client, path):
     assert "camera=()" in h["permissions-policy"] and "geolocation=()" in h["permissions-policy"]
     csp = {d.strip().split(" ")[0]: d.strip().split(" ")[1:] for d in h["content-security-policy"].split(";")}
     assert csp["default-src"] == ["'self'"] and csp["script-src"] == ["'self'"] and csp["frame-ancestors"] == ["'none'"]
-    assert csp["connect-src"] == ["'self'", "https://idp.example.test"]  # 自身と IdP の issuer だけ
+    assert csp["connect-src"] == ["'self'"]  # ブラウザは IdP と直接通信しない (BFF。Phase 17)
+    assert csp["form-action"] == ["'self'", "https://idp.example.test"]  # 自身と IdP の issuer だけ
     assert "unsafe-inline" not in h["content-security-policy"] and "unsafe-eval" not in h["content-security-policy"]
 
 
 def test_csp_without_issuer_allows_self_only():
     bare = dataclasses.replace(settings, ui_oidc_issuer="", oidc_issuer="")
-    assert "connect-src 'self';" in routes.content_security_policy(bare)
+    csp = routes.content_security_policy(bare)
+    assert "connect-src 'self';" in csp and "form-action 'self';" in csp
 
 
 def test_api_responses_do_not_get_ui_csp(ui_client):

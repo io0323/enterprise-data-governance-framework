@@ -35,7 +35,7 @@ export function issuesPage(_segments, params) {
         {title: t("issues.assignee"), render: (i) => i.assignee || "-"},
         {title: t("issues.level"), render: (i) => i.escalation_level},
         {title: t("issues.due"), render: (i) => formatDate(i.due_at)},
-        {title: t("inbox.operations"), render: (i) => operationButtons([issueOperation(i)], (operation) => open(i, operation), i.title)},
+        {title: t("inbox.operations"), render: (i) => operationButtons([issueOperation(i)], (operation) => open(i, operation), i.title, i.id)},
       ], result.data), pager(result, (next) => navigate(["issues"], {...params, offset: next})));
     }));
   }

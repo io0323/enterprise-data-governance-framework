@@ -34,7 +34,7 @@ export function reviewsPage(_segments, params) {
         {title: t("reviews.asset"), render: (i) => h("a", {href: hrefFor(["assets", i.asset_id])}, i.asset_id)},
         {title: t("reviews.status"), render: (i) => i.status},
         {title: t("reviews.decided"), render: (i) => formatDate(i.decided_at)},
-        {title: t("inbox.operations"), render: (i) => operationButtons(reviewOperations(i), (operation) => open(i, operation), i.target_id)},
+        {title: t("inbox.operations"), render: (i) => operationButtons(reviewOperations(i), (operation) => open(i, operation), i.target_id, i.id)},
       ], result.data), pager(result, (next) => navigate(["reviews"], {offset: next})));
     }));
   }

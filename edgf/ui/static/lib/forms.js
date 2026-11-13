@@ -62,9 +62,9 @@ export function decisionForm({title, operation, onDone, onCancel}) {
   return form;
 }
 
-/** 操作のボタンの並び。押すと onSelect(operation)。 */
-export function operationButtons(operations, onSelect, label = "") {
-  return h("div", {class: "op-buttons", role: "group", "aria-label": label || null},
+/** 操作のボタンの並び。押すと onSelect(operation)。itemId は案件の識別 (data-item) */
+export function operationButtons(operations, onSelect, label = "", itemId = null) {
+  return h("div", {class: "op-buttons", role: "group", "aria-label": label || null, "data-item": itemId},
     operations.map((operation) => h("button", {type: "button", class: operation.id === "reject" ? "danger" : null, "data-op": operation.id,
       onClick: () => onSelect(operation)}, t(`form.op.${operation.id}`))));
 }
