@@ -17,7 +17,7 @@
 | §2 アーキテクチャ | Governance Control Plane と Data Plane の分離、`edgf/api`、`edgf/services` | 全テスト | 実装済み | |
 | §3 Data Classification | `edgf/enums.py`、`edgf/api/catalog.py`、PII の推定 | `test_catalog.py`、`test_privacy_inventory.py` | 実装済み | |
 | §4 Data Ownership | `edgf/authz.py`(権限表)、Owner / Steward / Custodian の割当、Unknown Owner の検出。Phase 17: UI のログインの BFF(`edgf/ui/bff.py`、機密クライアント)とセッション(`edgf/services/ui_sessions.py`)、Cookie の経路の CSRF の確認、承認行為(✓)のステップアップ。UI の操作も API と同じ権限表と職務分離で判定する | `test_authz.py`、`test_auth.py`、`test_security_authz.py`、`test_ui_bff.py`、`test_ui_csrf.py` | 実装済み | IdP 側のロールの変更は次のログインから反映 |
-| §5 Data Quality | `edgf/services/quality.py`、`edgf/api/quality.py` | `test_quality.py` | 実装済み | 検査の実行はレコードを受け取る方式。Data Plane での常時監視は対象外 |
+| §5 Data Quality | `edgf/services/quality.py`、`edgf/api/quality.py`。Phase 19: 実行の履歴からの異常の検知と劣化の予測(`quality_anomaly.py`) | `test_quality.py`、`test_quality_anomaly.py` | 実装済み | 検査の実行はレコードを受け取る方式。Data Plane での常時監視は対象外。異常の検知は季節性を扱わない |
 | §6 Metadata | Catalog、Glossary、`edgf/api/glossary.py` | `test_catalog.py` | 実装済み | 自動収集は Data Plane の連携先が行う |
 | §7 Data Catalog | 検索、Certification ゲート、UI(`edgf/ui`)、Discovery(資産一覧の差分、未登録の検出、スキーマの反映) | `test_catalog.py`、`test_ui_api.py`、`tests/e2e`、`test_discovery.py`、`tests/data_plane_e2e` | 実装済み | 自動スキャンは Data Plane が行い、Control Plane は差分と照合を担う |
 | §8 MDM | `edgf/services/mdm.py`、`mdm_rules.py`、`refdata.py` | `test_mdm_*.py`、`test_refdata.py` | 一部 | MDM Hub の参照実装は無い(値は Data Plane) |
@@ -32,7 +32,7 @@
 | §17 KPI / Metrics | `edgf/services/kpi.py`、`kpi_snapshots`、ダッシュボード、利用実績(`edgf/services/usage.py`) | `test_ai_kpi.py`、`test_mesh_kpi.py`、`test_ui_api.py`、`test_usage.py` | 実装済み | Usage は Data Plane の集計値の申告で、Control Plane は検証しない。利用者の数だけで、Certified データの利用者の内訳は取らない |
 | §18 Reference Architecture | 製品に依存しない構成、PostgreSQL / SQLite、OIDC、OTLP | `test_db_compat.py`、`tests/e2e_keycloak` | 一部 | 参照アーキテクチャのうち Data Plane 側の製品の組み合わせは対象外 |
 | §19 非機能要件 | 下の表を参照 | `test_perf_*.py`、`test_security_*.py`、`test_audit_anchor.py`、`scripts/ops/restore_drill.py` | 一部 | 下の表を参照 |
-| §20 Maturity Model | KPI による目安(Level 3 は Catalog 登録率)。Phase 18: ドメイン別の成熟度の評価(基準の宣言 `policies/maturity/criteria.yaml`、KPI のスナップショットによる自動の判定、自己評価、承認エンジンでの Committee の判定、`min(目安, 前回 + 1)` の上限で飛び級を防ぐ、全社の分布と最小値、参照ドメイン、年次の起票のジョブ) | `test_ui_api.py`、`test_discovery.py`、`test_maturity_criteria.py`、`test_maturity_evaluate.py`、`test_maturity_decide.py`、`test_maturity_enterprise.py`、`tests/e2e/test_ui_maturity.py` | 一部 | 下の「成熟度」を参照(Level 5 の指標は Phase 19) |
+| §20 Maturity Model | KPI による目安(Level 3 は Catalog 登録率)。Phase 18: ドメイン別の成熟度の評価(基準の宣言 `policies/maturity/criteria.yaml`、KPI のスナップショットによる自動の判定、自己評価、承認エンジンでの Committee の判定、`min(目安, 前回 + 1)` の上限で飛び級を防ぐ、全社の分布と最小値、参照ドメイン、年次の起票のジョブ)。Phase 19: 自律統治の基盤([ADR 0001](adr/0001-autonomous-remediation-scope.md)。自動化の主体 `system:autonomy`、プレイブックと操作のカタログ、dry_run、取り消し、停止スイッチと自動停止、品質の異常の検知と劣化の予測、メタデータからの分類の提案、統治の自己改善、Level 5 の KPI と基準) | `test_ui_api.py`、`test_discovery.py`、`test_maturity_criteria.py`、`test_maturity_evaluate.py`、`test_maturity_decide.py`、`test_maturity_enterprise.py`、`tests/e2e/test_ui_maturity.py`、`test_autonomy_catalog.py`、`test_autonomy_run.py`、`test_quality_anomaly.py`、`test_classification.py`、`test_governance_review.py`、`tests/e2e/test_ui_autonomy.py` | 一部 | 下の「成熟度」を参照(Level 5 は機能の基盤まで。到達は組織の運用と 90 日の継続の実績による) |
 | §21 ベストプラクティス | §4、§5、§6、§7、§16 の実装で支える | 各章のテスト | 文書 | 年次サイクルの運営は組織の運用 |
 | §22 アンチパターン | Unknown Owner の検出、Certification、Lineage の必須化などで対策 | 各章のテスト | 文書 | |
 
@@ -72,6 +72,7 @@
 | 2 Managed | CDE 定義、Quality KPI | CDE、品質検査、KPI | 重要ドメインでの運用 |
 | 3 Standardized | Catalog 登録率 95%、自動監査 | 自動監査のジョブ、全社標準の Policy、Catalog 登録率(Data Plane の資産一覧から) | 全ドメインへの適用、全ソースからの資産一覧の送信 |
 | 4 Federated Governance | 連邦体制・Certification 流通の定着 | ドメイン別の成熟度の評価(Phase 18): Certified 率と遵守率の 90 日継続、手動の項目の自己評価と Committee の判断、飛び級の防止、参照ドメイン | ドメインの統治の体制と運用の実績、年次の評価の運用 |
+| 5 Autonomous Governance | 品質検知・分類・是正の大部分の自動化、統治の自己改善 | 自律統治の基盤(Phase 19): ADR による範囲の承認、区分 A の自動の是正と取り消し、区分 B の提案、品質の異常の検知と予測、分類の提案、Policy の見直しの起票、Level 5 の KPI と基準 | ADR の承認、dry_run から active への切り替えの判断、自動是正率と受け入れ率の 90 日の継続、範囲の見直しの運用 |
 
 ### Level 4 Federated Governance に残ること
 
@@ -83,11 +84,13 @@
 
 ### Level 5 Autonomous Governance に残ること
 
-**実装していません。** 現在の自動化は検出と起票、期限の処理までで、是正は人が判断します。
+**機能の基盤は Phase 19 で実装しました。** 自動で是正してよい範囲は [ADR 0001](adr/0001-autonomous-remediation-scope.md) にまとめ、プレイブックを含む Policy Bundle の承認をもって Committee の承認とします。承認の前(active の Bundle にプレイブックが無い間)は、自動の是正は動きません。
 
-- 自動是正(検出から修正までの自動化)と、その率の計測
-- 予測的品質管理(異常の予測、品質の傾向の分析)
-- 分類の自動化(現在の PII はスキーマの宣言に基づく。データの中身は Control Plane に来ない)
-- 統治の自己改善(KPI からの Policy の見直しの提案)
+| 設計書の要素 | Phase 19 の対応 | 残ること |
+|---|---|---|
+| 是正の自動化と、その率の計測 | 区分 A の操作(Issue の起票、Certification の取り消し、解消した品質の Issue のクローズ、期限切れなどの閲覧の承認の取り消し)の自動の実行と取り消し。`autonomy_remediation_rate`、`autonomy_false_positive_rate` | 区分 B を区分 A に移す判断(ADR の改訂)。dry_run から active への切り替えの判断と、率の 90 日の継続 |
+| 予測的な品質管理 | 実行の履歴からの外れ値・劣化の予測(Theil–Sen)・件数の急減・更新の遅れの検知。`anomaly_detected_count` | 季節性や外部の要因を扱う手法(履歴と Data Plane の情報が必要) |
+| 分類の自動化 | メタデータ(辞書規則、Lineage の DIRECT の経路、Glossary)からの提案と、Owner / Steward による確定。`classification_suggestion_acceptance_rate` | 辞書規則の整備。データの値に基づく検出は Data Plane の責務(Control Plane は値を持たない) |
+| 統治の自己改善 | 常に合格・一度も適用されない・例外が多い・不合格が続く Policy の見直しの Issue の起票 | 見直しの判断と Policy の変更(Committee) |
 
-自動是正は「Business Ownership(§4)」との整合の設計が先に必要です。Custodian に承認権限を与えない原則のもとで、何を自動で是正してよいかの判断を Committee が決める必要があります。
+§4 Business Ownership との整合: 自動化の主体は承認(✓)の権限を一切持たず(ロード時の検証と承認エンジンの拒否)、業務の判断を含む変更は提案までで止めます。自動の操作は監査に残り、Owner と Committee が取り消せます。

@@ -3,6 +3,21 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 19)
+
+**自律統治の基盤を追加しました(§20 Level 5 / §4)。** 自動で是正してよい範囲は [ADR 0001](docs/adr/0001-autonomous-remediation-scope.md) で定め、実装はこれに従います。既存の API の項目は変えていません。`EDGF_AUTONOMY_ENABLED` は既定で false で、**false なら dry_run も含めて何も実行しません**。
+
+| 対象 | 変更 |
+|---|---|
+| 新規 API | `/autonomy/status`、`/autonomy/catalog`、`/autonomy/runs`(取り消し `POST /autonomy/runs/{id}/undo`)、`POST /autonomy/stop`、`POST /autonomy/resume`、`/autonomy/anomalies`、`/autonomy/assets/{id}/anomaly-check`、`/autonomy/suggestions`(確定と却下 `POST /autonomy/suggestions/{id}/decision`) |
+| Policy Bundle | `policies/remediation/playbooks.yaml`(プレイブック。初期はすべて dry_run)、`policies/classification/rules.yaml`(分類の提案の辞書規則)、`policies/maturity/criteria.yaml` の Level 5 の自動の指標。**既存の環境では、`POST /policies/reload` の提案 → Committee の承認 → 公開を経て有効になります。** 承認されるまでプレイブックは無く、自動の是正は動きません。Level 5 の基準も Phase 18 のまま(計測できない指標)です |
+| 承認エンジン | 種別 `owner_assignment`(Committee)と `classification_suggestion`(対象資産の Owner / Steward。専用の API で判断し、共通の API は 409 で案内します)。承認エンジンは自動化の主体(`system:autonomy`)の判断を 403 で拒否します |
+| KPI | `autonomy_remediation_rate`、`autonomy_false_positive_rate`、`anomaly_detected_count`、`classification_suggestion_acceptance_rate` |
+| ジョブ | `autonomy_run`(1 時間ごと。`EDGF_AUTONOMY_ENABLED=true` のときだけ動作) |
+| UI | 自律統治の画面(`#/autonomy`)。停止、再開(✓)、取り消し、分類の提案の確定と却下(✓) |
+| 権限 | `autonomy.read`、`autonomy.stop`、`autonomy.resume` ✓、`remediation.undo`、`classification.suggestion.decide` ✓。自動化の主体だけの `autonomy.remediate` と `autonomy.propose` |
+| マイグレーション | 0037(`autonomy_control`、`autonomy_playbook_states`、`remediation_runs`)、0038(`quality_anomalies`)、0039(`classification_suggestions`) |
+
 ## 変更点(Phase 18)
 
 **ドメイン別の成熟度の評価を追加しました(§20)。** 既存の API の項目は変えていません。`GET /kpi` の `maturity` は、KPI だけによる**目安**として残します。正式な評価は Committee の判定で、`/maturity/...` で扱います。
@@ -485,7 +500,7 @@ stateDiagram-v2
 - 上限を超える判定は 422(`maturity-invalid`。応答に `level_cap`、`indicative_level`、`previous_level`)。初回の上限は 1 です
 - レベルを下げる判定(前回より低い)はできますが、理由が必須です
 - 判定するレベルまでの手動の基準は、すべて Committee が「認める」必要があります
-- Level 5 の自動の指標は Phase 19 まで計測できないので、目安は Level 5 になりません
+- Level 5 の自動の指標は、Phase 19 の KPI(自律統治の指標)で計測します。既存の環境では基準の更新を承認するまで、Phase 18 の基準(計測できない指標)のままで、目安は Level 5 になりません
 
 ### 基準の定義
 
@@ -515,7 +530,7 @@ levels:
 | 2 Managed | Owner の割当率 ≥ 80%、Quality Score を計測している | CDE の定義、重要データの Catalog・品質測定・Ownership の運用 |
 | 3 Standardized | Catalog 登録率 ≥ 95%、遵守率 ≥ 90% | 全社標準(分類・プロセス・KPI)の適用、自動監査に基づく是正 |
 | 4 Federated Governance | Certified 率 ≥ 50% と遵守率 ≥ 98% を、それぞれ 90 日継続 | ドメインの自律的な統治、Data Product の運用の定着 |
-| 5 Autonomous Governance | 自動是正率 ≥ 50%、予測的品質管理の対象 ≥ 50% を 90 日継続(Phase 19 まで計測できない) | KPI に基づく統治の見直し |
+| 5 Autonomous Governance | 自動で解消した Issue の割合 ≥ 30%、誤って実行した率 ≤ 5%、品質の異常の検知が動いている、分類の提案の受け入れ率 ≥ 70% を、それぞれ 90 日継続(Phase 19) | KPI に基づく統治の見直し、自動是正の範囲(ADR)の承認と運用 |
 
 ### 職務分離
 
@@ -532,6 +547,135 @@ Committee は、判定済みのドメインを**参照ドメイン**(先行ド�
 ### 定期の評価
 
 ジョブ `maturity_cycle`(1 日ごと)が、`EDGF_MATURITY_CYCLE_DAYS`(既定 365 日)に 1 回、全ドメインの評価を `system:jobs` の主体で起票し、自動の判定まで進めます。周期の中で既に起票した(取り消しを含む)ドメインと、判定の済んでいない評価があるドメインには起票しません。起票から `EDGF_MATURITY_DUE_DAYS`(既定 60 日)を過ぎても判定が済まなければ、ドメインの Owner に Issue(`kind: maturity`)を起票し、以後は Issue の SLA でエスカレーションします。
+
+## 自律統治(§20 Level 5)
+
+承認された範囲だけを自動で是正し、検知・分類・統治の見直しを提案として人に回します。範囲の定義と判断の理由は [ADR 0001](docs/adr/0001-autonomous-remediation-scope.md) にあり、**ADR と実装が食い違ったら ADR を正とします**。
+
+### 構成
+
+```mermaid
+flowchart LR
+    subgraph Bundle["Policy Bundle (Committee の承認と公開)"]
+        PB["remediation/playbooks.yaml<br>契機・条件・操作・区分・モード・上限"]
+        RU["classification/rules.yaml<br>辞書規則"]
+    end
+    JOB["ジョブ autonomy_run<br>(EDGF_AUTONOMY_ENABLED)"] --> SW{"停止スイッチ"}
+    SW -- 停止中 --> X["何もしない"]
+    SW -- 動作中 --> AN["分析 (状態は変えない)<br>品質の異常の検知 / 分類の提案"]
+    AN --> RUN["プレイブックごとに<br>対象を集めて件数の上限まで"]
+    PB --> RUN
+    RU --> AN
+    RUN -- dry_run --> REC["RemediationRun<br>(行うはずだった操作)"]
+    RUN -- "active / 区分 A" --> A["実行 (system:autonomy:&lt;id&gt;)<br>監査・取り消し可"]
+    RUN -- "active / 区分 B" --> B["提案だけ<br>承認エンジン / Issue"]
+    B --> H["人が判断 (Owner / Steward / Committee ✓)"]
+    A --> U["取り消し (Owner / Committee)"]
+    U --> FP["誤って実行した率が閾値を超えたら<br>プレイブックを自動停止"]
+```
+
+### 3 つの区分と操作のカタログ
+
+操作はコード(`edgf/services/autonomy_catalog.py`)のカタログからだけ選べます。区分 C の操作はカタログに存在させず、プレイブックに書くとロード時にエラーになります。宣言した区分がカタログと違う場合(区分 A の操作を B と偽るなど)もエラーです。
+
+| 区分 | 操作 | 契機(検出のジョブ / イベント) | 取り消し |
+|---|---|---|---|
+| A 自動で実行 | `issue.open` 品質の異常の Issue の起票 | `quality_anomaly` / `quality.anomaly_detected` | できない(起票だけ) |
+| | `certification.revert_to_draft` Certified の資産を draft に戻す | 同上(`certified_only`) | できる(Certified に戻す条件を満たすこと) |
+| | `issue.close_recovered` 品質ルールが N 回続けて閾値を上回った Issue を閉じる | `quality_recovered` | できる |
+| | `access.revoke_stale` 期限切れ・対象の資産が削除された閲覧の承認の取り消し | `stale_access` | できる |
+| B 提案だけ | `propose.classification` 分類の変更の提案(確定は対象資産の Owner / Steward ✓) | `classification_scan` / `classification.suggested` | - |
+| | `propose.owner_assignment` Owner の割当の提案(確定は Committee ✓) | `unowned_assets` | - |
+| | `propose.policy_review` Policy の見直しの Issue(Policy は変えない) | `policy_review_scan` | - |
+| C 禁止 | 資産の削除、Legal Hold の解除、閲覧の承認の付与、承認の判断、Policy の公開・変更、Certification の付与、分類の確定・引き下げ、Owner の変更の確定、データ本体への操作 | - | - |
+
+```yaml
+playbooks:
+  - id: PB-ACCESS-STALE
+    trigger: {detector: stale_access}       # または {event: quality.anomaly_detected}
+    condition: {expired: true, asset_gone: true}
+    action: access.revoke_stale             # カタログの操作
+    category: A                             # カタログと一致させる
+    mode: dry_run                           # dry_run / active
+    max_actions_per_run: 100                # 1 回の実行あたりの上限
+    undo_days: 30                           # 取り消せる日数 (取り消せる操作は必須)
+    false_positive_threshold: 0.1           # 誤って実行した率の閾値 (取り消せる操作は必須)
+```
+
+実行の主体は `system:autonomy:<プレイブックの id>` で、監査の actor もこの主体です。この主体のロール `autonomy` は IdP や開発用のヘッダからは得られず、承認(✓)の権限に含めるとロード時にエラーになります(Custodian の検証と同じ仕組み)。
+
+### 安全装置
+
+| 装置 | 内容 |
+|---|---|
+| 有効・無効 | `EDGF_AUTONOMY_ENABLED`(既定 false)。false なら dry_run も含めて何も実行せず、記録も作りません |
+| 全体の停止 | `POST /autonomy/stop`(Committee、admin)。安全側の操作なのですぐに効きます(✓ は不要)。実行中のジョブも、次の操作の前に止まります |
+| 再開 | `POST /autonomy/resume`(Committee の承認行為 ✓。UI ではステップアップ)。`playbook` を指定すると、自動停止したプレイブックだけを再開します |
+| 件数の上限 | プレイブックごとの 1 回の上限。超えた分は実行せず、Committee に Issue(`autonomy-limit:<id>`)を起票します。残りは次回以降に扱います |
+| 自動停止 | 直近 30 日(再開の後なら再開から)の誤って実行した率(取り消された件数 ÷ 区分 A の active の実行の件数)が閾値を超えたら、そのプレイブックを止め、Committee に Issue を起票します。取り消しの直後にも判定します |
+| 取り消し | 区分 A の取り消せる操作は、`undo_days` のあいだ、対象資産の Owner と Committee が `POST /autonomy/runs/{id}/undo`(理由が必須)で操作の前の状態に戻せます。期限を過ぎると 409、操作の後に人が状態を変えていれば 409 です。取り消しも監査(`autonomy.undo`)に残ります |
+| 繰り返しの防止 | 同じプレイブックは、同じ対象に同じモードで 2 回操作しません(取り消された対象も繰り返しません) |
+
+### dry_run から active への切り替え
+
+1. 初期のプレイブックはすべて `mode: dry_run` です。`EDGF_AUTONOMY_ENABLED=true` にすると、状態を変えずに「行うはずだった操作」と前後の状態を `GET /autonomy/runs?mode=dry_run`(UI の `#/autonomy`)に記録します
+2. dry_run の記録(件数、対象、予想される前後の状態)を Committee が確認します
+3. `policies/remediation/playbooks.yaml` の該当するプレイブックの `mode` を `active` にし、`POST /policies/reload`(または `POST /policies/bundles`)で提案します
+4. Committee が承認し(✓)、公開します。公開した時点から active で動きます。dry_run で記録した対象も、active で改めて操作します
+5. 止めるときは `POST /autonomy/stop`、戻すときは `mode: dry_run` に戻す Policy 変更を同じ手順で行います
+
+### 品質の異常の検知(§5 Continuous Data Quality)
+
+品質検査の実行履歴(スコア、ディメンション別のスコア、件数)と実行の間隔だけを使い、標準ライブラリ(`statistics`)だけで計算します。データの値は使いません。
+
+| 種類 | 手法 | 既定値 |
+|---|---|---|
+| 外れ値(`outlier`) | 直近 N 回の中央値と MAD による頑健な z 値 `0.6745 × (x − 中央値) / MAD`。スコアとディメンション別のスコアは下がる側だけを見ます。MAD が 0 のときは中央値から外れたら異常 | N = `EDGF_ANOMALY_WINDOW`(20)、閾値 `EDGF_ANOMALY_Z_THRESHOLD`(3.5) |
+| 劣化の予測(`trend`) | Theil–Sen 法(2 点の傾きの中央値)でスコアの傾きを推定し、閾値を割り込む時期を予測します。まだ割り込んでおらず、予測が期間内なら警告 | 閾値 `EDGF_ANOMALY_SCORE_THRESHOLD`(0.9)、期間 `EDGF_ANOMALY_HORIZON_DAYS`(30 日) |
+| 件数の急減(`volume_drop`) | 最新の件数が履歴の中央値の (1 − 割合) を下回る | `EDGF_ANOMALY_VOLUME_DROP`(0.5) |
+| 更新の遅れ(`freshness`) | 最後の実行からの経過が、実行の間隔の中央値の 2 倍を超え、かつ頑健な z 値が閾値以上 | - |
+
+- **履歴が 10 回未満の資産は評価しません**(`GET /autonomy/assets/{id}/anomaly-check` は `evaluated: false`、`reason: insufficient_history` を返します)
+- 検知した異常は `quality_anomalies` に記録し、根拠(使った値、中央値、MAD、z 値、傾き、切片、予測の時期)を残します。同じ実行の同じ異常は 1 回だけ記録し、イベント `quality.anomaly_detected` を出します
+- **限界**: 季節性(曜日や月末の変動)、外部の要因、品質ルールの追加や変更によるスコアの段差は扱いません。更新の間隔は品質検査の実行の間隔で代用します(資産の更新の通知の履歴は使いません)
+
+### 分類の提案(§3 / §12)
+
+根拠は**メタデータだけ**です。ML のモデルや外部の LLM は使わず、データの値も見ません(品質検査の値は Control Plane に保存されません)。
+
+| 根拠 | 内容 | 確度 |
+|---|---|---|
+| 辞書規則(`rule`) | `policies/classification/rules.yaml` の日本語・英語の語を、カラム名と説明文に照合します。英語は語の並び(snake_case / camelCase を分ける)で、日本語は部分一致で照合します | 規則の確度(説明文だけで一致したら × 0.8) |
+| Lineage(`lineage`) | Phase 16 のカラム単位のリネージの DIRECT の経路で、上流のカラムが PII なら pii と pii_category を、上流の資産の機密度が高ければ sensitivity を提案します。マスキングを伴う経路は使いません | IDENTITY 0.85、それ以外 0.75 |
+| Glossary(`glossary`) | 資産に紐付いた用語の名前か同義語がカラム名に当たるとき、用語の名前・同義語・定義に辞書規則を当てます | 規則の確度 × 0.9 |
+
+- 提案(pii、pii_category、sensitivity、cde)は**保護を強める方向だけ**で、現在の値と違う項目だけを含みます。人が決めた pii_category は上書きしません。確度は根拠の確度の noisy-OR(上限 0.99)です
+- 確定は対象資産の Owner / Steward が `POST /autonomy/suggestions/{id}/decision`(✓。UI ではステップアップ。却下は理由が必須)で行い、**既存の更新の経路**(`PATCH /assets/{id}` と同じ `asset_update.apply`)を通します。Certification のリセット、`contains_pii` の再計算、AI 資産の継承、Contract とのずれの検出も同じく発火します
+- 却下した提案は、根拠の内容(ハッシュ `evidence_hash`)が変わらない限り二度と出しません。根拠が変われば新しい提案になり、未決の古い提案は `superseded` にします
+
+### 統治の自己改善
+
+プレイブック `propose.policy_review` が、次の条件の Policy について Committee に見直しの Issue(`kind: policy_review`)を起票します。**Policy そのものは変えません**(見直しは従来どおり Policy 変更の承認を経ます)。同じ Policy の同じ所見は 1 年に 1 回だけ起票します。
+
+| 所見 | 条件(既定) |
+|---|---|
+| `always_pass` | 直近 180 日のあいだ違反の Issue が無く、いまも適用先がすべて合格 |
+| `never_applied` | いま適用先が無く、違反の Issue も一度も無い |
+| `exception_heavy` | 直近 365 日の例外の申請が 5 件以上 |
+| `long_failing` | 未解決の違反の Issue が 90 日より前から残っている |
+
+`always_pass` と `never_applied` は、Policy Bundle の運用が 180 日に満たない環境では判定しません(導入直後の誤検出を避けるため)。
+
+### Level 5 の指標
+
+| KPI | 意味 |
+|---|---|
+| `autonomy_remediation_rate` | 自動で解消した Issue ÷ 全 Issue(active の `issue.close_recovered` で閉じて、取り消されていないもの) |
+| `autonomy_false_positive_rate` | 直近 30 日の区分 A の active の実行のうち、取り消された割合 |
+| `anomaly_detected_count` | 直近 30 日に検知した品質の異常の件数。検知が 30 日動いていなければ `null`(計測していない) |
+| `classification_suggestion_acceptance_rate` | 判断された分類の提案のうち、確定した割合 |
+
+dry_run の記録は数えません。`policies/maturity/criteria.yaml` の Level 5 の自動の指標は、これらで計測します(既存の環境では Policy 変更の承認と公開の後に有効)。
 
 ## Data Privacy(§12 / §10)
 
@@ -1243,6 +1387,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 | `kpi_snapshot` | 1 日 | KPI の日次のスナップショット(同じ日に 2 回実行しても 1 日分) |
 | `audit_anchor` | 1 時間 | 監査チェーンのアンカリング(`EDGF_ANCHOR_ENABLED=true` のときだけ動作) |
 | `maturity_cycle` | 1 日 | ドメイン別の成熟度の評価の起票(`EDGF_MATURITY_CYCLE_DAYS` ごと)と、期限超過の Issue(Phase 18) |
+| `autonomy_run` | 1 時間 | 自律統治: 品質の異常の検知、分類の提案、プレイブックの実行(`EDGF_AUTONOMY_ENABLED=true` のときだけ動作。Phase 19) |
 | `ui_session_cleanup` | 1 時間 | 期限切れの UI のセッションとログインの途中の状態を削除する(Phase 17) |
 | `unused_assets` | 1 日 | `EDGF_UNUSED_DAYS`(既定 90 日)使われていない資産を、廃止の候補として Owner に Issue で知らせる(利用実績が届くまでは何もしない) |
 | `reachability_probe` | 1 時間 | Control Plane からの Output Port の到達の確認(`EDGF_PROBE_ENABLED=true` のときだけ動作) |
@@ -1377,7 +1522,12 @@ UI のオリジンは `EDGF_UI_PUBLIC_URL` で指定します(省略時は要求
 | | CDM の再検証の対応(Issue の更新) | `PATCH /issues/{id}` | `issue.update` |
 | | モデルの是正の判断(retrain / unlearn / accept) | `POST /ai/remediations/{id}/decision` | `ai.remediation.decide` ✓ |
 | | 成熟度の判定(レベル、手動の基準ごとの判断、理由) | `POST /maturity/assessments/{id}/decision` | `maturity.decide` ✓ |
+| | 分類の提案の確定・却下 | `POST /autonomy/suggestions/{id}/decision` | `classification.suggestion.decide` ✓ |
 | 成熟度(`#/maturity/{domain}`) | 自己評価(ドメインの Owner) | `PUT /maturity/assessments/{id}/self-assessment` | `maturity.self_assess` |
+| 自律統治(`#/autonomy`) | 全体の停止 | `POST /autonomy/stop` | `autonomy.stop` |
+| | 再開(全体、自動停止したプレイブック) | `POST /autonomy/resume` | `autonomy.resume` ✓ |
+| | 区分 A の操作の取り消し | `POST /autonomy/runs/{id}/undo` | `remediation.undo` |
+| | 分類の提案の確定・却下 | `POST /autonomy/suggestions/{id}/decision` | `classification.suggestion.decide` ✓ |
 | 棚卸と証明(`#/reviews`) | 権限の継続・取り消し、Owner の証明・修正が必要 | `POST /reviews/items/{id}/decision` | `review.decide` ✓ |
 | Issue(`#/issues`) | 状態、担当者、コメントの更新 | `PATCH /issues/{id}` | `issue.update` |
 
@@ -1456,6 +1606,7 @@ UI は dev モードに対応しません(dev モードでは `/ui/auth/login` �
 | [Issue](docs/ui/issues.png) | `#/issues` | `/issues`、更新は `PATCH /issues/{id}` |
 | [承認箱](docs/ui/inbox.png) | `#/inbox` | `/approvals/inbox`。判断は案件ごとの `operations` の既存の API |
 | 棚卸と証明 | `#/reviews` | `/reviews/items`、判断は `POST /reviews/items/{id}/decision` |
+| 自律統治 | `#/autonomy` | `/autonomy/status`、`/autonomy/suggestions`、`/autonomy/runs`、`/autonomy/anomalies`。停止・再開・取り消し・確定と却下は `/autonomy/...` の POST |
 | [ジョブの状態](docs/ui/jobs.png) | `#/jobs` | `/ops/jobs` |
 
 ![KPI ダッシュボード](docs/ui/dashboard.png)
@@ -1602,7 +1753,15 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 
 ## 既知の制約と次フェーズ
 
-- **成熟度の評価(Phase 18)**: 組織の体制や運用の実績(手動の項目)は、自己評価と証拠の参照で記録するだけで、Control Plane は証拠の中身を確かめません(URI に接続しません)。自動の指標はドメイン別の KPI のスナップショットに基づくので、日次の `kpi_snapshot` が止まっていた期間は、Level 4 以上の継続の日数を満たせません。Level 5 の指標は Phase 19 まで計測できません。基準の変更は、変更の後に自動の判定をした評価から適用します(判定に使った基準は評価に写して残します)
+- **自律統治(Phase 19)**: 自動の是正は ADR 0001 の区分 A のカタログに限ります。区分 B は提案を作るだけで、自動是正率は区分 A(現在は品質の Issue の自動クローズ)の範囲でしか上がりません
+- 「対象の主体が存在しない権限」は、利用者の台帳(IdP や人事の情報)を Control Plane が持たないため、**対象の資産が削除された閲覧の承認**として判定します。退職者などの判定には、IdP との連携(外部の依存)が必要です
+- 誤って実行した率の判定に最小の件数はありません(安全側。1 件目の取り消しで閾値を超えることがあります)。区分 B の提案の却下は誤って実行した率に数えません
+- 品質の異常の検知は、季節性、外部の要因、品質ルールの変更によるスコアの段差を扱いません。更新の間隔は品質検査の実行の間隔で代用します。履歴が 10 回未満の資産は評価しません
+- 分類の提案は辞書規則の網羅性に依存し、英語の語の並びと日本語の部分一致だけです(表記の揺れ、略語、文脈は扱いません)。データの値を見ないので、カラム名と説明文に手がかりの無い PII は検出できません
+- イベントを契機にするプレイブックは、`outbox_events` を処理済みの時刻から読みます。Outbox の行を削除する運用(保持期間)を入れる場合は、契機のイベントが消える前に処理されるようにしてください
+- 自律統治の画面は最新の 50 件を表示します(ページングは API で行えます)
+
+- **成熟度の評価(Phase 18)**: 組織の体制や運用の実績(手動の項目)は、自己評価と証拠の参照で記録するだけで、Control Plane は証拠の中身を確かめません(URI に接続しません)。自動の指標はドメイン別の KPI のスナップショットに基づくので、日次の `kpi_snapshot` が止まっていた期間は、Level 4 以上の継続の日数を満たせません。Level 5 の指標は Phase 19 の KPI で計測します(既存の環境では基準の更新の承認の後)。基準の変更は、変更の後に自動の判定をした評価から適用します(判定に使った基準は評価に写して残します)
 - 成熟度の判定の定足数は 1 です(Committee の 1 人)。ドメインの Owner と Steward を除いた Committee の構成員がいないドメインは判定できません
 - dev モード(`X-Actor`)は開発・テスト専用の恒久的な機能です。本番では起動を拒否します
 - 閲覧の申請は承認エンジンの `access_request` で扱います。Owner が直接付与する API も残っています。SLA の営業日は土日だけを除きます(祝日は考慮しません)
