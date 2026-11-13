@@ -38,6 +38,8 @@ Phase 16 の LIN-002、PRV-006 と `policies/lineage/trusted_producers.yaml` も
 - LIN-002 と PRV-006 は評価されません。`/ready` の `checks.policy_drift` で、ディスクと active の版が異なることが分かります
 - 信頼できる生成元は「宣言なし」として扱います。消去、AI の版、PII の継承は従来どおりデータセット単位です(保守的な側)
 
+Phase 18 の成熟度の評価の基準(`policies/maturity/criteria.yaml`)も同じ手順です。承認されるまで基準は空で、評価の目安は 0、判定の上限も 0 になります。
+
 ### 信頼できる生成元を追加する(Phase 16)
 
 1. `policies/lineage/trusted_producers.yaml` に、job の名前空間、job(省略で名前空間のすべて)、イベントを送る主体(JWT の `sub`)、理由を書きます
