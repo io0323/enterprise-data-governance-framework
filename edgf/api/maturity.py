@@ -102,3 +102,16 @@ def unset_reference(domain: str, db: Session = Depends(get_session), principal: 
     authz.require(db, principal, "maturity.reference.set", entity_type="maturity_reference", entity_id=domain)
     maturity.unset_reference(db, principal.audit_actor, domain)
     return Response(status_code=204)
+
+
+@router.get("/enterprise")
+def get_enterprise(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """全社の成熟度 (正式な評価): ドメインごとの最新の判定レベルの分布と、全ドメインが到達しているレベル (最小値)。"""
+    authz.require(db, principal, "maturity.read", entity_type="maturity", entity_id="enterprise")
+    return maturity.enterprise(db)
+
+
+@router.get("/domains/{domain}")
+def get_domain(domain: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "maturity.read", entity_type="maturity", entity_id=domain)
+    return maturity.domain_view(db, domain)

@@ -339,3 +339,70 @@ def inbox_operations(db: Session, req: Any) -> tuple[str, tuple[dict[str, Any], 
     path = f"/api/v1/maturity/assessments/{row.id}/decision"
     return (f"成熟度の判定: {row.domain} (目安 {row.indicative_level}、上限 {cap})",
             (operation("decide", "POST", path, "maturity.decide", fields=fields),))
+
+
+# ---------------------------------------------------------------- 全社の成熟度とドメイン別の表示
+def enterprise(db: Session) -> dict[str, Any]:
+    """ドメインごとの最新の判定レベルの分布と、全ドメインが到達しているレベル (最小値)。評価されていないドメインは 0。"""
+    names = list(db.scalars(select(Domain.name).order_by(Domain.name)))
+    refs = {r.domain for r in db.scalars(select(MaturityReference))}
+    domains = []
+    for name in names:
+        found = latest_decided(db, name)
+        domains.append({"domain": name, "level": found.decided_level if found else 0, "evaluated": found is not None,
+                        "decided_at": found.decided_at if found else None, "assessment_id": found.id if found else None,
+                        "reference": name in refs})
+    distribution = {str(level): sum(1 for d in domains if d["level"] == level) for level in range(6)}
+    minimum = min((d["level"] for d in domains), default=0)
+    return {"domain_count": len(domains), "unevaluated_count": sum(1 for d in domains if not d["evaluated"]), "minimum_level": minimum,
+            "minimum_level_name": LEVEL_NAMES[minimum], "distribution": distribution, "domains": domains,
+            "note": "正式な評価 (Committee の判定) の集計です。GET /kpi の maturity は KPI だけによる目安です"}
+
+
+def domain_view(db: Session, domain: str) -> dict[str, Any]:
+    """ドメインの推移 (判定の履歴)、最新の評価、次のレベルに足りない基準、同じレベルを目指すときの参照ドメイン。"""
+    if db.get(Domain, domain) is None:
+        raise ProblemError(404, f"domain not found: {domain}", type_="not-found")
+    history = db.scalars(select(MaturityAssessment).where(MaturityAssessment.domain == domain)
+                         .order_by(MaturityAssessment.created_at.desc(), MaturityAssessment.id)).all()
+    current = latest_decided(db, domain)
+    level = current.decided_level if current else 0
+    latest = history[0] if history else None
+    target = min(level + 1, 5)
+    return {"domain": domain, "level": level, "level_name": LEVEL_NAMES[level], "evaluated": current is not None,
+            "indicative_level": latest.indicative_level if latest else None, "latest": view(latest) if latest else None,
+            "target_level": target if level < 5 else None, "next_level_gaps": gaps(latest, target) if latest and level < 5 else [],
+            "references": references(db, target_level=target, exclude=domain) if level < 5 else [],
+            "history": [{"id": h.id, "cycle": h.cycle, "status": h.status, "created_at": h.created_at, "indicative_level": h.indicative_level,
+                         "level_cap": h.level_cap, "decided_level": h.decided_level, "decided_at": h.decided_at} for h in history]}
+
+
+# ---------------------------------------------------------------- 定期の評価 (ジョブ maturity_cycle)
+def run_cycle(db: Session, actor: str, *, now: datetime | None = None) -> dict[str, Any]:
+    """EDGF_MATURITY_CYCLE_DAYS ごとに全ドメインの評価を起票して自動の判定をする。期限を過ぎた評価は Issue で知らせる。
+
+    冪等: 周期の中で既に起票した (取り消しを含む) ドメインと、判定の済んでいない評価があるドメインには起票しない。
+    """
+    from edgf.enums import EscalationLevel
+    from edgf.services import issues
+
+    now = now or utcnow()
+    since = now - timedelta(days=settings.maturity_cycle_days)
+    created = []
+    for name in db.scalars(select(Domain.name).order_by(Domain.name)):
+        recent = db.scalar(select(MaturityAssessment.id).where(MaturityAssessment.domain == name, MaturityAssessment.created_at > since).limit(1))
+        if recent is not None or open_assessment(db, name) is not None:
+            continue
+        row = create(db, actor, domain=name, created_by=actor, now=now)
+        evaluate(db, actor, row, today=now.date())
+        created.append(name)
+    overdue = 0
+    for row in db.scalars(select(MaturityAssessment).where(MaturityAssessment.status.in_(OPEN_STATES), MaturityAssessment.due_at < now)
+                          .order_by(MaturityAssessment.due_at)):
+        owner = db.get(Domain, row.domain).owner if db.get(Domain, row.domain) else None
+        issue = issues.open_issue(db, actor, asset=None, kind="maturity", severity="medium", source_ref=f"maturity:{row.id}",
+                                  level=EscalationLevel.OWNER, assignee=owner,
+                                  title=f"[MATURITY] {row.domain}: 成熟度の評価が期限 ({row.due_at:%Y-%m-%d}) を過ぎています",
+                                  description=f"状態: {row.status}。自己評価 (ドメインの Owner) と判定 (Committee) を進めてください (§20)。")
+        overdue += issue is not None
+    return {"created": created, "overdue_issues_opened": overdue}
