@@ -67,10 +67,12 @@ def test_user_identifiers_are_rejected(sales, field):
     assert r.status_code == 422 and "zzuser-1" not in r.text
 
 
-@pytest.mark.parametrize("bad", [rec("sales.orders", queries=-1), rec("sales.orders", users=5, queries=2), rec("sales.orders", days_ago=-1),
-                                 rec("sales.orders", days_ago=401), {**rec("sales.orders"), "extra": 1}])
-def test_invalid_records(sales, bad):
+# レコードは実行時に組み立てる。収集の時点で日付を決めると、UTC の 0 時をまたいだ実行で「明日」が「今日」になる
+@pytest.mark.parametrize("kw", [{"queries": -1}, {"users": 5, "queries": 2}, {"days_ago": -1}, {"days_ago": 401}, {"extra": 1}],
+                         ids=["negative_queries", "users_over_queries", "future_day", "too_old", "extra_field"])
+def test_invalid_records(sales, kw):
     client, _, _ = sales
+    bad = rec("sales.orders", **kw)
     assert client.post(PUSH, headers=DP, json={"records": [bad]}).status_code == 422
     assert client.post(PUSH, headers=DP, json={"records": []}).status_code == 422
 
