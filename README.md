@@ -268,6 +268,11 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `asset.register` | 資産の登録 | ロール: admin<br>ドメイン内ロール: owner, steward |  |
 | `asset.update` | 資産メタデータの更新・ライフサイクル遷移 (削除以外) | ロール: admin<br>ドメイン内ロール: owner, steward<br>対象の owner / steward |  |
 | `audit.read` | 監査ログの参照 | ロール: admin, committee |  |
+| `autonomy.propose` | 区分 B の提案の作成 (system:autonomy だけ) | ロール: autonomy |  |
+| `autonomy.read` | 自動の是正の実行の記録、dry_run の結果、品質の異常、分類の提案の参照 (ABAC で絞り込む) | ロール: admin, committee<br>ドメイン内ロール: owner, steward |  |
+| `autonomy.remediate` | 区分 A の操作の実行 (system:autonomy だけ) | ロール: autonomy |  |
+| `autonomy.resume` | 自動の是正の再開 (全体、または自動停止したプレイブック) | ロール: committee | ✓ |
+| `autonomy.stop` | 自動の是正の全体の停止 (安全側の操作なので、すぐに効く) | ロール: admin, committee |  |
 | `cdm.import` | 外部の CDM 定義の版の取り込み (作成・編集の機能は持たない) | ロール: admin, committee | ✓ |
 | `discovery.apply_breaking` | 破壊的なスキーマの変化を確認して Catalog に反映 | 対象の owner / steward | ✓ |
 | `discovery.push` | 資産一覧のスナップショットの送信 (ソースのドメイン) | ロール: admin<br>ドメイン内ロール: custodian |  |
@@ -331,6 +336,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 | `reachability.report` | Output Port の到達の報告 (ポートの資産の Custodian) | 対象の custodian |  |
 | `refdata.publish` | Reference Data の版の公開 | ロール: committee<br>対象の owner | ✓ |
 | `refdata.write` | Reference Data の下書きの作成 | ドメイン内ロール: owner, steward |  |
+| `remediation.undo` | 区分 A の自動の操作の取り消し (対象資産の Owner、Committee) | ロール: committee<br>対象の owner |  |
 | `review.decide` | 棚卸と証明の判断 (対象資産の Owner) | 対象の owner | ✓ |
 | `review.read` | キャンペーンと全項目の参照 | ロール: admin, committee |  |
 | `usage.push` | 利用実績の集計値の送信 (資産のドメイン) | ロール: admin<br>ドメイン内ロール: custodian |  |

@@ -203,6 +203,15 @@ PERMISSIONS: Mapping[str, Rule] = {
     "usage.push": rule(roles=(ADMIN,), domain_roles=(CUSTODIAN,), description="利用実績の集計値の送信 (資産のドメイン)"),
     "reachability.report": rule(relations=("custodian",), description="Output Port の到達の報告 (ポートの資産の Custodian)"),
     "probe.configure": rule(roles=(ADMIN,), description="Control Plane からの到達の確認の実行と設定の参照"),
+    # 自律統治 (§20 Level 5。Phase 19、docs/adr/0001)
+    "autonomy.read": rule(roles=(COMMITTEE, ADMIN), domain_roles=(OWNER, STEWARD),
+                          description="自動の是正の実行の記録、dry_run の結果、品質の異常、分類の提案の参照 (ABAC で絞り込む)"),
+    "autonomy.stop": rule(roles=(COMMITTEE, ADMIN), description="自動の是正の全体の停止 (安全側の操作なので、すぐに効く)"),
+    "autonomy.resume": rule(roles=(COMMITTEE,), approval=True, description="自動の是正の再開 (全体、または自動停止したプレイブック)"),
+    "remediation.undo": rule(roles=(COMMITTEE,), relations=("owner",), description="区分 A の自動の操作の取り消し (対象資産の Owner、Committee)"),
+    # 自動化の主体だけが持つ実行の権限。承認 (✓) は与えられない (validate_permissions で拒否する)
+    "autonomy.remediate": rule(roles=(AUTONOMY,), description="区分 A の操作の実行 (system:autonomy だけ)"),
+    "autonomy.propose": rule(roles=(AUTONOMY,), description="区分 B の提案の作成 (system:autonomy だけ)"),
     # Audit (§13, §19)
     "audit.read": rule(roles=(COMMITTEE, ADMIN), description="監査ログの参照"),
 }

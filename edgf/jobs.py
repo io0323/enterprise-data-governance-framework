@@ -114,6 +114,11 @@ def _ui_sessions(db: Session, actor: str) -> dict[str, Any]:
     return ui_sessions.cleanup(db)
 
 
+def _autonomy(db: Session, actor: str) -> dict[str, Any]:
+    from edgf.services import autonomy
+    return autonomy.run(db)  # 実行の主体は system:autonomy:<プレイブック> (docs/adr/0001)
+
+
 def _maturity(db: Session, actor: str) -> dict[str, Any]:
     from edgf.services import maturity
     return maturity.run_cycle(db, actor)
@@ -153,6 +158,8 @@ JOBS: dict[str, Job] = {j.name: j for j in (
     Job("kpi_snapshot", "KPI の日次のスナップショット (§17)", _kpi_snapshot, DAY),
     Job("audit_anchor", "監査チェーンのアンカリング (§13)", _audit_anchor, HOUR, lambda: settings.anchor_enabled),
     Job("maturity_cycle", "ドメイン別の成熟度の評価の定期の起票と、期限超過の Issue (§20)", _maturity, DAY),
+    Job("autonomy_run", "自律統治: 品質の異常の検知・分類の提案・プレイブックの実行 (§20 Level 5。EDGF_AUTONOMY_ENABLED のときだけ)", _autonomy, HOUR,
+        lambda: settings.autonomy_enabled),
     Job("ui_session_cleanup", "期限切れの UI のセッションとログインの途中の状態の削除 (Phase 17)", _ui_sessions, HOUR),
     Job("unused_assets", "利用の無い資産を廃止の候補として Owner に知らせる (§17 Usage)", _unused_assets, DAY),
     Job("reachability_probe", "Control Plane からの Output Port の到達の確認 (§15。EDGF_PROBE_ENABLED のときだけ)", _reachability_probe, HOUR,

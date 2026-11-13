@@ -96,6 +96,8 @@ class Settings:
     # §20 ドメイン別の成熟度の評価 (Phase 18): 評価の周期 (日) と、起票から判定までの期限 (日)
     maturity_cycle_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MATURITY_CYCLE_DAYS", "365")))
     maturity_due_days: int = field(default_factory=lambda: int(os.getenv("EDGF_MATURITY_DUE_DAYS", "60")))
+    # §20 Level 5 自律統治 (Phase 19。docs/adr/0001): false なら dry_run も含めて何も実行しない
+    autonomy_enabled: bool = field(default_factory=lambda: _env_bool("EDGF_AUTONOMY_ENABLED"))
     # §12 Anonymization: anonymized と宣言するために必要な k-匿名性の下限 (PRV-003)
     min_k_anonymity: int = field(default_factory=lambda: int(os.getenv("EDGF_MIN_K_ANONYMITY", "5")))
     # §8 Steward の裁定キューの対応期限 (日)

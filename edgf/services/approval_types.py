@@ -125,3 +125,9 @@ register(ApprovalType(
     "maturity_assessment", "ドメイン別の成熟度の判定 (§20。Committee が判定する。対象ドメインの Owner と Steward は加われない)",
     steps=(Step("committee", "committee"),), sla_managed_by_source=True, excludes=f"{MATURITY}:excluded_decider",
     on_cancelled=None, decision_path="/api/v1/maturity/assessments/{target_id}/decision"))
+
+
+AUTONOMY = "edgf.services.autonomy"
+register(ApprovalType(
+    "owner_assignment", "Owner の割当の提案 (§4。自動化の主体が作る区分 B の提案。Committee が判断する。docs/adr/0001)",
+    steps=(Step("committee", "committee"),), on_approved=f"{AUTONOMY}:on_owner_assignment_approved"))
