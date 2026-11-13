@@ -302,7 +302,7 @@ def inbox_operations(db: Session, req: ApprovalRequest) -> tuple[str, tuple[dict
     path = f"/api/v1/autonomy/suggestions/{row.id}/decision"
     changes = ", ".join(f"{k}={v}" for k, v in sorted(row.proposal.items()))
     return (f"分類の提案: {asset.qualified_name}.{row.column} ({changes}。確度 {row.confidence})",
-            (operation("accept", "POST", path, "classification.suggestion.decide", body={"accept": True}, fields=[field_("reason")]),
+            (operation("adopt", "POST", path, "classification.suggestion.decide", body={"accept": True}, fields=[field_("reason")]),
              operation("reject", "POST", path, "classification.suggestion.decide", body={"accept": False},
                        fields=[field_("reason", required=True)])))
 

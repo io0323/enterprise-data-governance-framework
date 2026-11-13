@@ -10,6 +10,7 @@ import {inboxPage} from "./inbox.js";
 import {reviewsPage} from "./reviews.js";
 import {maturityPage} from "./maturity.js";
 import {jobsPage} from "./jobs.js";
+import {autonomyPage} from "./autonomy.js";
 
 export const routes = {
   dashboard: dashboardPage,
@@ -23,6 +24,7 @@ export const routes = {
   reviews: reviewsPage,
   maturity: maturityPage,
   jobs: jobsPage,
+  autonomy: autonomyPage,
 };
 
 export const navigation = [
@@ -35,5 +37,6 @@ export const navigation = [
   {href: "#/issues", label: "nav.issues", keys: ["issues"]},
   {href: "#/inbox", label: "nav.inbox", keys: ["inbox"]},
   {href: "#/reviews", label: "nav.reviews", keys: ["reviews"]},
+  {href: "#/autonomy", label: "nav.autonomy", keys: ["autonomy"]},
   {href: "#/jobs", label: "nav.jobs", keys: ["jobs"]},
 ];

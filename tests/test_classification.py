@@ -293,7 +293,7 @@ def test_inbox_shows_dedicated_operations_with_step_up(client, autonomy_on):
     [item] = [i for i in items if i["id"] == s.approval_id]
     assert "sales.customers.customer_email" in item["title"]
     assert [(o["id"], o["path"], o["step_up"]) for o in item["operations"]] == [
-        ("accept", f"/api/v1/autonomy/suggestions/{s.id}/decision", True), ("reject", f"/api/v1/autonomy/suggestions/{s.id}/decision", True)]
+        ("adopt", f"/api/v1/autonomy/suggestions/{s.id}/decision", True), ("reject", f"/api/v1/autonomy/suggestions/{s.id}/decision", True)]
     assert client.get(f"{API}/approvals/inbox", headers=U("asset-custodian")).json() == []
 
 
