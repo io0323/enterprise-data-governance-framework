@@ -24,6 +24,9 @@ REQUEST_ID_HEADER = "X-Request-ID"
 _VALID_RID = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")  # ログインジェクション防止
 
 request_id_var: ContextVar[str | None] = ContextVar("edgf_request_id", default=None)
+# 要求ごとの経路の情報 (Phase 17)。同期の依存関係とエンドポイントは別のスレッドで動くので、値ではなく可変の入れ物を共有する。
+# edgf.deps.get_principal が UI のセッションの経路のときに {"channel": "ui", "session": <ハッシュの先頭>} を入れ、監査が payload に加える
+channel_var: ContextVar[dict | None] = ContextVar("edgf_channel", default=None)
 
 try:  # pragma: no cover - otel 導入時のみ
     from opentelemetry import trace as _otel_trace
@@ -99,6 +102,7 @@ class RequestContextMiddleware:
         rid = incoming if _VALID_RID.match(incoming) else uuid.uuid4().hex
         scope.setdefault("state", {})["request_id"] = rid
         token = request_id_var.set(rid)
+        channel_token = channel_var.set({})
         status = 500
         started = time.perf_counter()
 
@@ -121,6 +125,7 @@ class RequestContextMiddleware:
                 fields["actor"] = actor
             self.log.info("request completed", extra={"fields": fields})
             request_id_var.reset(token)
+            channel_var.reset(channel_token)
 
 
 def setup_tracing(app: Any, enabled: bool, service_name: str = "edgf") -> bool:

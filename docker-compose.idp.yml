@@ -35,5 +35,9 @@ services:
       EDGF_CLAIM_CLEARANCE: clearance
       EDGF_UI_OIDC_CLIENT_ID: edgf-ui
       EDGF_UI_OIDC_SCOPES: openid,profile
+      # Phase 17: UI は機密クライアント (BFF)。開発用の値で、本番では秘密の管理の仕組みから渡す
+      EDGF_UI_CLIENT_SECRET: edgf-ui-dev-only-secret
+      # コンテナの中からはサービス名でディスカバリを取得する (issuer はブラウザから見える URL のまま)
+      EDGF_UI_OIDC_DISCOVERY_URL: http://keycloak:8080/realms/edgf/.well-known/openid-configuration
     depends_on:
       keycloak: {condition: service_healthy}

@@ -3,6 +3,25 @@
 「Enterprise Data Governance Framework 設計書」の実装です。製品に依存しない(Cloud Agnostic)**Governance Control Plane** として、
 メタデータ・統制の状態・証跡だけを持ち、**データ本体は持ちません**(設計書 §18.2)。
 
+## 変更点(Phase 17)
+
+**UI のログインを BFF に置き換え、UI から書き込めるようにしました。** Phase 13 のブラウザ側の OIDC(Authorization Code + PKCE)は廃止しました。サーバが OIDC の機密クライアントとしてログインを処理し、ブラウザにはトークンを渡しません。
+
+| 対象 | 変更 |
+|---|---|
+| IdP のクライアントの登録 | **公開クライアントから機密クライアントに変わります。** リダイレクト URI は `<UI のオリジン>/ui/auth/callback` です(`callback.html` は廃止)。秘密は `EDGF_UI_CLIENT_SECRET` で渡します(production で UI を有効にするなら必須で、無ければ起動しません)。設定の手順は「[OIDC のクライアントの設定](#oidc-のクライアントの設定)」 |
+| `/ui/config.json` | `{"configured": true/false}` だけを返します(issuer、client_id、scopes、audience は返さなくなりました。UI の内部の API です) |
+| 新規 | `GET /ui/auth/login`、`GET /ui/auth/callback`、`POST /ui/auth/logout`、`GET /ui/session` |
+| `/api/v1` | Bearer に加えて、セッションの Cookie(`__Host-edgf_session`)を受け付けます。両方が付いていたら 400(`ambiguous-credentials`)。Cookie の経路の GET 以外は CSRF を確認します。Bearer の経路の挙動は変わりません |
+| `POST /policies/exceptions/{id}/decision` | **却下(`approve: false`)には `comment` が必要になりました**(空なら 422)。他の判断の API と揃えました(承認済みの挙動の変更です) |
+| `GET /approvals/inbox` | 各案件に `operations`(判断を送る先の既存の API と入力の項目)を追加しました。承認を終えて公開を待つ Policy の変更も、Committee に `approval` の案件として出します |
+| 監査 | UI の経路の操作は、payload に `channel: "ui"` とセッション ID のハッシュの先頭(`session`)が入ります。`ui.login` と `ui.logout` を記録します |
+| ジョブ | `ui_session_cleanup`(1 時間ごと)を追加しました |
+| CSP | `connect-src 'self'`、`form-action 'self' <issuer のオリジン>` |
+| マイグレーション | 0035(`ui_sessions`、`ui_login_states`) |
+
+既存の環境で UI を使うには、IdP のクライアントを機密クライアントに変更し、`EDGF_UI_CLIENT_SECRET` を設定してから起動してください。UI を使わない(`EDGF_UI_OIDC_CLIENT_ID` が空の)環境は、`exception` の却下の理由のほかに影響はありません。
+
 ## 変更点(Phase 16)
 
 **カラム単位のリネージを追加しました。** 既存の API の応答の項目は変えず、項目と API を追加しただけです。columnLineage facet を含まない OpenLineage のイベントの結果は従来と同じです。
@@ -83,7 +102,7 @@
 | §15 | Data Product、Output Port、Data Contract(互換性の判定、メジャー版の更新)、利用登録、CDM の取り込みと準拠の検証、出荷基準(DATSIS)、ODCS の取り込みと書き出し | `/mesh/...` |
 | §16 | 汎用の承認エンジンと共通の承認箱、Policy の変更のワークフロー、Outbox と Webhook(CloudEvents)、定期レビュー、ジョブ基盤と保持期限の自動執行 | `/approvals`, `/policies/bundles`, `/webhooks`, `/outbox`, `/reviews`, `/ops/jobs` |
 | §7 / §6.3 / §17 / §15 | Data Plane 連携: 資産一覧の取り込みと差分の検出(未登録・消失・スキーマの変化)、Catalog 登録率、利用実績、Output Port の到達の報告と確認(MESH-007)、SDK(`clients/python`)、MDM Hub の参照実装 | `/discovery/...`, `/usage/daily`, `/mesh/ports/{id}/reachability` |
-| §7 / §9 / §17 / §20 | 読み取り専用の UI(Catalog、Lineage、KPI、成熟度)、KPI の推移 | `/ui/`, `/kpi/history`, `/lineage/{name}/graph`, `/mesh/products/overview` |
+| §7 / §9 / §16 / §17 / §20 | UI(Catalog、Lineage、KPI、成熟度の閲覧。承認箱での判断、棚卸と証明、Issue の更新)、BFF のログインとセッション、KPI の推移 | `/ui/`, `/ui/auth/...`, `/ui/session`, `/kpi/history`, `/lineage/{name}/graph`, `/mesh/products/overview` |
 | §4 / §11 | 認証(OIDC JWT / 開発用 dev モード)・RBAC・資産ごとの Owner/Steward 判定・ABAC(機密度×clearance)・閲覧承認・拒否の証跡 | 全 API、`/assets/{id}/access-grants` |
 
 ## 起動
@@ -153,7 +172,7 @@ MVP(v0.1, `create_all`)で作成済みの既存 DB は、スキーマが同一�
 
 | モード | 操作者の特定 | 用途 |
 |---|---|---|
-| `jwt`(既定) | `Authorization: Bearer <JWT>`。署名・`iss`・`aud`・`exp`・`nbf` を検証します。トークンが無い・不正なら 401 で、`X-Actor` は無視します | 本番・検証環境 |
+| `jwt`(既定) | `Authorization: Bearer <JWT>`。署名・`iss`・`aud`・`exp`・`nbf` を検証します。トークンが無い・不正なら 401 で、`X-Actor` は無視します。UI はセッションの Cookie(「[セッションと CSRF](#セッションと-csrf)」)で、ログイン時に同じ検証をしたアクセストークンから Principal を作ります | 本番・検証環境 |
 | `dev` | `X-Actor`(必須)、`X-Roles` / `X-Domains` / `X-Clearance`(任意)ヘッダ | 開発・テスト専用(恒久的な機能) |
 
 ### jwt モードの設定(IdP 製品に依存しない)
@@ -343,7 +362,7 @@ curl -H 'X-Actor: steward1' -H 'X-Roles: steward' -H 'X-Domains: sales' http://l
 - 影響分析は DIRECT と INDIRECT の両方を辿ります。`path` は起点からの経路の種類で、途中がすべて値の流れる辺(`DIRECT`、または `AGGREGATION`)なら `DIRECT`、そうでなければ `INDIRECT` です
 - 閲覧できない資産は、名前を `redacted-N` に置き換え、カラム名と `job` も返しません(Phase 14 と同じ。漏洩のテストもカラム単位の API に適用しています)。Owner とリスクは全資産で算出します
 - 探索は既存と同じく段ごとの一括取得です(`WITH RECURSIVE` にしない判断と `EXPLAIN` は [docs/operations/performance.md](docs/operations/performance.md))
-- UI は読み取り専用で、資産の詳細に「カラムのリネージ」、Lineage の画面にカラムの入力欄とカラム単位のグラフと影響の表を追加しました
+- UI(Phase 16 の時点では読み取り専用)の資産の詳細に「カラムのリネージ」、Lineage の画面にカラムの入力欄とカラム単位のグラフと影響の表を追加しました
 
 ### 広げる方向と絞る方向
 
@@ -1109,6 +1128,7 @@ def verify(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
 | `review_campaigns` | 1 日 | レビューキャンペーンの作成と期限の処理 |
 | `kpi_snapshot` | 1 日 | KPI の日次のスナップショット(同じ日に 2 回実行しても 1 日分) |
 | `audit_anchor` | 1 時間 | 監査チェーンのアンカリング(`EDGF_ANCHOR_ENABLED=true` のときだけ動作) |
+| `ui_session_cleanup` | 1 時間 | 期限切れの UI のセッションとログインの途中の状態を削除する(Phase 17) |
 | `unused_assets` | 1 日 | `EDGF_UNUSED_DAYS`(既定 90 日)使われていない資産を、廃止の候補として Owner に Issue で知らせる(利用実績が届くまでは何もしない) |
 | `reachability_probe` | 1 時間 | Control Plane からの Output Port の到達の確認(`EDGF_PROBE_ENABLED=true` のときだけ動作) |
 
@@ -1162,22 +1182,92 @@ cron を使わない場合は `python -m edgf.jobs serve` を常駐させます(
 - 資産の保持期限が来ると、削除の承認申請を自動で作ります。承認されると `lifecycle.delete_requested` を記録します(`active` は状態遷移の規則に沿って `archived` を経由します)。
 - Legal Hold 中の資産は申請を作らず、申請の後に Legal Hold が設定されたら取り消します。承認の時点でも 409 で止めます。Owner が却下した資産は、`EDGF_RETENTION_REJECT_COOLDOWN_DAYS` の間は申請を作り直しません。Owner が未割当なら Committee 宛ての Issue を起票します。
 
-## UI(§7 / §9 / §17 / §20)
+## UI(§7 / §9 / §16 / §17 / §20)
 
-`/ui/` で配信する**読み取り専用**の画面です。素の JavaScript(ES Modules)、HTML、CSS だけで作り、フレームワーク、ビルド工程、npm の依存、外部の CDN やフォントは使いません。データはすべて REST API から取り、認証と ABAC は API が判定します。
+`/ui/` で配信する画面です。素の JavaScript(ES Modules)、HTML、CSS だけで作り、フレームワーク、ビルド工程、npm の依存、外部の CDN やフォントは使いません。データはすべて REST API から取り、認証、認可、ABAC、職務分離は API が判定します(UI 用の別の判定はありません)。
 
-### 構成
+Phase 17 から、承認、棚卸と証明、Issue の更新を UI から行えます。資産のメタデータの編集はできません。
+
+### 構成(BFF)
+
+```mermaid
+sequenceDiagram
+    participant B as ブラウザ (UI)
+    participant C as Control Plane (BFF + API)
+    participant I as IdP
+    B->>C: GET /ui/auth/login?return_to=#/inbox
+    C->>C: state / nonce / code_verifier を保存 (10 分)
+    C-->>B: 303 IdP へ (__Host-edgf_login: 参照だけ, SameSite=Lax)
+    B->>I: 認可の要求 (PKCE S256, nonce)
+    I-->>B: 303 /ui/auth/callback?code&state
+    B->>C: GET /ui/auth/callback
+    C->>I: トークンの要求 (code + code_verifier + client_secret)
+    I-->>C: アクセストークン / ID トークン
+    C->>C: 検証して Principal と auth_time だけをセッションに保存 (トークンは捨てる)
+    C-->>B: 303 /ui/#/inbox (__Host-edgf_session: HttpOnly, Secure, SameSite=Strict)
+    B->>C: GET /ui/session (CSRF のトークンを受け取る)
+    B->>C: POST /api/v1/... (Cookie + X-CSRF-Token + Origin)
+```
 
 | パス | 内容 |
 |---|---|
-| `edgf/ui/routes.py` | 配信、`/ui/config.json`、セキュリティヘッダ |
-| `edgf/ui/static/lib/oidc.js` | OIDC Authorization Code + PKCE |
+| `edgf/ui/bff.py` | ログイン(機密クライアント)、セッション、CSRF と Origin の確認 |
+| `edgf/services/ui_sessions.py` | セッションと CSRF のトークン(ハッシュだけを保存)、失効、ステップアップの判定 |
+| `edgf/ui/routes.py` | 静的ファイル、`/ui/config.json`、セキュリティヘッダ |
+| `edgf/ui/static/lib/session.js` | ログイン中の利用者(`GET /ui/session` の応答)。メモリにだけ置く |
 | `edgf/ui/static/lib/api.js` | REST API の読み取り(GET だけ) |
-| `edgf/ui/static/lib/` の他 | DOM の部品、ルーティング、ページング、Problem Details の表示、グラフ、Lineage のレイアウト |
+| `edgf/ui/static/lib/actions.js` | **書き込みの唯一の入口**。GET 以外の fetch はここからだけで、必ず `X-CSRF-Token` を付ける |
+| `edgf/ui/static/lib/forms.js` | 判断のフォーム(承認箱、棚卸、Issue で共通) |
 | `edgf/ui/static/pages/` | 各画面 |
 | `edgf/ui/static/i18n/` | 文言の辞書(`ja` が既定、`en`) |
 
-**読み取り専用の保証**: Control Plane への呼び出しは GET だけです。唯一の例外は、OIDC の仕様上必須である IdP の `token_endpoint` への POST で、`oidc.js` の 1 か所だけです。これは静的な検査(`tests/test_ui_server.py`)と、実ブラウザでのネットワークの監視(`tests/e2e/`)で確認しています。データの表示はすべて `textContent` 相当と DOM API で行い、`innerHTML` や `eval` は使いません。
+ブラウザの JavaScript はトークンにもセッション ID にも触れません(Cookie は HttpOnly)。ブラウザが IdP と通信するのはログインの画面遷移だけです。これは静的な検査(`tests/test_ui_server.py`)と、実ブラウザでのネットワークの監視(`tests/e2e/`)で確認しています。データの表示はすべて `textContent` 相当と DOM API で行い、`innerHTML` や `eval` は使いません。
+
+### セッションと CSRF
+
+| 項目 | 仕様 |
+|---|---|
+| セッションの Cookie | `__Host-edgf_session`。`Secure`、`HttpOnly`、`SameSite=Strict`、`Path=/`(`Domain` なし) |
+| セッション ID | 256 ビットの乱数。DB には SHA-256 のハッシュだけを保存します。**ログインのたびに新しく発行**し、以前のセッションは消します(固定攻撃の対策) |
+| 保存する内容 | ログイン時に検証した Principal の写し(subject、roles、clearance、domains)、表示名、`auth_time`。IdP のトークン(アクセス、リフレッシュ、ID)は**サーバにもブラウザにも保存しません** |
+| 失効 | 無操作が `EDGF_SESSION_IDLE_MINUTES`(既定 30 分)、ログインから `EDGF_SESSION_MAX_HOURS`(既定 8 時間)、ログアウト。期限切れの行はジョブ `ui_session_cleanup` が削除します |
+| ログインの途中の状態 | state、nonce、code_verifier はサーバに保存し、`__Host-edgf_login`(`SameSite=Lax`、10 分)には参照の乱数だけを入れます。1 回だけ使えます |
+| CSRF の同期トークン | セッションごとに 1 つ(セッション ID から HMAC で導く)。`GET /ui/session` で返します。DB にはハッシュだけを保存し、照合は定数時間です |
+| 確認の対象 | Cookie の経路の GET / HEAD / OPTIONS 以外のすべての要求。`X-CSRF-Token` が一致し、`Origin` が UI のオリジンと一致し、`Sec-Fetch-Site` があれば `same-origin` であること。どれかを満たさなければ 403(`csrf-failed`)。Bearer の経路は確認しません |
+| 資格情報の重複 | `Authorization`(dev モードでは `X-Actor`)とセッションの Cookie の両方が付いていたら 400(`ambiguous-credentials`) |
+| 戻り先 | `return_to` は UI の中の画面(`#/...`)だけ。外部の URL には転送しません |
+
+UI のオリジンは `EDGF_UI_PUBLIC_URL` で指定します(省略時は要求の URL。TLS を終端するプロキシの後ろでは指定してください)。
+
+### ステップアップ
+
+権限表で ✓ の付いた操作(承認行為)を Cookie の経路で行うには、ログインから `EDGF_STEP_UP_MINUTES`(既定 15 分)以内であることが必要です。古ければ 401 の Problem(`step-up-required`)を返し、UI は `max_age=0` を付けて IdP で再ログインさせ、元の画面に戻します。
+
+- 判定は認可のあとです。権限の無い利用者には従来どおり 403 を返します
+- Bearer の経路(サービスの主体)には適用しません
+- 読み取り(GET)には適用しません
+
+### UI でできる操作
+
+| 画面 | 操作 | 呼ぶ既存の API | 必要な権限 |
+|---|---|---|---|
+| 承認箱(`#/inbox`) | 新しい承認エンジンの承認・却下 | `POST /approvals/{id}/decision` | `approval.decide` ✓ |
+| | Policy の変更の公開 | `POST /policies/bundles/{version}/publish` | `policy.publish` ✓ |
+| | Policy 例外の承認・却下 | `POST /policies/exceptions/{id}/decision` | `exception.decide` ✓ |
+| | 学習利用の承認・却下 | `POST /ai/training-approvals/{id}/decision` | `ai.training.approve` ✓ |
+| | 利用登録の承認・却下 | `POST /mesh/subscriptions/{id}/decision` | `mesh.subscription.approve` ✓ |
+| | MDM の生成規則の承認 | `POST /mdm/entities/{type}/approve` | `mdm.rule.approve` ✓ |
+| | Reference Data の版の公開 | `POST /reference-data/sets/{id}/versions/{n}/publish` | `refdata.publish` ✓ |
+| | Contract の版の公開 | `POST /mesh/contract-versions/{id}/publish` | `mesh.contract.publish` ✓ |
+| | CDM の再検証の対応(Issue の更新) | `PATCH /issues/{id}` | `issue.update` |
+| | モデルの是正の判断(retrain / unlearn / accept) | `POST /ai/remediations/{id}/decision` | `ai.remediation.decide` ✓ |
+| 棚卸と証明(`#/reviews`) | 権限の継続・取り消し、Owner の証明・修正が必要 | `POST /reviews/items/{id}/decision` | `review.decide` ✓ |
+| Issue(`#/issues`) | 状態、担当者、コメントの更新 | `PATCH /issues/{id}` | `issue.update` |
+
+- **却下、取り消し、修正が必要には理由が必須です**(フォームと API の両方で確かめます)
+- 承認箱の各案件は、アダプタが返す `operations`(送る先の API、固定の本文、入力の項目、ステップアップの有無)をそのまま使います。既存の API に却下の無い種類(MDM の生成規則、Reference Data、Contract、CDM、モデルの是正)は、既存の操作だけを出します
+- 職務分離(申請者本人の承認の禁止、Custodian の禁止)と ABAC は API の判定のままです
+- 操作はキーボードだけで行えます(フォームは最初の項目にフォーカスが移り、Esc で閉じて元のボタンに戻ります)
 
 ### 起動方法
 
@@ -1201,20 +1291,28 @@ Keycloak はローカル開発用のツールで、Control Plane の実行時の
 
 ### OIDC のクライアントの設定
 
-IdP に、次の内容で公開クライアントを登録します。設定例は [docker/keycloak/edgf-realm.json](docker/keycloak/edgf-realm.json) です。
+IdP に、次の内容で**機密クライアント**を登録します(Phase 17 で公開クライアントから変わりました)。設定例は [docker/keycloak/edgf-realm.json](docker/keycloak/edgf-realm.json) です。
 
 | 項目 | 値 |
 |---|---|
-| クライアントの種類 | 公開クライアント(クライアントシークレットなし) |
+| クライアントの種類 | 機密クライアント。認証の方式は `client_secret_post` |
 | フロー | Authorization Code + PKCE(`S256`) |
-| リダイレクト URI | `<UI のオリジン>/ui/callback.html` |
+| リダイレクト URI | `<UI のオリジン>/ui/auth/callback` |
 | ログアウト後のリダイレクト URI | `<UI のオリジン>/ui/` |
-| CORS | ディスカバリとトークンエンドポイントで UI のオリジンを許可する |
+| CORS | 不要(ブラウザは IdP の API を呼びません) |
 | アクセストークンの claim | `aud` に `EDGF_OIDC_AUDIENCE`。ロール、ドメイン、clearance は `EDGF_CLAIM_*` で指定した claim |
+| ID トークン | `aud` に client_id、`nonce`。`auth_time` があればステップアップに使います(無い IdP では、ログインの完了の時刻とみなします) |
 
-- トークンはメモリにだけ持ちます(`localStorage`、`sessionStorage`、Cookie は使いません)。再読み込みや期限切れのあとは、もう一度ログインします。
-- PKCE の verifier と state もメモリに置くため、ログインはポップアップで行い、本体のページを残します。**ポップアップの許可が必要です**。`callback.html` は `BroadcastChannel` で認可コードを本体に渡して閉じます。
-- `crypto.subtle` を使うので、本番では https で配信してください(`localhost` は例外)。
+| 環境変数 | 既定 | 説明 |
+|---|---|---|
+| `EDGF_UI_OIDC_CLIENT_ID` | (空) | UI のクライアント。空なら UI のログインは無効 |
+| `EDGF_UI_CLIENT_SECRET` | (空) | クライアントの秘密。環境変数からだけ読みます。production で UI を有効にするなら必須 |
+| `EDGF_UI_OIDC_ISSUER` / `EDGF_UI_OIDC_AUDIENCE` / `EDGF_UI_OIDC_SCOPES` | API の設定 / `openid,profile` | 省略時は API の検証の設定を使います |
+| `EDGF_UI_OIDC_DISCOVERY_URL` | `<issuer>/.well-known/openid-configuration` | ディスカバリの取得先。コンテナの中から IdP の名前が違う場合に指定します(issuer の一致は確かめます) |
+| `EDGF_UI_PUBLIC_URL` | 要求の URL | ブラウザから見える UI のオリジン。リダイレクト URI と Origin の確認に使います。production では https |
+| `EDGF_SESSION_IDLE_MINUTES` / `EDGF_SESSION_MAX_HOURS` / `EDGF_STEP_UP_MINUTES` | 30 / 8 / 15 | セッションの失効とステップアップ |
+
+UI は dev モードに対応しません(dev モードでは `/ui/auth/login` は 404 です)。ログアウトは IdP の `end_session_endpoint` に `client_id` と `post_logout_redirect_uri` を付けて移動します(`id_token_hint` を持たないので、IdP によっては確認の画面が出ます)。
 
 ### セキュリティヘッダ
 
@@ -1222,7 +1320,7 @@ IdP に、次の内容で公開クライアントを登録します。設定例�
 
 | ヘッダ | 値 |
 |---|---|
-| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' <issuer のオリジン>; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' <issuer のオリジン>; object-src 'none'` |
 | `Referrer-Policy` | `no-referrer` |
 | `X-Content-Type-Options` | `nosniff` |
 | `Permissions-Policy` | `accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()` |
@@ -1237,8 +1335,9 @@ IdP に、次の内容で公開クライアントを登録します。設定例�
 | [リネージと影響分析](docs/ui/lineage.png) | `#/lineage/{name}?depth=` | `/lineage/{name}/graph`, `/lineage/{name}/impact` |
 | [KPI と成熟度](docs/ui/dashboard.png) | `#/dashboard` | `/kpi`, `/kpi/history` |
 | [Data Product](docs/ui/products.png) | `#/products` | `/mesh/products/overview` |
-| [Issue](docs/ui/issues.png) | `#/issues` | `/issues` |
-| [承認箱](docs/ui/inbox.png) | `#/inbox` | `/approvals/inbox`(判断する API を案件ごとに示す) |
+| [Issue](docs/ui/issues.png) | `#/issues` | `/issues`、更新は `PATCH /issues/{id}` |
+| [承認箱](docs/ui/inbox.png) | `#/inbox` | `/approvals/inbox`。判断は案件ごとの `operations` の既存の API |
+| 棚卸と証明 | `#/reviews` | `/reviews/items`、判断は `POST /reviews/items/{id}/decision` |
 | [ジョブの状態](docs/ui/jobs.png) | `#/jobs` | `/ops/jobs` |
 
 ![KPI ダッシュボード](docs/ui/dashboard.png)
@@ -1430,7 +1529,12 @@ python scripts/verify_anchors.py /worm/anchors.jsonl --public-key <base64>
 - `split` の直後は、どのソースの識別子か判定できないので、`subject_ref` の対応を両方の Golden Record に残します(再構成で正しくなります。消去の対象から漏らさないための措置です)
 - Reference Data は公開後に資産の機密度が上がっても、公開済みの値を自動では削除しません(新しい版の作成と公開は拒否します)
 - **UI のアクセシビリティ**は WCAG 2.2 AA の基本(キーボード操作、ランドマーク、ラベル、フォーカスの表示、配色)に沿って作り、キーボード操作と構造を E2E で確認しています。支援技術での確認と、適合の監査は行っていません
-- UI はポップアップが必要で、再読み込みすると再ログインになります(トークンをメモリにだけ持つため)。トークンエンドポイントは issuer と同じオリジンにある必要があります(CSP の `connect-src` が issuer だけを許可するため)。トークンの自動更新はありません
+- **IdP 側でロールやドメインが変わっても、UI に反映されるのは次のログインからです**(セッションはログイン時に検証した Principal の写しを持ち、トークンを保存しないので、更新もしません)。最長で `EDGF_SESSION_MAX_HOURS`(既定 8 時間)古いままになります。急ぎの剥奪は、IdP で無効にしたうえで、DB の `ui_sessions` からその subject の行を削除してください
+- ステップアップは ID トークンの `auth_time` で判定します。`auth_time` を返さない IdP では、ログインの完了の時刻とみなすので、`max_age=0` を無視する IdP では実際に再認証したかを確かめられません
+- ログアウトは `id_token_hint` を持たないので、IdP によってはログアウトの確認の画面が出ます。IdP 側のシングルサインオンのセッションが残るかは IdP の設定によります
+- 既存の API に却下の無い承認の種類(MDM の生成規則、Reference Data、Contract、CDM、モデルの是正)は、UI からも却下できません(既存の操作だけを出します)
+- UI から資産のメタデータ(Owner / Steward の割当を含む)は編集できません(Phase 17 の範囲外。マスタープロンプトの Phase 17 の「Owner / Steward の割当」は、確定事項に従って含めていません)
+- Cookie の経路では、要求ごとに DB でセッションを確かめます(最終操作の時刻の書き込みは 1 分に 1 回)。CSRF のトークンはセッションの間は同じ値です(要求ごとには変えません)
 - `/kpi/history` のドメイン別の値は日次のスナップショットで、閲覧できない資産も含めた集計です(行そのものは ABAC で絞り込みます)。閲覧できる範囲で集計したい場合は `/kpi/domains` を使ってください
 - Catalog 登録率は、Data Plane が送った資産一覧の範囲で計算します。**送られていないソースの資産は分母に入りません**。全ソースから送られているかは、Data Plane の側で確かめてください
 - 資産一覧の差分は、ソースごとに前回のスナップショットと比べます。差分のたびに Catalog を 1 件ずつ照合するので、1 回の送信で数万件を超える場合は分けて送ってください(ソースの単位を細かくする)

@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 import jwt
@@ -82,6 +83,11 @@ class Principal:
     clearance: str
     domains: frozenset[str]
     auth_mode: str = "jwt"
+    # Phase 17: 経路 ("api" は Bearer / dev、"ui" はセッションの Cookie)。ui のときはログインの時刻とセッションの参照 (ハッシュの先頭) を持つ
+    channel: str = "api"
+    auth_time: datetime | None = None
+    session_ref: str | None = None
+    write_request: bool = False  # ui の経路の GET / HEAD / OPTIONS 以外の要求 (ステップアップの判定の対象)
 
     @property
     def audit_actor(self) -> str:
@@ -209,6 +215,10 @@ class JwtAuthenticator:
         token = token.strip()
         if scheme.lower() != "bearer" or not token:
             raise AuthError("Authorization: Bearer <token> が必要です", error=None)
+        return self.principal_from_token(token)
+
+    def principal_from_token(self, token: str) -> Principal:
+        """アクセストークンを検証して Principal を作る (API の Bearer と、UI のログインの BFF で共通)。"""
         if len(token) > MAX_TOKEN_BYTES:
             raise AuthError("トークンが大きすぎます")
         key = self.keys.signing_key(token)

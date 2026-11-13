@@ -29,11 +29,15 @@ def _origin(url: str) -> str | None:
 
 
 def content_security_policy(s: Settings) -> str:
-    """スクリプトは自身の配信だけ (インラインと eval なし)。通信先は自身と IdP の issuer だけ。"""
+    """スクリプトは自身の配信だけ (インラインと eval なし)。
+
+    Phase 17 (BFF): ブラウザは IdP と直接通信しないので、通信先 (connect-src) は自身だけ。
+    フォームの送信先 (form-action) は自身と IdP の issuer (ログインの画面遷移の先) だけ。
+    """
     origin = _origin(issuer_of(s))
-    connect = f"'self' {origin}" if origin else "'self'"
+    form_action = f"'self' {origin}" if origin else "'self'"
     return ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
-            f"connect-src {connect}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
+            f"connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}; object-src 'none'")
 
 
 def security_headers(s: Settings) -> dict[str, str]:
@@ -62,10 +66,10 @@ def build_router(s: Settings) -> APIRouter:
 
     @router.get("/ui/config.json")
     def config() -> Response:
-        """OIDC クライアントの設定 (秘密は含まない)。製品固有の項目は持たない。"""
-        issuer = issuer_of(s)
-        return JSONResponse({"configured": bool(issuer and s.ui_oidc_client_id), "issuer": issuer, "client_id": s.ui_oidc_client_id,
-                             "scopes": list(s.ui_oidc_scopes), "audience": s.ui_oidc_audience or s.oidc_audience}, headers=headers)
+        """ログインが使えるか (Phase 17)。ログインはサーバが処理するので、OIDC の設定はブラウザに渡さない。"""
+        from edgf.ui.bff import ui_enabled  # 循環 import 回避
+
+        return JSONResponse({"configured": ui_enabled(s)}, headers=headers)
 
     @router.get("/ui/{path:path}")
     def static(path: str, request: Request) -> Response:

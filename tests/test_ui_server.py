@@ -31,15 +31,15 @@ def _strip_comments(text: str) -> str:
 
 @pytest.fixture()
 def ui_client():
-    configured = dataclasses.replace(settings, ui_oidc_issuer=ISSUER, ui_oidc_client_id="edgf-ui", ui_oidc_audience="edgf-control-plane",
-                                     ui_oidc_scopes=("openid", "profile", "email"))
+    configured = dataclasses.replace(settings, auth_mode="jwt", oidc_issuer=ISSUER, oidc_audience="edgf-control-plane",
+                                     oidc_jwks_url=f"{ISSUER}/certs", ui_oidc_client_id="edgf-ui", ui_oidc_audience="edgf-control-plane")
     return TestClient(create_app(configured), follow_redirects=False)
 
 
 # ---------------------------------------------------------------- 配信
 @pytest.mark.parametrize("path,media", [
-    ("/ui/", "text/html"), ("/ui/index.html", "text/html"), ("/ui/callback.html", "text/html"), ("/ui/app.js", "text/javascript"),
-    ("/ui/styles.css", "text/css"), ("/ui/i18n/ja.json", "application/json"), ("/ui/lib/oidc.js", "text/javascript"),
+    ("/ui/", "text/html"), ("/ui/index.html", "text/html"), ("/ui/app.js", "text/javascript"), ("/ui/lib/session.js", "text/javascript"),
+    ("/ui/styles.css", "text/css"), ("/ui/i18n/ja.json", "application/json"), ("/ui/lib/actions.js", "text/javascript"),
 ])
 def test_static_files_are_served_without_auth(ui_client, path, media):
     r = ui_client.get(path)
@@ -70,13 +70,15 @@ def test_security_headers_on_every_response(ui_client, path):
     assert "camera=()" in h["permissions-policy"] and "geolocation=()" in h["permissions-policy"]
     csp = {d.strip().split(" ")[0]: d.strip().split(" ")[1:] for d in h["content-security-policy"].split(";")}
     assert csp["default-src"] == ["'self'"] and csp["script-src"] == ["'self'"] and csp["frame-ancestors"] == ["'none'"]
-    assert csp["connect-src"] == ["'self'", "https://idp.example.test"]  # 自身と IdP の issuer だけ
+    assert csp["connect-src"] == ["'self'"]  # ブラウザは IdP と直接通信しない (BFF。Phase 17)
+    assert csp["form-action"] == ["'self'", "https://idp.example.test"]  # 自身と IdP の issuer だけ
     assert "unsafe-inline" not in h["content-security-policy"] and "unsafe-eval" not in h["content-security-policy"]
 
 
 def test_csp_without_issuer_allows_self_only():
     bare = dataclasses.replace(settings, ui_oidc_issuer="", oidc_issuer="")
-    assert "connect-src 'self';" in routes.content_security_policy(bare)
+    csp = routes.content_security_policy(bare)
+    assert "connect-src 'self';" in csp and "form-action 'self';" in csp
 
 
 def test_api_responses_do_not_get_ui_csp(ui_client):
@@ -84,15 +86,20 @@ def test_api_responses_do_not_get_ui_csp(ui_client):
 
 
 # ---------------------------------------------------------------- config.json
-def test_config_json_from_settings(ui_client):
-    r = ui_client.get("/ui/config.json")
-    assert r.json() == {"configured": True, "issuer": ISSUER, "client_id": "edgf-ui", "scopes": ["openid", "profile", "email"], "audience": "edgf-control-plane"}
+def test_config_json_only_says_whether_login_is_available(ui_client):
+    """ログインはサーバが処理するので、issuer や client_id はブラウザに渡さない (Phase 17)。"""
+    assert ui_client.get("/ui/config.json").json() == {"configured": True}
 
 
-def test_config_falls_back_to_api_settings_and_reports_unconfigured():
-    s = dataclasses.replace(settings, ui_oidc_issuer="", oidc_issuer="https://api-issuer.test", ui_oidc_client_id="", ui_oidc_audience="", oidc_audience="aud")
-    body = TestClient(create_app(s)).get("/ui/config.json").json()
-    assert body["issuer"] == "https://api-issuer.test" and body["audience"] == "aud" and body["configured"] is False
+def test_config_reports_unconfigured_without_client_id():
+    s = dataclasses.replace(settings, auth_mode="jwt", oidc_issuer=ISSUER, oidc_audience="aud", oidc_jwks_url=f"{ISSUER}/certs",
+                            ui_oidc_client_id="")
+    assert TestClient(create_app(s)).get("/ui/config.json").json() == {"configured": False}
+
+
+def test_pkce_files_are_removed():
+    """Phase 13 のブラウザ側の OIDC (PKCE) は撤去した。"""
+    assert not (STATIC / "lib" / "oidc.js").exists() and not (STATIC / "callback.html").exists() and not (STATIC / "callback.js").exists()
 
 
 # ---------------------------------------------------------------- 静的な検査: 読み取り専用と XSS 対策
@@ -126,23 +133,35 @@ def _fetch_calls():
     return calls
 
 
-def test_every_fetch_is_get_except_one_token_exchange():
+def test_only_actions_js_sends_non_get_requests_with_csrf_token():
+    """GET 以外の fetch は lib/actions.js からだけ。そこを通る要求には必ず X-CSRF-Token を付ける (Phase 17)。"""
     calls = _fetch_calls()
     assert calls
-    posts = []
+    writers = []
     for name, args in calls:
-        methods = re.findall(r"method:\s*[\"']([A-Za-z]+)[\"']", args)
-        assert len(methods) == 1, f"fetch は method を明示する: {name}: {args[:80]}"
-        if methods[0] != "GET":
-            posts.append((name, methods[0], args))
-    # 唯一の例外は oidc.js のトークンエンドポイントへの POST (コードの交換に必須)
-    assert [(n, m) for n, m, _ in posts] == [("oidc.js", "POST")]
-    assert posts[0][2].lstrip().startswith("endpoints.token_endpoint")
+        literal = re.findall(r"method:\s*[\"']([A-Za-z]+)[\"']", args)
+        dynamic = re.search(r"(?:^|[{,\s])method\s*[,}]", args)
+        assert literal or dynamic, f"fetch は method を明示する: {name}: {args[:80]}"
+        if dynamic or literal != ["GET"]:
+            writers.append((name, args))
+    assert [n for n, _ in writers] == ["actions.js"]
+    assert '"X-CSRF-Token": token' in writers[0][1]
+    actions = _strip_comments((STATIC / "lib" / "actions.js").read_text(encoding="utf-8"))
+    assert 'if (!token) throw' in actions  # トークンが無ければ送らない
+    assert re.search(r"METHODS = new Set\(\[\"POST\", \"PUT\", \"PATCH\", \"DELETE\"\]\)", actions)
+
+
+def test_no_tokens_in_the_browser():
+    """ブラウザはトークンを扱わない (Authorization ヘッダを付けない、IdP と直接通信しない)。"""
+    for path in JS:
+        text = _strip_comments(path.read_text(encoding="utf-8"))
+        assert "Authorization" not in text and "Bearer" not in text and "access_token" not in text and "id_token" not in text, path.name
+        assert "token_endpoint" not in text and "code_verifier" not in text, path.name
 
 
 def test_api_client_only_sends_get_and_no_dev_headers():
     text = (STATIC / "lib" / "api.js").read_text(encoding="utf-8")
-    assert text.count("fetch(") == 1 and 'method: "GET"' in text and "Bearer" in text
+    assert text.count("fetch(") == 1 and 'method: "GET"' in text and 'credentials: "same-origin"' in text
 
 
 URL_PATTERN = re.compile(r"(?:https?:)?//[A-Za-z0-9.-]+\.[a-z]{2,}|https?://")

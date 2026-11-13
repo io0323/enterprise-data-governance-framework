@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from edgf.errors import ProblemError
 from edgf.models import AuditEvent, fit_identifier, utcnow
-from edgf.observability import request_id_var
+from edgf.observability import channel_var, request_id_var
 
 GENESIS = "0" * 64
 MAX_ENTITY_ID_LENGTH = 300
@@ -114,6 +114,9 @@ def record(db: Session, actor: str, action: str, entity_type: str, entity_id: st
     UNIQUE 制約と再試行は、ロックを取らない経路 (SQLite や手動の操作) のために残す。
     """
     payload = json.loads(json.dumps(payload or {}, default=str))
+    channel = channel_var.get()
+    if channel:  # UI のセッションの経路の操作 (Phase 17)。セッション ID はハッシュの先頭だけ
+        payload = {**payload, **channel}
     guard_payload(payload)
     entity_id = fit_identifier(entity_id, MAX_ENTITY_ID_LENGTH)
     rid = request_id_var.get()

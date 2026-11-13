@@ -78,7 +78,8 @@ def app_url(idp, tmp_path_factory):
     db = tmp_path_factory.mktemp("e2e") / "e2e.db"
     port = _free_port()
     env = {**os.environ, "EDGF_DATABASE_URL": f"sqlite:///{db}", "EDGF_ENV": "test", "EDGF_AUTH_MODE": "jwt", "EDGF_OIDC_ISSUER": idp.issuer,
-           "EDGF_OIDC_AUDIENCE": "edgf-control-plane", "EDGF_OIDC_JWKS_URL": f"{idp.issuer}/jwks", "EDGF_UI_OIDC_CLIENT_ID": "edgf-ui", "EDGF_LOG_LEVEL": "WARNING"}
+           "EDGF_OIDC_AUDIENCE": "edgf-control-plane", "EDGF_OIDC_JWKS_URL": f"{idp.issuer}/jwks", "EDGF_UI_OIDC_CLIENT_ID": "edgf-ui", "EDGF_UI_CLIENT_SECRET": "e2e-client-secret",
+           "EDGF_LOG_LEVEL": "WARNING"}
     alembic = str(Path(sys.executable).parent / "alembic")
     subprocess.run([alembic, "upgrade", "head"], cwd=ROOT, env=env, check=True, capture_output=True)
     process = subprocess.Popen([sys.executable, "-m", "uvicorn", "edgf.main:app", "--host", "127.0.0.1", "--port", str(port), "--no-access-log"],
@@ -219,9 +220,9 @@ class Session:
         return self
 
     def login(self):
+        """ログインの画面への遷移 → IdP → /ui/auth/callback → UI に戻る (BFF。ブラウザはトークンを受け取らない)。"""
         self.open()
-        with self.context.expect_page():
-            self.page.click("#login")
+        self.page.click("#login")
         self.page.wait_for_selector(".site-nav")
         return self
 

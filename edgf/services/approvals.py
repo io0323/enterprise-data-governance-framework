@@ -114,6 +114,7 @@ def _require_decider(db: Session, principal: Principal, req: ApprovalRequest) ->
     if db.scalar(select(ApprovalDecision.id).where(ApprovalDecision.request_id == req.id,
                                                    ApprovalDecision.decided_by == principal.subject)):
         deny("同じ案件を 2 回判断することはできません (職務分離)")
+    authz.require_step_up(principal, "approval.decide")  # 判断者の確認のあと (権限の無い利用者には 403)
 
 
 def _finish(db: Session, actor: str, req: ApprovalRequest, status: str, decided_by: str, handler: str | None) -> None:

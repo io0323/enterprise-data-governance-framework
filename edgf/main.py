@@ -18,7 +18,7 @@ from edgf.services.audit_anchor import validate_anchor_settings
 from edgf.services.discovery_rules import get_rules
 from edgf.services.probe import validate_probe_settings
 from edgf.services.mdm_rules import get_entities
-from edgf.ui import routes as ui_routes
+from edgf.ui import bff, routes as ui_routes
 from edgf.services.policy_bundles import bootstrap_on_startup
 from edgf.services.subject_ref import validate_subject_key
 
@@ -45,6 +45,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     validate_subject_key(s)  # production で EDGF_SUBJECT_KEY が無ければ停止
     validate_anchor_settings(s)  # production でアンカリングが有効なのに署名鍵が無ければ停止
     validate_probe_settings(s)  # 到達の確認が有効なのに許可するホストが無ければ停止
+    bff.validate_ui_settings(s)  # production で UI を有効にしたのにクライアントの秘密が無ければ停止
     app = FastAPI(
         title="Enterprise Data Governance Framework",
         version=__version__,
@@ -55,6 +56,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     )
     app.state.authenticator = authenticator
     app.state.auth_mode = authenticator.mode
+    app.state.settings = s
     install_problem_handlers(app)
     app.add_middleware(IdempotencyMiddleware)  # 本文の上限の内側 (上限を超えた本文は読まない)
     app.add_middleware(BodyLimitMiddleware, max_bytes=s.max_body_bytes)
@@ -65,6 +67,8 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         # /api/v1 はすべて認証必須 (認可は各エンドポイントで edgf.authz が判定)
         app.include_router(r, prefix="/api/v1", responses=PROBLEM_RESPONSES, dependencies=[Depends(get_principal)])
     app.include_router(ops.router)
+    app.state.ui_oidc = bff.OidcClient(s)  # IdP との通信 (テストでは差し替える)
+    app.include_router(bff.build_router(s, app.state.ui_oidc))  # ログイン (BFF) とセッション。静的ファイルの catch-all より先に登録する
     app.include_router(ui_routes.build_router(s))  # 静的ファイルと config.json だけで、データは含まない
     setup_tracing(app, s.otel_enabled, s.service_name)
     return app

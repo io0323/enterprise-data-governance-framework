@@ -1,7 +1,8 @@
 // エントリポイント: 共通のレイアウト、認証、ルーティング。
 import {h} from "./lib/dom.js";
 import {currentLanguage, loadDictionaries, setLanguage, t} from "./lib/i18n.js";
-import * as oidc from "./lib/oidc.js";
+import * as actions from "./lib/actions.js";
+import * as session from "./lib/session.js";
 import {parseHash} from "./lib/router.js";
 import {problemView} from "./lib/components.js";
 import {routes, navigation} from "./pages/index.js";
@@ -29,8 +30,8 @@ function header() {
     h("p", {class: "site-title"}, t("app.title")),
     h("div", {class: "site-actions"},
       languageSwitch(),
-      oidc.userName() ? h("span", {class: "user"}, oidc.userName()) : null,
-      oidc.accessToken() ? h("button", {type: "button", onClick: () => oidc.logout()}, t("nav.logout")) : null));
+      session.user() ? h("span", {class: "user"}, session.user().name) : null,
+      session.user() ? h("button", {type: "button", id: "logout", onClick: () => actions.logout()}, t("nav.logout")) : null));
 }
 
 function currentKey() {
@@ -50,15 +51,9 @@ function loginView() {
     h("h1", {}, t("login.title")),
     h("p", {}, t("login.description")),
     status,
-    h("button", {type: "button", class: "primary", id: "login", onClick: async () => {
+    h("button", {type: "button", class: "primary", id: "login", onClick: () => {
       status.textContent = t("login.waiting");
-      try {
-        await oidc.login();
-        notice = null;
-        render();
-      } catch (error) {
-        status.textContent = t(`login.error.${error.message}`);
-      }
+      session.login();
     }}, t("login.button")));
 }
 
@@ -80,7 +75,7 @@ function renderPage(main) {
 
 function render() {
   const main = h("main", {id: "main", tabindex: "-1"});
-  if (oidc.accessToken()) {
+  if (session.user()) {
     root.replaceChildren(skipLink(), header(), nav(), main);
     renderPage(main);
   } else {
@@ -98,14 +93,21 @@ function onRouteChange() {
 async function start() {
   await loadDictionaries();
   setLanguage("ja");
-  const configured = await oidc.initialize(() => {
+  session.onExpire(() => {
     notice = "login.expired"; // 401 または期限切れ: 再ログインを求める
     render();
   });
-  if (!configured) {
+  const config = await (await fetch("./config.json", {method: "GET"})).json();
+  if (!config.configured) {
     root.replaceChildren(h("main", {id: "main", class: "login"}, h("h1", {}, t("app.title")), h("p", {role: "alert"}, t("login.not_configured"))));
     return;
   }
+  const query = new URLSearchParams(window.location.search);
+  if (query.get("error") === "login_failed") {
+    notice = "login.error.login_failed";
+    history.replaceState(null, "", window.location.pathname + window.location.hash); // 表示したら URL から消す
+  }
+  await session.load();
   window.addEventListener("hashchange", onRouteChange);
   render();
 }

@@ -16,7 +16,7 @@
 | §1 要件定義 | KPI(§1.8 の目標)、`edgf/services/kpi.py`、Catalog 登録率(`edgf/services/discovery.py`) | `test_lineage_policy.py`、`test_ui_api.py`、`test_discovery.py` | 実装済み | Catalog 登録率は Data Plane が送った資産一覧の範囲で計算する |
 | §2 アーキテクチャ | Governance Control Plane と Data Plane の分離、`edgf/api`、`edgf/services` | 全テスト | 実装済み | |
 | §3 Data Classification | `edgf/enums.py`、`edgf/api/catalog.py`、PII の推定 | `test_catalog.py`、`test_privacy_inventory.py` | 実装済み | |
-| §4 Data Ownership | `edgf/authz.py`(権限表)、Owner / Steward / Custodian の割当、Unknown Owner の検出 | `test_authz.py`、`test_auth.py`、`test_security_authz.py` | 実装済み | |
+| §4 Data Ownership | `edgf/authz.py`(権限表)、Owner / Steward / Custodian の割当、Unknown Owner の検出。Phase 17: UI のログインの BFF(`edgf/ui/bff.py`、機密クライアント)とセッション(`edgf/services/ui_sessions.py`)、Cookie の経路の CSRF の確認、承認行為(✓)のステップアップ。UI の操作も API と同じ権限表と職務分離で判定する | `test_authz.py`、`test_auth.py`、`test_security_authz.py`、`test_ui_bff.py`、`test_ui_csrf.py` | 実装済み | IdP 側のロールの変更は次のログインから反映 |
 | §5 Data Quality | `edgf/services/quality.py`、`edgf/api/quality.py` | `test_quality.py` | 実装済み | 検査の実行はレコードを受け取る方式。Data Plane での常時監視は対象外 |
 | §6 Metadata | Catalog、Glossary、`edgf/api/glossary.py` | `test_catalog.py` | 実装済み | 自動収集は Data Plane の連携先が行う |
 | §7 Data Catalog | 検索、Certification ゲート、UI(`edgf/ui`)、Discovery(資産一覧の差分、未登録の検出、スキーマの反映) | `test_catalog.py`、`test_ui_api.py`、`tests/e2e`、`test_discovery.py`、`tests/data_plane_e2e` | 実装済み | 自動スキャンは Data Plane が行い、Control Plane は差分と照合を担う |
@@ -28,7 +28,7 @@
 | §13 Data Compliance | Policy as Code、ハッシュチェーン監査、アンカリング | `test_lineage_policy.py`、`test_policy_bundles.py`、`test_audit_anchor.py` | 実装済み | |
 | §14 Data Governance & AI | `edgf/services/ai.py`、`ai_*.py`、Card、Lineage、RAG の判定、ModelRemediation | `test_ai_*.py` | 実装済み | 学習とモデルの本体、Unlearning の実行は Data Plane |
 | §15 Data Mesh | `edgf/services/mesh.py`、`mesh_*.py`、Contract、DATSIS、利用登録、ODCS、CDM の取込 | `test_mesh_*.py` | 一部 | Data Mesh の実行基盤は無い。CDM の詳細定義は別文書(§1.10) |
-| §16 Governance Process | 承認エンジン、Policy のライフサイクル、CloudEvents / Webhook、定期レビュー、ジョブ | `test_approvals.py`、`test_policy_bundles.py`、`test_outbox.py`、`test_reviews.py`、`test_jobs.py` | 実装済み | 会議体の運営は組織の運用 |
+| §16 Governance Process | 承認エンジン、Policy のライフサイクル、CloudEvents / Webhook、定期レビュー、ジョブ。Phase 17: 承認箱の全種類(新しいエンジンと既存の 8 種類)のアダプタに判断の API と入力の項目を追加し、UI から判断・公開できる。棚卸と証明、Issue の更新も UI から行える(監査に `channel: "ui"`) | `test_approvals.py`、`test_policy_bundles.py`、`test_outbox.py`、`test_reviews.py`、`test_jobs.py`、`test_ui_inbox.py`、`test_ui_reviews_issues.py`、`tests/e2e/test_ui_actions.py` | 実装済み | 会議体の運営は組織の運用。既存の API に却下の無い種類は UI でも却下できない |
 | §17 KPI / Metrics | `edgf/services/kpi.py`、`kpi_snapshots`、ダッシュボード、利用実績(`edgf/services/usage.py`) | `test_ai_kpi.py`、`test_mesh_kpi.py`、`test_ui_api.py`、`test_usage.py` | 実装済み | Usage は Data Plane の集計値の申告で、Control Plane は検証しない。利用者の数だけで、Certified データの利用者の内訳は取らない |
 | §18 Reference Architecture | 製品に依存しない構成、PostgreSQL / SQLite、OIDC、OTLP | `test_db_compat.py`、`tests/e2e_keycloak` | 一部 | 参照アーキテクチャのうち Data Plane 側の製品の組み合わせは対象外 |
 | §19 非機能要件 | 下の表を参照 | `test_perf_*.py`、`test_security_*.py`、`test_audit_anchor.py`、`scripts/ops/restore_drill.py` | 一部 | 下の表を参照 |
