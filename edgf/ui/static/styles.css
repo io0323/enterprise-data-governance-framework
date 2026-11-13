@@ -84,3 +84,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .lineage .node-redacted rect { fill: #e4e7ec; stroke-dasharray: 2 2; }
 .lineage a:focus-visible rect { stroke: var(--focus); stroke-width: 3; }
 .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+
+/* Phase 17: 判断のフォーム */
+button.danger { background: #fff; border-color: #a4262c; color: #a4262c; }
+.op-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.decision-form .field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; max-width: 40rem; }
+.decision-form textarea { font: inherit; padding: 6px 8px; border: 1px solid #6b7686; border-radius: 4px; }
+.decision-form .form-actions { display: flex; gap: 8px; }
+.form-error { color: #a4262c; min-height: 1.2em; }
