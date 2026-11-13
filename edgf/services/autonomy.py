@@ -35,7 +35,7 @@ RUN_STATUSES = (DRY_RUN_STATUS, EXECUTED, PROPOSED, UNDONE, FAILED)
 FALSE_POSITIVE_WINDOW_DAYS = 30
 COMMITTEE_ASSIGNEE = approvals.COMMITTEE_ASSIGNEE
 # 分析と、対象の種類・操作を追加する拡張 (読み込むと register_* を呼ぶ)
-EXTENSIONS: tuple[str, ...] = ("edgf.services.quality_anomaly", "edgf.services.classification")
+EXTENSIONS: tuple[str, ...] = ("edgf.services.quality_anomaly", "edgf.services.classification", "edgf.services.governance_review")
 
 
 class AutonomyConflict(ValueError):

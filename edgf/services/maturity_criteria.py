@@ -31,8 +31,11 @@ KPI_METRICS = frozenset({
     "open_issue_count", "overdue_issue_count", "owner_assignment_rate", "privacy_erasure_open_count", "privacy_erasure_overdue_count",
     "privacy_pii_asset_count", "quality_score_avg", "unregistered_asset_count", "unused_asset_count", "usage_active_assets_30d",
     "usage_query_count_30d",
+    # §20 Level 5 (Phase 19)
+    "autonomy_remediation_rate", "autonomy_false_positive_rate", "anomaly_detected_count", "classification_suggestion_acceptance_rate",
 })
-# Level 5 (自律統治) の指標。Phase 19 で計測できるようになるまでは「計測できない」として扱い、満たさない
+# Phase 18 の基準の Level 5 の仮の指標。既存の環境の基準 (承認済み) が読めるように受け付け、「計測できない」として扱う。
+# Phase 19 からは KPI_METRICS の autonomy_* などで計測する (policies/maturity/criteria.yaml を Policy 変更で更新する)
 PLANNED_METRICS = frozenset({"auto_remediation_rate", "predictive_quality_coverage"})
 _LEVEL_KEYS = {"level", "name", "automatic", "manual"}
 _AUTO_KEYS = {"id", "metric", "op", "threshold", "days", "description"}

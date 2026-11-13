@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from edgf.enums import DataClass, DatasetVersionStatus, ErasureStatus, ProductStatus, RemediationStatus, SubscriptionStatus
-from edgf.models import (AuditEvent, DataAsset, DataProduct, DatasetVersion, Domain, ErasureRequest, ErasureTask, GoldenRecord, Issue, KpiSnapshot,
-                         MdmReview, MdmXref, MeshSubscription, ModelRemediation, utcnow)
+from edgf.models import (AuditEvent, AutonomyControl, ClassificationSuggestion, DataAsset, DataProduct, DatasetVersion, Domain, ErasureRequest,
+                         ErasureTask, GoldenRecord, Issue, KpiSnapshot, MdmReview, MdmXref, MeshSubscription, ModelRemediation, QualityAnomaly,
+                         RemediationRun, utcnow)
 from edgf.services import lineage, lineage_trust
 from edgf.services.ai import card_complete
 from edgf.services.ai_inherit import compute as compute_inherited, is_violation
@@ -78,6 +79,34 @@ def _privacy_metrics(db: Session, domain: str | None, assets: list[DataAsset], a
         "privacy_pii_asset_count": sum(1 for a in assets if a.contains_pii),
         "privacy_erasure_open_count": len(open_requests),
         "privacy_erasure_overdue_count": sum(1 for r in open_requests if r.due_at < now),
+    }
+
+
+AUTONOMY_WINDOW_DAYS = 30
+
+
+def _autonomy_metrics(db: Session, domain: str | None, ids: list[str], all_issues: list[Issue], now: datetime) -> dict:
+    """§20 Level 5 の指標 (Phase 19)。自動の是正は active のプレイブックの実行だけを数える (dry_run は数えない)。"""
+    since = now - timedelta(days=AUTONOMY_WINDOW_DAYS)
+    closed_by_autonomy = set(db.scalars(select(RemediationRun.target_id).where(
+        RemediationRun.action == "issue.close_recovered", RemediationRun.mode == "active", RemediationRun.status == "executed")))
+    a_runs = select(RemediationRun.status).where(RemediationRun.category == "A", RemediationRun.mode == "active",
+                                                 RemediationRun.status.in_(("executed", "undone")), RemediationRun.created_at >= since)
+    anomalies = select(func.count()).select_from(QualityAnomaly).where(QualityAnomaly.detected_at >= since)
+    decided = select(ClassificationSuggestion.status).where(ClassificationSuggestion.status.in_(("accepted", "rejected")))
+    if domain:
+        a_runs = a_runs.where(RemediationRun.asset_id.in_(ids))
+        anomalies = anomalies.where(QualityAnomaly.asset_id.in_(ids))
+        decided = decided.where(ClassificationSuggestion.asset_id.in_(ids))
+    statuses = db.scalars(a_runs).all()
+    decisions = db.scalars(decided).all()
+    last_detection = db.scalar(select(AutonomyControl.last_detection_at).where(AutonomyControl.id == 1))
+    detecting = last_detection is not None and last_detection >= since  # 検知が動いていなければ「計測していない」(None)
+    return {
+        "autonomy_remediation_rate": _rate(sum(1 for i in all_issues if i.id in closed_by_autonomy), len(all_issues)),
+        "autonomy_false_positive_rate": _rate(statuses.count("undone"), len(statuses)),
+        "anomaly_detected_count": (db.scalar(anomalies) or 0) if detecting else None,
+        "classification_suggestion_acceptance_rate": _rate(decisions.count("accepted"), len(decisions)),
     }
 
 
@@ -157,6 +186,7 @@ def compute(db: Session, domain: str | None = None, readable: ColumnElement[bool
         **_ai_metrics(db, list(assets), now),
         **_mesh_metrics(db, domain, ids),
         **_privacy_metrics(db, domain, list(assets), ids, now),
+        **_autonomy_metrics(db, domain, ids, list(all_issues), now),
     }
 
 
