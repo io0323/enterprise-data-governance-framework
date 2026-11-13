@@ -71,6 +71,12 @@ def _can_decide_step(principal: Principal, step: Mapping[str, Any], asset: DataA
     return authz.rule_allows(principal, APPROVER_RULES[step["rule"]], asset=asset, domain=step.get("domain"))
 
 
+def excluded(db: Session, principal: Principal, req: ApprovalRequest) -> str | None:
+    """種別に固有の除外 (成熟度の判定の対象ドメインの Owner / Steward など)。除外の理由を返す。"""
+    hook = approval_types.resolve(approval_types.TYPES[req.type].excludes)
+    return hook(db, principal, req) if hook else None
+
+
 def _decidable(principal: Principal, req: ApprovalRequest, asset: DataAsset | None) -> bool:
     if req.status != A.PENDING.value or principal.subject == req.requested_by:
         return False
@@ -82,7 +88,7 @@ def _decidable(principal: Principal, req: ApprovalRequest, asset: DataAsset | No
 def can_decide(db: Session, principal: Principal, req: ApprovalRequest) -> bool:
     """この人が今のステップで判断できるか (inbox の判定と同じ)。"""
     asset = db.get(DataAsset, req.asset_id) if req.asset_id else None
-    if not _decidable(principal, req, asset):
+    if not _decidable(principal, req, asset) or excluded(db, principal, req):
         return False
     return db.scalar(select(ApprovalDecision.id).where(ApprovalDecision.request_id == req.id,
                                                        ApprovalDecision.decided_by == principal.subject)) is None
@@ -96,7 +102,8 @@ def decidable_pending(db: Session, principal: Principal) -> list[tuple[ApprovalR
     for start in range(0, len(asset_ids), BATCH):
         assets.update({a.id: a for a in db.scalars(select(DataAsset).where(DataAsset.id.in_(asset_ids[start:start + BATCH])))})
     decided = set(db.scalars(select(ApprovalDecision.request_id).where(ApprovalDecision.decided_by == principal.subject)))
-    return [(r, assets.get(r.asset_id)) for r in requests if r.id not in decided and _decidable(principal, r, assets.get(r.asset_id))]
+    return [(r, assets.get(r.asset_id)) for r in requests if r.id not in decided and _decidable(principal, r, assets.get(r.asset_id))
+            and not excluded(db, principal, r)]
 
 
 def _require_decider(db: Session, principal: Principal, req: ApprovalRequest) -> None:
@@ -111,6 +118,9 @@ def _require_decider(db: Session, principal: Principal, req: ApprovalRequest) ->
     step = current_step(req)
     if not _can_decide_step(principal, step, asset):
         deny(f"このステップ ({step['name']}) を判断する権限がありません", APPROVER_RULES[step["rule"]])
+    reason = excluded(db, principal, req)
+    if reason:
+        deny(reason)
     if db.scalar(select(ApprovalDecision.id).where(ApprovalDecision.request_id == req.id,
                                                    ApprovalDecision.decided_by == principal.subject)):
         deny("同じ案件を 2 回判断することはできません (職務分離)")

@@ -11,7 +11,7 @@ from edgf.db import get_session
 from edgf.deps import get_principal
 from edgf.models import MaturityAssessment
 from edgf.pagination import Page, page_params, paginate
-from edgf.schemas import MaturityCancelIn, MaturityCreateIn
+from edgf.schemas import MaturityCancelIn, MaturityCreateIn, MaturityDecisionIn, MaturityReferenceIn, MaturitySelfAssessmentIn
 from edgf.services import maturity, maturity_criteria
 
 router = APIRouter(prefix="/maturity", tags=["maturity"])
@@ -62,3 +62,43 @@ def cancel_assessment(assessment_id: str, body: MaturityCancelIn, db: Session = 
     row = maturity.get(db, assessment_id, lock=True)
     authz.require(db, principal, "maturity.assessment.create", domain=row.domain, entity_type="maturity_assessment", entity_id=row.id)
     return maturity.view(maturity.cancel(db, principal.audit_actor, row, reason=body.reason))
+
+
+@router.put("/assessments/{assessment_id}/self-assessment")
+def self_assess(assessment_id: str, body: MaturitySelfAssessmentIn, db: Session = Depends(get_session),
+                principal: Principal = Depends(get_principal)):
+    """対象ドメインの Owner の自己評価。手動の基準ごとに、達成したかと証拠 (https の URI と説明)。"""
+    row = maturity.get(db, assessment_id, lock=True)
+    authz.require(db, principal, "maturity.self_assess", domain=row.domain, entity_type="maturity_assessment", entity_id=row.id)
+    items = [i.model_dump() for i in body.items]
+    return maturity.view(maturity.self_assess(db, principal.audit_actor, principal, row, items))
+
+
+@router.post("/assessments/{assessment_id}/decision")
+def decide(assessment_id: str, body: MaturityDecisionIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """Committee の判定 (承認エンジンの maturity_assessment)。上限を超えると 422、下げるときは理由が必要。"""
+    row = maturity.get(db, assessment_id, lock=True)
+    authz.require(db, principal, "maturity.decide", domain=row.domain, entity_type="maturity_assessment", entity_id=row.id)
+    return maturity.view(maturity.decide(db, principal.audit_actor, principal, row, level=body.level, manual=body.manual,
+                                         reason=body.reason))
+
+
+@router.get("/references")
+def list_references(db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "maturity.read", entity_type="maturity", entity_id="references")
+    return maturity.references(db)
+
+
+@router.post("/references", status_code=201)
+def set_reference(body: MaturityReferenceIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """判定済みのドメインを参照ドメイン (先行ドメイン) に指定する (Committee)。"""
+    authz.require(db, principal, "maturity.reference.set", entity_type="maturity_reference", entity_id=body.domain)
+    maturity.set_reference(db, principal.audit_actor, principal, body.domain, body.reason)
+    return next(r for r in maturity.references(db) if r["domain"] == body.domain)
+
+
+@router.delete("/references/{domain}", status_code=204)
+def unset_reference(domain: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    authz.require(db, principal, "maturity.reference.set", entity_type="maturity_reference", entity_id=domain)
+    maturity.unset_reference(db, principal.audit_actor, domain)
+    return Response(status_code=204)

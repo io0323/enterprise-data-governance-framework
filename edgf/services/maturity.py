@@ -15,9 +15,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from edgf.auth import OWNER, STEWARD
 from edgf.config import settings
 from edgf.errors import ProblemError
-from edgf.models import Domain, KpiSnapshot, MaturityAssessment, utcnow
+from edgf.models import Domain, KpiSnapshot, MaturityAssessment, MaturityReference, utcnow
 from edgf.services import audit, maturity_criteria
 from edgf.services.maturity_criteria import Automatic, Criteria
 
@@ -200,3 +201,141 @@ def view(row: MaturityAssessment, *, detail: bool = True) -> dict[str, Any]:
         out.update({"criteria": row.criteria, "auto_results": row.auto_results, "self_assessment": row.self_assessment,
                     "decision": row.decision, "next_level_gaps": gaps(row, target) if target and target <= 5 else []})
     return out
+
+
+# ---------------------------------------------------------------- 職務分離 (承認エンジンの種別の除外)
+def excluded_decider(db: Session, principal: Any, req: Any) -> str | None:
+    """対象ドメインの Owner と Steward は、Committee のロードを持っていても判定に加われない。"""
+    row = db.get(MaturityAssessment, req.target_id)
+    if row is None:
+        return None
+    domain = db.get(Domain, row.domain)
+    if (principal.has_role(OWNER, STEWARD) and principal.in_domain(row.domain)) or (domain is not None and domain.owner == principal.subject):
+        return f"対象ドメイン ({row.domain}) の Owner と Steward は、成熟度の判定に加われません (職務分離)"
+    return None
+
+
+# ---------------------------------------------------------------- 自己評価
+def self_assess(db: Session, actor: str, principal: Any, row: MaturityAssessment, items: Sequence[dict[str, Any]]) -> MaturityAssessment:
+    """ドメインの Owner が手動の基準ごとに、達成したかと証拠 (https の URI と説明) を入力する。判定の前なら出し直せる。
+
+    最初の提出で、承認エンジンの maturity_assessment の案件を起票する (Committee が判定する)。
+    """
+    require_state(row, AUTO_EVALUATED, SELF_ASSESSED)
+    known = {m["id"] for lv in (row.criteria or {}).get("levels", []) for m in lv["manual"]}
+    ids = [i["criterion_id"] for i in items]
+    unknown = sorted(set(ids) - known)
+    if unknown:
+        raise invalid(f"手動の基準にない id です: {unknown}")
+    if len(ids) != len(set(ids)):
+        raise invalid("同じ基準が 2 回入力されています")
+    entries = [{"criterion_id": i["criterion_id"], "achieved": bool(i["achieved"]),
+                "evidence": [{"uri": e["uri"], "description": e.get("description", "")} for e in i.get("evidence", [])]} for i in items]
+    audit.guard_payload({"items": entries})  # 説明文に個人情報の可能性がある値があれば、保存せずに 422
+    first = row.status == AUTO_EVALUATED
+    row.self_assessment, row.self_assessed_by, row.self_assessed_at, row.status = entries, principal.subject, utcnow(), SELF_ASSESSED
+    db.flush()
+    audit.record(db, actor, "maturity.self_assess", "maturity_assessment", row.id, {
+        "domain": row.domain, "items": entries, "resubmitted": not first})
+    if row.approval_id is None:
+        from edgf.services import approvals  # 循環 import 回避
+
+        req = approvals.create(db, actor, type_name="maturity_assessment", requested_by=principal.subject, target_type="maturity_assessment",
+                               target_id=row.id, reason=f"{row.domain} の成熟度の判定",
+                               payload={"domain": row.domain, "indicative_level": row.indicative_level, "level_cap": row.level_cap},
+                               due_at=row.due_at)
+        row.approval_id = req.id
+        db.flush()
+    return row
+
+
+# ---------------------------------------------------------------- 判定
+ACCEPTED, REJECTED = "accepted", "rejected"
+
+
+def decide(db: Session, actor: str, principal: Any, row: MaturityAssessment, *, level: int, manual: dict[str, str],
+           reason: str) -> MaturityAssessment:
+    """Committee の判定。上限 (min(目安, 前回 + 1)) を超えると 422。下げる判定には理由が必要。判定が済んだ記録は変更できない。"""
+    from edgf import authz  # 循環 import 回避
+    from edgf.models import ApprovalRequest
+    from edgf.services import approvals
+
+    require_state(row, SELF_ASSESSED)
+    req = db.get(ApprovalRequest, row.approval_id, with_for_update=True)
+    why = excluded_decider(db, principal, req)
+    if why:  # 職務分離は入力の検証より先に (権限の無い人に検証の結果を返さない)
+        authz.deny(db, principal, "maturity.decide", entity_type="maturity_assessment", entity_id=row.id, reason=why)
+    cap = row.level_cap if row.level_cap is not None else 0
+    previous = row.previous_level or 0
+    if not 0 <= level <= cap:
+        raise invalid(f"判定できるレベルは 0〜{cap} です (目安 {row.indicative_level}、前回 {previous} + 1 のうち低い方。飛び級はできません)",
+                      level_cap=cap, indicative_level=row.indicative_level, previous_level=previous)
+    if level < previous and not reason.strip():
+        raise invalid(f"前回のレベル ({previous}) より下げる判定には理由が必要です")
+    by_id = {m["id"]: lv["level"] for lv in (row.criteria or {}).get("levels", []) for m in lv["manual"]}
+    unknown = sorted(set(manual) - set(by_id))
+    if unknown:
+        raise invalid(f"手動の基準にない id です: {unknown}")
+    if any(v not in (ACCEPTED, REJECTED) for v in manual.values()):
+        raise invalid("手動の基準の判断は accepted か rejected です")
+    required = sorted(cid for cid, lv in by_id.items() if lv <= level)
+    missing = [cid for cid in required if manual.get(cid) != ACCEPTED]
+    if missing:
+        raise invalid(f"Level {level} と判定するには、そのレベルまでの手動の基準をすべて認める必要があります: {missing}")
+    approvals.decide(db, principal, req, approve=True, comment=reason)
+    if req.status != "approved":  # 定足数が 1 なので起きないが、複数の判定者を求める変更に備える
+        db.flush()
+        return row
+    row.decided_level, row.decided_by, row.decided_at, row.status = level, principal.subject, utcnow(), DECIDED
+    row.decision = {"indicative_level": row.indicative_level, "previous_level": previous, "level_cap": cap, "level": level,
+                    "manual": {cid: manual[cid] for cid in sorted(manual)}, "reason": reason.strip()}
+    db.flush()
+    audit.record(db, actor, "maturity.decide", "maturity_assessment", row.id, {"domain": row.domain, **row.decision})
+    return row
+
+
+# ---------------------------------------------------------------- 参照ドメイン (§20 先行ドメインをリファレンスとする)
+def set_reference(db: Session, actor: str, principal: Any, domain: str, reason: str) -> MaturityReference:
+    found = latest_decided(db, domain)
+    if found is None:
+        raise invalid(f"ドメイン {domain} には判定済みの評価がありません (参照ドメインには判定済みのドメインだけを指定できます)")
+    row = db.get(MaturityReference, domain) or MaturityReference(domain=domain)
+    row.level, row.assessment_id, row.reason, row.designated_by, row.designated_at = found.decided_level, found.id, reason, principal.subject, utcnow()
+    db.add(row)
+    db.flush()
+    audit.record(db, actor, "maturity.reference.set", "maturity_reference", domain, {"level": row.level, "assessment_id": found.id,
+                                                                                    "reason": reason})
+    return row
+
+
+def unset_reference(db: Session, actor: str, domain: str) -> None:
+    row = db.get(MaturityReference, domain)
+    if row is None:
+        raise ProblemError(404, f"参照ドメインではありません: {domain}", type_="not-found")
+    db.delete(row)
+    db.flush()
+    audit.record(db, actor, "maturity.reference.unset", "maturity_reference", domain, {"level": row.level})
+
+
+def references(db: Session, *, target_level: int | None = None, exclude: str | None = None) -> list[dict[str, Any]]:
+    """参照ドメイン。target_level を渡すと、そのレベルに到達しているものだけ (同じレベルを目指すドメインに示す)。"""
+    stmt = select(MaturityReference).order_by(MaturityReference.level.desc(), MaturityReference.domain)
+    rows = db.scalars(stmt).all()
+    return [{"domain": r.domain, "level": r.level, "level_name": LEVEL_NAMES.get(r.level), "assessment_id": r.assessment_id,
+             "reason": r.reason, "designated_by": r.designated_by, "designated_at": r.designated_at}
+            for r in rows if (target_level is None or r.level >= target_level) and r.domain != exclude]
+
+
+def inbox_operations(db: Session, req: Any) -> tuple[str, tuple[dict[str, Any], ...]]:
+    """承認箱の案件の表示と、判定の操作 (レベルは上限まで、手動の基準ごとの判断、理由)。"""
+    from edgf.services.approval_sources import field_, operation  # 循環 import 回避
+
+    row = db.get(MaturityAssessment, req.target_id)
+    cap = row.level_cap or 0
+    fields = [field_("level", kind="select", required=True, options=[str(n) for n in range(cap + 1)])]
+    fields += [field_(f"manual.{m['id']}", kind="select", options=[ACCEPTED, REJECTED])
+               for lv in (row.criteria or {}).get("levels", []) if lv["level"] <= cap for m in lv["manual"]]
+    fields.append(field_("reason"))
+    path = f"/api/v1/maturity/assessments/{row.id}/decision"
+    return (f"成熟度の判定: {row.domain} (目安 {row.indicative_level}、上限 {cap})",
+            (operation("decide", "POST", path, "maturity.decide", fields=fields),))

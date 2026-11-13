@@ -77,9 +77,13 @@ class EngineSource:
         for req, asset in approvals.decidable_pending(db, principal):
             if asset is None or authz.can_read(db, principal, asset):
                 path = f"/api/v1/approvals/{req.id}/decision"
-                yield InboxItem(self.kind, req.id, f"{req.type}: {req.target_id}", f"POST {path}",
+                title, ops = f"{req.type}: {req.target_id}", approve_reject(path, "approval.decide")
+                if req.type == "maturity_assessment":  # 判定はレベルと手動の基準の判断を入力する専用の API (§20)
+                    from edgf.services import maturity
+                    title, ops = maturity.inbox_operations(db, req)
+                yield InboxItem(self.kind, req.id, title, f"{ops[0]['method']} {ops[0]['path']}",
                                 asset_id=req.asset_id, requested_by=req.requested_by, due_at=req.due_at, created_at=req.created_at,
-                                operations=approve_reject(path, "approval.decide"))
+                                operations=ops)
         if authz.is_allowed(principal, "policy.publish"):
             # 承認を終えた Policy の変更は、公開して有効になる (§16 Policy)。公開も Committee の操作なので、ここに並べる
             for bundle in db.scalars(select(PolicyBundle).where(PolicyBundle.status == BundleStatus.APPROVED.value).order_by(PolicyBundle.version)):

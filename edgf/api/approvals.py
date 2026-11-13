@@ -11,6 +11,7 @@ from edgf import authz
 from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_asset_or_404, get_principal
+from edgf.errors import ProblemError
 from edgf.enums import ApprovalStatus, LifecycleState
 from edgf.models import ApprovalDecision, ApprovalRequest, DataAsset, to_naive_utc, utcnow
 from edgf.pagination import Page, page_params, paginate, paginate_list
@@ -106,6 +107,10 @@ def get_approval(approval_id: str, db: Session = Depends(get_session), principal
 @router.post("/{approval_id}/decision", response_model=ApprovalOut)
 def decide_approval(approval_id: str, body: ApprovalDecisionIn, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
     req = _get(db, approval_id, lock=True)
+    path = approval_types.TYPES[req.type].decision_path
+    if path:  # 判断に種別に固有の入力がある (成熟度の判定のレベルなど)。共通の API では判断できない
+        raise ProblemError(409, f"この種別 ({req.type}) は {path.format(target_id=req.target_id)} で判断してください",
+                           type_="approval-decision-elsewhere", decision_path=path.format(target_id=req.target_id))
     try:
         approvals.decide(db, principal, req, approve=body.approve, comment=body.comment)
     except ApprovalConflict as e:
