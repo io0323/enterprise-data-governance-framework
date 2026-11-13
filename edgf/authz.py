@@ -274,6 +274,20 @@ def require(db: Session, principal: Principal, action: str, *, asset: DataAsset 
         deny(db, principal, action, entity_type=entity_type,
              entity_id=entity_id or (asset.id if asset is not None else None),
              reason=f"この操作 ({action}: {r.description}) を行う権限がありません", required=r)
+    if PERMISSIONS[action].approval:
+        require_step_up(principal, action)
+
+
+def require_step_up(principal: Principal, action: str) -> None:
+    """✓ の操作 (承認行為) を UI の経路で行うなら、最近ログインしていること (Phase 17)。Bearer の経路には適用しない。
+
+    認可の判定のあとに確かめるので、権限の無い利用者には従来どおり 403 を返す。
+    """
+    from edgf.services.ui_sessions import step_up_fresh  # 循環 import 回避
+
+    if not step_up_fresh(principal):
+        raise ProblemError(401, f"この操作 ({action}) の前に、もう一度ログインしてください (ログインから時間がたっています)",
+                           type_="step-up-required", action=action, login_url="/ui/auth/login?max_age=0")
 
 
 # ---------------------------------------------------------------- ABAC (読み取り)

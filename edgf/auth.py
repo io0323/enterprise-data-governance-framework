@@ -87,6 +87,7 @@ class Principal:
     channel: str = "api"
     auth_time: datetime | None = None
     session_ref: str | None = None
+    write_request: bool = False  # ui の経路の GET / HEAD / OPTIONS 以外の要求 (ステップアップの判定の対象)
 
     @property
     def audit_actor(self) -> str:

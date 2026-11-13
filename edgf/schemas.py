@@ -308,7 +308,13 @@ class ExceptionIn(BaseModel):
 
 class ExceptionDecision(BaseModel):
     approve: bool
-    comment: str = ""
+    comment: str = Field(default="", description="却下のときは必須 (Phase 17 から。他の判断の API と同じ)")
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ExceptionDecision:
+        if not self.approve and not self.comment.strip():
+            raise ValueError("却下には comment が必要です")
+        return self
 
 
 class ExceptionOut(ORM):

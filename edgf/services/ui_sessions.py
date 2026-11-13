@@ -97,10 +97,10 @@ def load(db: Session, raw: str | None, *, now: datetime | None = None, limits: L
     return row
 
 
-def principal_of(row: UiSession) -> Principal:
+def principal_of(row: UiSession, *, write_request: bool = False) -> Principal:
     return Principal(subject=row.subject, roles=frozenset(row.roles or []), clearance=row.clearance,
                      domains=frozenset(row.domains or []), auth_mode="jwt", channel="ui", auth_time=row.auth_time,
-                     session_ref=session_ref(row.id_hash))
+                     session_ref=session_ref(row.id_hash), write_request=write_request)
 
 
 def csrf_valid(row: UiSession, token: str | None) -> bool:
@@ -130,8 +130,8 @@ def view(row: UiSession, raw: str, limits: Limits | None = None) -> dict[str, An
 
 
 def step_up_fresh(principal: Principal, *, now: datetime | None = None) -> bool:
-    """✓ の操作の前提: UI の経路なら、ログインから EDGF_STEP_UP_MINUTES 以内であること。Bearer の経路には適用しない。"""
-    if principal.channel != "ui":
+    """✓ の操作の前提: UI の経路の書き込みなら、ログインから EDGF_STEP_UP_MINUTES 以内であること。Bearer の経路には適用しない。"""
+    if principal.channel != "ui" or not principal.write_request:
         return True
     now = now or utcnow()
     return principal.auth_time is not None and now - principal.auth_time <= timedelta(minutes=settings.step_up_minutes)

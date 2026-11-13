@@ -32,9 +32,10 @@ def _session_principal(request: Request, raw: str) -> Principal:
         if row is None:
             raise ProblemError(401, "ログインしていないか、セッションの期限が切れています", type_="session-expired",
                                headers={"Set-Cookie": bff.clear_cookie_header(ui_sessions.SESSION_COOKIE)})
-        if request.method not in ui_sessions.SAFE_METHODS:
+        write = request.method not in ui_sessions.SAFE_METHODS
+        if write:
             bff.check_csrf(request.app.state.settings, request, row)
-        principal = ui_sessions.principal_of(row)
+        principal = ui_sessions.principal_of(row, write_request=write)
     holder = channel_var.get()
     if holder is not None:  # 監査の payload に経路とセッションの参照を残す
         holder.update({"channel": "ui", "session": principal.session_ref})
