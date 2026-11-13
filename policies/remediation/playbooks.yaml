@@ -1,0 +1,73 @@
+# §20 Level 5 自律統治: 自動の是正のプレイブック (Phase 19。docs/adr/0001-autonomous-remediation-scope.md)
+#
+# 操作 (action) はコードのカタログ (edgf/services/autonomy_catalog.py) からだけ選べる。区分 (category) はカタログと一致させる。
+# 初期のプレイブックはすべて dry_run。active への切り替えは、この mode を変える Policy 変更として Committee の承認と公開を経て行う。
+# EDGF_AUTONOMY_ENABLED が false (既定) の環境では、dry_run も含めて何も実行しない。
+playbooks:
+  - id: PB-ANOMALY-ISSUE
+    description: 品質の異常 (外れ値・劣化の予測・件数の急減・更新の遅れ) を検知したら、資産の Steward に Issue を起票する
+    trigger: {detector: quality_anomaly}
+    condition: {kinds: [outlier, trend, volume_drop, freshness]}
+    action: issue.open
+    category: A
+    mode: dry_run
+    max_actions_per_run: 50
+
+  - id: PB-ANOMALY-DECERTIFY
+    description: Certified の資産でスコアの外れ値か件数の急減を検知したら、draft に戻す (Owner が再認証する)
+    trigger: {event: quality.anomaly_detected}
+    condition: {kinds: [outlier, volume_drop], certified_only: true}
+    action: certification.revert_to_draft
+    category: A
+    mode: dry_run
+    max_actions_per_run: 10
+    undo_days: 30
+    false_positive_threshold: 0.2
+
+  - id: PB-ISSUE-RECOVERED
+    description: 品質ルールが 3 回続けて閾値を上回ったら、そのルールの品質の Issue を閉じる
+    trigger: {detector: quality_recovered}
+    condition: {consecutive_passes: 3}
+    action: issue.close_recovered
+    category: A
+    mode: dry_run
+    max_actions_per_run: 50
+    undo_days: 30
+    false_positive_threshold: 0.2
+
+  - id: PB-ACCESS-STALE
+    description: 期限切れのまま残っている閲覧の承認と、対象の資産が削除された閲覧の承認を取り消す
+    trigger: {detector: stale_access}
+    condition: {expired: true, asset_gone: true}
+    action: access.revoke_stale
+    category: A
+    mode: dry_run
+    max_actions_per_run: 100
+    undo_days: 30
+    false_positive_threshold: 0.1
+
+  - id: PB-CLASSIFICATION
+    description: メタデータ (カラム名・説明文・Lineage・Glossary) からの分類の提案を、対象資産の Owner / Steward の承認に回す
+    trigger: {detector: classification_scan}
+    condition: {min_confidence: 0.6}
+    action: propose.classification
+    category: B
+    mode: dry_run
+    max_actions_per_run: 50
+
+  - id: PB-OWNER-ASSIGNMENT
+    description: Owner の無い資産に、ドメインの Owner を割り当てる提案を Committee の承認に回す
+    trigger: {detector: unowned_assets}
+    action: propose.owner_assignment
+    category: B
+    mode: dry_run
+    max_actions_per_run: 20
+
+  - id: PB-POLICY-REVIEW
+    description: 常に合格・一度も適用されない・例外の申請が多い・不合格が長く続く Policy の見直しを Committee に起票する
+    trigger: {detector: policy_review_scan}
+    condition: {findings: [always_pass, never_applied, exception_heavy, long_failing], always_pass_days: 180, exception_threshold: 5, failing_days: 90}
+    action: propose.policy_review
+    category: B
+    mode: dry_run
+    max_actions_per_run: 20
