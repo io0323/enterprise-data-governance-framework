@@ -65,7 +65,8 @@ function maturityView(kpi) {
         {title: t("maturity.current"), render: (c) => formatRate(c.value)},
         {title: t("kpi.state"), render: (c) => badge(t(c.met ? "kpi.met" : "kpi.missed"), c.met ? "ok" : "bad")},
       ], next.conditions)) : h("p", {}, t("maturity.top")),
-    h("p", {class: "muted"}, maturity.note));
+    h("p", {class: "muted"}, maturity.note),
+    h("p", {}, h("a", {href: "#/maturity"}, t("maturity_eval.see_formal"))));
 }
 
 function group(title, kpi, metrics) {
