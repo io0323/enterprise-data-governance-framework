@@ -1176,3 +1176,20 @@ class RemediationRun(Base):
     undone_at: Mapped[datetime | None] = mapped_column(DateTime)
     undone_by: Mapped[str | None] = mapped_column(String(200))
     undo_reason: Mapped[str] = mapped_column(Text, default="")
+
+
+class QualityAnomaly(Base):
+    """§5 Continuous Data Quality: 品質の異常の検知の結果 (Phase 19)。
+
+    品質検査の実行履歴 (スコア、ディメンション別のスコア、件数) と実行の間隔だけから求める。データの値は使わない。
+    根拠 (使った値、中央値、MAD、z 値、傾き、予測の時期) を evidence に残す。同じ実行の同じ異常は 1 回だけ記録する。
+    """
+    __tablename__ = "quality_anomalies"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("data_assets.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), index=True)  # outlier / trend / volume_drop / freshness
+    metric: Mapped[str] = mapped_column(String(100))  # score / dimension:<名前> / record_count / interval
+    run_id: Mapped[str] = mapped_column(String(36))  # 判定に使った最新の実行
+    fingerprint: Mapped[str] = mapped_column(String(300), unique=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)

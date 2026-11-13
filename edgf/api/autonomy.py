@@ -14,10 +14,10 @@ from edgf.auth import Principal
 from edgf.db import get_session
 from edgf.deps import get_principal
 from edgf.errors import ProblemError
-from edgf.models import DataAsset, RemediationRun
+from edgf.models import DataAsset, QualityAnomaly, RemediationRun
 from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import AutonomyResumeIn, AutonomyStopIn, RemediationUndoIn
-from edgf.services import autonomy
+from edgf.services import autonomy, quality_anomaly
 
 router = APIRouter(prefix="/autonomy", tags=["autonomy"])
 
@@ -118,3 +118,26 @@ def resume(body: AutonomyResumeIn, db: Session = Depends(get_session), principal
     except autonomy.AutonomyConflict as e:
         raise _conflict(e) from e
     return autonomy.status_view(db)
+
+
+# ---------------------------------------------------------------- 品質の異常 (§5 Continuous Data Quality)
+@router.get("/anomalies")
+def list_anomalies(request: Request, response: Response, asset_id: str | None = None, kind: str | None = None,
+                   page: Page = Depends(page_params()), db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """検知した品質の異常 (新しい順)。根拠 (使った値、中央値、MAD、z 値、傾き) を含む。"""
+    stmt = scoped(db, principal, select(QualityAnomaly), QualityAnomaly.asset_id)
+    for column, value in ((QualityAnomaly.asset_id, asset_id), (QualityAnomaly.kind, kind)):
+        if value is not None:
+            stmt = stmt.where(column == value)
+    stmt = stmt.order_by(QualityAnomaly.detected_at.desc(), QualityAnomaly.id)
+    rows = paginate(db, stmt, page, request, response)
+    return [quality_anomaly.view(row, db.get(DataAsset, row.asset_id)) for row in rows]
+
+
+@router.get("/assets/{asset_id}/anomaly-check")
+def anomaly_check(asset_id: str, db: Session = Depends(get_session), principal: Principal = Depends(get_principal)):
+    """その場での評価 (保存しない)。履歴が 10 回未満なら評価せず、その旨を返す。"""
+    asset = require_visible(db, principal, asset_id, "資産", asset_id)
+    if asset is None:
+        raise ProblemError(404, "資産が見つかりません", type_="not-found")
+    return quality_anomaly.assess(db, asset)

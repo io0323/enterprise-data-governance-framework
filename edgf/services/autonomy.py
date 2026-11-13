@@ -35,7 +35,7 @@ RUN_STATUSES = (DRY_RUN_STATUS, EXECUTED, PROPOSED, UNDONE, FAILED)
 FALSE_POSITIVE_WINDOW_DAYS = 30
 COMMITTEE_ASSIGNEE = approvals.COMMITTEE_ASSIGNEE
 # 分析と、対象の種類・操作を追加する拡張 (読み込むと register_* を呼ぶ)
-EXTENSIONS: tuple[str, ...] = ()
+EXTENSIONS: tuple[str, ...] = ("edgf.services.quality_anomaly",)
 
 
 class AutonomyConflict(ValueError):
@@ -57,6 +57,8 @@ class Executor:
     preview: Callable[[Session, Candidate, str, datetime], dict[str, Any]]    # 操作の後の状態 (予想。dry_run で記録する)
     apply: Callable[[Session, str, Candidate, Playbook, datetime], dict[str, Any]]  # {"after", "approval_id", "issue_id", "result"}
     undo: Callable[[Session, str, RemediationRun], None] | None = None
+    # 操作の前提 (対象がまだ操作の前の状態か)。同じ実行の中で先の操作が済ませた対象は、記録せずに飛ばす
+    applicable: Callable[[Session, Candidate], bool] | None = None
 
 
 Detector = Callable[[Session, Mapping[str, Any], datetime], list[Candidate]]
@@ -272,10 +274,14 @@ def _run_playbook(db: Session, pb: Playbook, digest: str | None, batch: str, now
     fresh = [(t, c) for t, c in timed if not _already(db, pb, c)]
     take, rest = fresh[:pb.max_actions_per_run], fresh[pb.max_actions_per_run:]
     counts = {s: 0 for s in RUN_STATUSES}
+    executor = EXECUTORS[pb.action]
     for _, candidate in take:
         if is_stopped(db):
             counts["stopped"] = 1
             break
+        if executor.applicable is not None and not executor.applicable(db, candidate):
+            counts["not_applicable"] = counts.get("not_applicable", 0) + 1
+            continue
         counts[_execute(db, pb, digest, candidate, batch, now).status] += 1
     if rest:
         if pb.trigger_type == "event" and take:
@@ -309,6 +315,7 @@ def run(db: Session, now: datetime | None = None) -> dict[str, Any]:
 def undo(db: Session, actor: str, row: RemediationRun, reason: str, now: datetime | None = None) -> RemediationRun:
     """区分 A の操作を、操作の前の状態に戻す。権限 (remediation.undo) の判定は呼び出し側で行う。"""
     now = now or utcnow()
+    load_extensions()
     op = CATALOG.get(row.action)
     if row.status != EXECUTED:
         raise AutonomyConflict(f"取り消せるのは実行済みの操作だけです (状態: {row.status})")
@@ -531,6 +538,8 @@ def on_owner_assignment_approved(db: Session, actor: str, req: ApprovalRequest, 
 register_kind("stale_grant", detect_stale_grants, load_stale_grant)
 register_kind("recovered_issue", detect_recovered)
 register_kind("unowned_asset", detect_unowned)
-register_operation("access.revoke_stale", Executor(_grant_snapshot, _grant_preview, _grant_apply, _grant_undo))
-register_operation("issue.close_recovered", Executor(_issue_snapshot, _issue_preview, _issue_apply, _issue_undo))
+register_operation("access.revoke_stale", Executor(_grant_snapshot, _grant_preview, _grant_apply, _grant_undo,
+                                                  lambda db, c: db.get(AccessGrant, c.target_id).revoked_at is None))
+register_operation("issue.close_recovered", Executor(_issue_snapshot, _issue_preview, _issue_apply, _issue_undo,
+                                                    lambda db, c: db.get(Issue, c.target_id).status in issues.OPEN_STATES))
 register_operation("propose.owner_assignment", Executor(_owner_snapshot, _owner_preview, _owner_apply))
