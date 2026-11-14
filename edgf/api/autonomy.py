@@ -17,7 +17,7 @@ from edgf.errors import ProblemError
 from edgf.models import ApprovalRequest, ClassificationSuggestion, DataAsset, QualityAnomaly, RemediationRun
 from edgf.pagination import Page, page_params, paginate
 from edgf.schemas import AutonomyResumeIn, AutonomyStopIn, RemediationUndoIn, SuggestionDecisionIn
-from edgf.services import approvals, autonomy, classification, quality_anomaly
+from edgf.services import approvals, autonomy, autonomy_catalog, classification, quality_anomaly
 
 router = APIRouter(prefix="/autonomy", tags=["autonomy"])
 
@@ -94,6 +94,9 @@ def undo_run(run_id: str, body: RemediationUndoIn, db: Session = Depends(get_ses
     if asset is not None:
         authz.require_read(db, principal, asset)
     authz.require(db, principal, "remediation.undo", asset=asset, entity_type="remediation_run", entity_id=row.id)
+    op = autonomy_catalog.CATALOG.get(row.action)
+    if op is not None and op.undo_raises_trust:  # 閲覧の承認や Certification を戻すのは、承認行為と同じ重さの操作
+        authz.require_step_up(principal, "remediation.undo")
     try:
         autonomy.undo(db, principal.audit_actor, row, body.reason)
     except autonomy.AutonomyConflict as e:

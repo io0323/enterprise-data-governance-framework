@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from edgf import authz
@@ -283,10 +283,14 @@ def _run_playbook(db: Session, pb: Playbook, digest: str | None, batch: str, now
             counts["not_applicable"] = counts.get("not_applicable", 0) + 1
             continue
         counts[_execute(db, pb, digest, candidate, batch, now).status] += 1
+        # 操作ごとに確定する。監査のチェーンのロック (PostgreSQL の advisory lock) をジョブの終わりまで持たないので、
+        # 実行中でも POST /autonomy/stop がすぐに確定し、次の操作の前の is_stopped で止まる
+        db.commit()
     if rest:
         if pb.trigger_type == "event" and take:
             row.event_cursor = take[-1][0]  # 上限を超えたイベントは次回に回す
-        _limit_issue(db, pb, len(rest))
+        if pb.mode != DRY_RUN:  # dry_run は記録だけ。Issue を起票すると統治の状態が変わる
+            _limit_issue(db, pb, len(rest))
     return {"candidates": len(timed), "new": len(fresh), "over_limit": len(rest), **{k: v for k, v in counts.items() if v}}
 
 
@@ -294,11 +298,17 @@ def run(db: Session, now: datetime | None = None) -> dict[str, Any]:
     if not settings.autonomy_enabled:
         return {"status": "disabled"}
     now = now or utcnow()
-    if control(db).stopped:
+    stopped = control(db).stopped
+    db.commit()  # 停止スイッチの行を作った場合も、すぐに確定してロックを持たない
+    if stopped:
         return {"status": "stopped"}
     load_extensions()
-    analysis = {name: fn(db, now) for name, fn in ANALYSES.items()}
-    control(db).last_detection_at = now
+    analysis = {}
+    for name, fn in ANALYSES.items():
+        analysis[name] = fn(db, now)
+        db.commit()
+    db.execute(update(AutonomyControl).where(AutonomyControl.id == 1).values(last_detection_at=now))
+    db.commit()
     playbooks = autonomy_catalog.active(db)
     batch = new_id()
     summary: dict[str, Any] = {"status": "ran", "batch_id": batch, "analysis": analysis, "playbooks": {}}
@@ -307,7 +317,7 @@ def run(db: Session, now: datetime | None = None) -> dict[str, Any]:
             summary["status"] = "stopped"
             break
         summary["playbooks"][pb.id] = _run_playbook(db, pb, playbooks.digest, batch, now)
-    db.flush()
+        db.commit()
     return summary
 
 
@@ -347,7 +357,8 @@ def run_view(db: Session, row: RemediationRun, now: datetime | None = None) -> d
             "evidence": row.evidence, "result": row.result, "approval_id": row.approval_id,
             "approval_status": approval.status if approval else None, "issue_id": row.issue_id, "created_at": row.created_at,
             "undo_until": row.undo_until, "undone_at": row.undone_at, "undone_by": row.undone_by, "undo_reason": row.undo_reason,
-            "undoable": bool(row.status == EXECUTED and op is not None and op.undoable and row.undo_until and now <= row.undo_until)}
+            "undoable": bool(row.status == EXECUTED and op is not None and op.undoable and row.undo_until and now <= row.undo_until),
+            "undo_step_up": bool(op is not None and op.undo_raises_trust)}
 
 
 def status_view(db: Session) -> dict[str, Any]:
@@ -367,7 +378,8 @@ def status_view(db: Session) -> dict[str, Any]:
 
 
 def catalog_view() -> dict[str, Any]:
-    return {"operations": [{"id": o.id, "category": o.category, "accepts": o.accepts, "undoable": o.undoable, "description": o.description}
+    return {"operations": [{"id": o.id, "category": o.category, "accepts": o.accepts, "undoable": o.undoable, "undo_raises_trust": o.undo_raises_trust,
+                            "description": o.description}
                            for o in CATALOG.values()],
             "forbidden": [{"id": k, "description": v} for k, v in autonomy_catalog.FORBIDDEN.items()],
             "detectors": dict(autonomy_catalog.DETECTORS), "events": {k: v[0] for k, v in autonomy_catalog.EVENTS.items()}}

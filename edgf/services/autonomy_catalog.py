@@ -114,14 +114,17 @@ class Operation:
     accepts: str
     undoable: bool
     description: str
+    # 取り消すと権限や信頼が上がる (閲覧の承認や Certification を元に戻す)。承認行為と同じく、UI の経路ではステップアップを求める
+    undo_raises_trust: bool = False
 
 
 CATALOG: dict[str, Operation] = {o.id: o for o in (
     # 区分 A: 権限や信頼を下げる方向で、元に戻せて、業務の判断を含まない操作 (Issue の起票以外は取り消せる)
     Operation("issue.open", A, "anomaly", False, "品質の異常の Issue を起票する"),
-    Operation("certification.revert_to_draft", A, "anomaly", True, "品質の異常を検知した Certified の資産を draft に戻す"),
+    Operation("certification.revert_to_draft", A, "anomaly", True, "品質の異常を検知した Certified の資産を draft に戻す", undo_raises_trust=True),
     Operation("issue.close_recovered", A, "recovered_issue", True, "条件が解消した品質の Issue を閉じる"),
-    Operation("access.revoke_stale", A, "stale_grant", True, "期限切れ、または対象の資産が無くなった閲覧の承認を取り消す"),
+    Operation("access.revoke_stale", A, "stale_grant", True, "期限切れ、または対象の資産が無くなった閲覧の承認を取り消す",
+              undo_raises_trust=True),
     # 区分 B: 提案だけを作り、人が承認する
     Operation("propose.classification", B, "classification_suggestion", False,
               "分類の変更の提案を承認エンジンに作る (確定は対象資産の Owner / Steward)"),

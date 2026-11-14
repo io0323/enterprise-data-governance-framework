@@ -27,7 +27,9 @@ function resumeOperation(playbook = null) {
 }
 
 function undoOperation(run) {
-  return {id: "undo", method: "POST", path: `${API}/runs/${encodeURIComponent(run.id)}/undo`, body: {}, fields: [REASON], step_up: false};
+  // 閲覧の承認や Certification を戻す取り消しは、承認行為と同じくステップアップを求める (サーバの undo_step_up)
+  return {id: "undo", method: "POST", path: `${API}/runs/${encodeURIComponent(run.id)}/undo`, body: {}, fields: [REASON],
+    step_up: Boolean(run.undo_step_up)};
 }
 
 function suggestionOperations(s) {
