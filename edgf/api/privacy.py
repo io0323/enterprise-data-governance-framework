@@ -189,6 +189,8 @@ def _require_on_any_target(db: Session, principal: Principal, req: ErasureReques
     mine = [(t, a) for t, a in pairs if authz.is_allowed(principal, action, asset=a)]
     if not mine and not authz.is_allowed(principal, action):
         authz.require(db, principal, action, entity_type="erasure", entity_id=req.id)
+    if authz.PERMISSIONS[action].approval:  # is_allowed で許可した経路でも、承認行為なら UI の経路でステップアップを求める
+        authz.require_step_up(principal, action)
     return mine
 
 

@@ -609,11 +609,11 @@ playbooks:
 | 装置 | 内容 |
 |---|---|
 | 有効・無効 | `EDGF_AUTONOMY_ENABLED`(既定 false)。false なら dry_run も含めて何も実行せず、記録も作りません |
-| 全体の停止 | `POST /autonomy/stop`(Committee、admin)。安全側の操作なのですぐに効きます(✓ は不要)。実行中のジョブも、次の操作の前に止まります |
+| 全体の停止 | `POST /autonomy/stop`(Committee、admin)。安全側の操作なのですぐに効きます(✓ は不要)。ジョブは操作ごとに確定するので、実行中のジョブも次の操作の前に止まります(停止の要求がジョブの終わりを待たされません) |
 | 再開 | `POST /autonomy/resume`(Committee の承認行為 ✓。UI ではステップアップ)。`playbook` を指定すると、自動停止したプレイブックだけを再開します |
-| 件数の上限 | プレイブックごとの 1 回の上限。超えた分は実行せず、Committee に Issue(`autonomy-limit:<id>`)を起票します。残りは次回以降に扱います |
+| 件数の上限 | プレイブックごとの 1 回の上限。超えた分は実行せず、Committee に Issue(`autonomy-limit:<id>`)を起票します(dry_run では起票せず、件数だけを結果に残します)。残りは次回以降に扱います |
 | 自動停止 | 直近 30 日(再開の後なら再開から)の誤って実行した率(取り消された件数 ÷ 区分 A の active の実行の件数)が閾値を超えたら、そのプレイブックを止め、Committee に Issue を起票します。取り消しの直後にも判定します |
-| 取り消し | 区分 A の取り消せる操作は、`undo_days` のあいだ、対象資産の Owner と Committee が `POST /autonomy/runs/{id}/undo`(理由が必須)で操作の前の状態に戻せます。期限を過ぎると 409、操作の後に人が状態を変えていれば 409 です。取り消しも監査(`autonomy.undo`)に残ります |
+| 取り消し | 区分 A の取り消せる操作は、`undo_days` のあいだ、対象資産の Owner と Committee が `POST /autonomy/runs/{id}/undo`(理由が必須)で操作の前の状態に戻せます。期限を過ぎると 409、操作の後に人が状態を変えていれば 409 です。閲覧の承認や Certification を元に戻す取り消し(信頼を上げる方向)は、承認行為と同じく UI の経路でステップアップを求めます。取り消しも監査(`autonomy.undo`)に残ります |
 | 繰り返しの防止 | 同じプレイブックは、同じ対象に同じモードで 2 回操作しません(取り消された対象も繰り返しません) |
 
 ### dry_run から active への切り替え
@@ -621,7 +621,7 @@ playbooks:
 1. 初期のプレイブックはすべて `mode: dry_run` です。`EDGF_AUTONOMY_ENABLED=true` にすると、状態を変えずに「行うはずだった操作」と前後の状態を `GET /autonomy/runs?mode=dry_run`(UI の `#/autonomy`)に記録します
 2. dry_run の記録(件数、対象、予想される前後の状態)を Committee が確認します
 3. `policies/remediation/playbooks.yaml` の該当するプレイブックの `mode` を `active` にし、`POST /policies/reload`(または `POST /policies/bundles`)で提案します
-4. Committee が承認し(✓)、公開します。公開した時点から active で動きます。dry_run で記録した対象も、active で改めて操作します
+4. Committee が承認し(✓)、公開します。公開した時点から active で動きます。検出のジョブを契機にするプレイブックは、dry_run で記録した対象も active で改めて操作します。イベントを契機にするプレイブックは、切り替えの後に届いたイベントだけを扱います(dry_run で処理済みのイベントは読み直しません)
 5. 止めるときは `POST /autonomy/stop`、戻すときは `mode: dry_run` に戻す Policy 変更を同じ手順で行います
 
 ### 品質の異常の検知(§5 Continuous Data Quality)
